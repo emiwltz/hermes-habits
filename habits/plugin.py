@@ -54,12 +54,12 @@ OFF_SECONDS = 600  # the off file counts this long after its last touch: a bench
 LINGER = deciders.LLM_TIMEOUT + 15
 
 DEFAULTS = {
-    "backend": "auto", "min_confidence": 0.8, "trigger_confidence": 0.7, "promote_runs": 12,
+    "backend": "auto", "clef_model": "clef-flash", "min_confidence": 0.8, "trigger_confidence": 0.7, "promote_runs": 12,
     "promote_agreement": 0.9, "retire_window": 20, "retire_agreement": 0.75, "spot_check": 0.1, "judge": True,
     "direct": True, "promote": "ask", "language": "en",
 }
 # A value outside these falls back on the default: a typo never turns the yes off.
-CHOICES = {"backend": ("auto", "jev", "llm"), "promote": ("ask", "auto"), "language": ("en", "fr")}
+CHOICES = {"backend": ("auto", "jev", "clef", "llm"), "clef_model": deciders.CLEF_MODELS, "promote": ("ask", "auto"), "language": ("en", "fr")}
 
 
 def strict(schema):
@@ -327,7 +327,9 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
         return parsed
 
     def decider(self) -> deciders.Chain:
-        return deciders.build(self.setting("backend"), self.secret("TYPESAFE_API_KEY"), self.complete)
+        clef = deciders.make_clef(self.secret("CLOUDFLARE_API_TOKEN"), self.secret("CLOUDFLARE_ACCOUNT_ID"),
+                                  self.setting("clef_model"))
+        return deciders.build(self.setting("backend"), self.secret("TYPESAFE_API_KEY"), self.complete, clef)
 
     def tool(self, name: str, args: dict) -> str:
         refusal = refused(name, args or {})

@@ -26,7 +26,7 @@ TEXTS = {
         "retired": "─ {name} goes to rest: {why}. To bring it back: /habits try {name}",
         "demoted": "┄ {name} goes back to learning: {why}. It waits for your yes to act on its own again. /habits",
         "footer": "🔁 {name} · {took} · {calls} · not right? /habits wrong",
-        "calls": "{n} model calls", "call": "1 model call", "no_calls": "0 model calls", "jev": " (+ Jev)",
+        "calls": "{n} model calls", "call": "1 model call", "no_calls": "0 model calls", "decided": " (+ {names})",
         # The ledger's notes, as the thresholds write them, in the user's words
         "why_errors": "{n} errors in a row", "why_agreement": "{right} right out of {n}",
         "why_spots": "{n} spot checks in a row under {percent} %", "why_woke": "it handed back {n} asks in a row",
@@ -141,7 +141,7 @@ TEXTS = {
         "retired": "─ {name} passe au repos : {why}. La relancer : /habits essai {name}",
         "demoted": "┄ {name} repart en apprentissage : {why}. Elle attend ton oui pour agir seule à nouveau. /habits",
         "footer": "🔁 {name} · {took} · {calls} · pas ça ? /habits faux",
-        "calls": "{n} appels au modèle", "call": "1 appel au modèle", "no_calls": "0 appel au modèle", "jev": " (+ Jev)",
+        "calls": "{n} appels au modèle", "call": "1 appel au modèle", "no_calls": "0 appel au modèle", "decided": " (+ {names})",
         "why_errors": "{n} erreurs d'affilée", "why_agreement": "{right} justes sur {n}",
         "why_spots": "{n} vérifications d'affilée sous {percent} %",
         "why_woke": "elle m'a rendu {n} demandes d'affilée", "why_wrong": "tu as dit qu'elle se trompait",
@@ -266,9 +266,11 @@ def seconds(ms, lang: str = "en") -> str:
     return (text.replace(".", ",") if lang == "fr" else text) + " s"
 
 
-def calls(n: int, lang: str = "en", jev: bool = False) -> str:
-    """0 model calls (+ Jev): what a direct answer cost, said as it was."""
-    return say("no_calls" if not n else "call" if n == 1 else "calls", lang, n=n) + (say("jev", lang) if jev else "")
+def calls(n: int, lang: str = "en", jev: bool = False, clef: bool = False) -> str:
+    """0 model calls (+ Jev): what a direct answer cost, said as it was, with the decision model that answered."""
+    names = ", ".join(name for name, answered in (("Jev", jev), ("Clef", clef)) if answered)
+    return say("no_calls" if not n else "call" if n == 1 else "calls", lang, n=n) + (
+        say("decided", lang, names=names) if names else "")
 
 
 # The ledger writes its notes in English, for the logs: told to the user, they are said again in the language.

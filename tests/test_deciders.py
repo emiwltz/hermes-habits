@@ -244,6 +244,182 @@ def test_jev_other_failures_are_decision_errors_without_retry(failure):
     assert len(urlopen.calls) == 1
 
 
+# Clef (Cloudflare Workers AI), the same System One API as Jev
+
+ACCOUNT = "0123456789abcdef0123456789abcdef"
+CLEF_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/ai/run/@cf/cloudflare/clef-flash"
+
+
+def clef(*replies, **kwargs):
+    return deciders.Clef("tok", ACCOUNT, opener=opener(*replies), **kwargs)
+
+
+def enveloped(reply):
+    return {"result": reply, "success": True, "errors": [], "messages": []}
+
+
+def test_clef_request():
+    urlopen = opener(recorded("kind", "safe", "size"))
+    deciders.Clef("secret-token", ACCOUNT, opener=urlopen).ask(STATE, [KIND, SAFE, SIZE])
+    request, timeout = urlopen.calls[0]
+    assert (request.full_url, request.get_method()) == (CLEF_URL, "POST")
+    assert request.get_header("Authorization") == "Bearer secret-token"
+    assert request.get_header("Content-type") == "application/json"
+    assert timeout == 5.0
+    body = sent(urlopen)
+    assert body["model"] == "clef-flash" and body["state"] == STATE
+    assert body["questions"]["q0"]["type"] == "choice" and body["questions"]["q2"]["type"] == "score"
+    assert body["questions"]["q1"] == {"type": "noul", "instructions": "Is this file an application installer?"}
+    assert body["questions"]["q0"]["criteria"]["image"] == "a photo or picture"
+    assert body["questions"]["q2"]["criteria"] == ["tiny", "small", "large", "huge"]
+
+
+def test_clef_uses_the_model_named_in_the_url_and_in_the_body():
+    urlopen = opener(noul(0.9))
+    deciders.Clef("t", ACCOUNT, model="clef", opener=urlopen).ask("s", [SAFE])
+    assert urlopen.calls[0][0].full_url == CLEF_URL.removesuffix("-flash")
+    assert sent(urlopen)["model"] == "clef"
+
+
+def test_clef_is_a_jev_with_its_own_name_and_the_same_ceiling():
+    backend = clef()
+    assert isinstance(backend, deciders.Jev) and (backend.name, backend.per_call) == ("clef", 50)
+
+
+def test_clef_sends_50_questions_per_call():
+    def yes(body):
+        return {"answers": {name: {"type": "noul", "noul": 0.9} for name in body["questions"]}}
+
+    urlopen = opener(yes, yes)
+    questions = [deciders.question(f"Is {i} odd?", {"yes_no": True}) for i in range(60)]
+    answers = deciders.Clef("t", ACCOUNT, opener=urlopen).ask("s", questions)
+    assert len(answers) == 60 and {a.backend for a in answers} == {"clef"}
+    assert [len(sent(urlopen, n)["questions"]) for n in range(2)] == [50, 10]
+
+
+def test_clef_reads_the_three_answer_types():
+    answers = clef(recorded("kind", "safe", "size")).ask(STATE, [KIND, SAFE, SIZE])
+    assert answers == [Answer("installer", 0.98, "clef"), Answer("yes", 0.9, "clef"), Answer("small", 0.81, "clef")]
+    assert answers[0].probabilities == {"installer": 0.98, "image": 0.01, "other": 0.01}
+    assert answers[1].probabilities == {"yes": 0.9, "no": 0.1}
+
+
+def test_clef_reads_a_bare_reply_and_an_enveloped_one_alike():
+    bare = recorded("kind", "safe", "size")
+    assert clef(bare).ask(STATE, [KIND, SAFE, SIZE]) == clef(enveloped(bare)).ask(STATE, [KIND, SAFE, SIZE])
+
+
+def test_clef_success_false_names_the_first_error_cut_short():
+    reply = {"result": None, "success": False, "errors": [{"code": 10000, "message": "x" * 300}, {"message": "later"}]}
+    with pytest.raises(DecisionError) as raised:
+        clef(reply).ask("s", [SAFE])
+    assert "x" * 120 in str(raised.value) and "x" * 121 not in str(raised.value) and "later" not in str(raised.value)
+    with pytest.raises(DecisionError):
+        clef({"success": False, "errors": []}).ask("s", [SAFE])
+
+
+def test_clef_an_envelope_without_answers_is_an_error():
+    with pytest.raises(DecisionError):
+        clef({"result": {"nothing": 1}, "success": True}).ask("s", [SAFE])
+
+
+def test_clef_never_puts_the_token_or_the_account_in_an_error():
+    # Cloudflare's own message may echo either: what reaches the chain (and the ledger, and the model) has neither.
+    said = f"bad token tok-very-secret\nfor account {ACCOUNT}\x1b[0m at {CLEF_URL}"
+    reply = {"success": False, "errors": [{"message": said}]}
+    with pytest.raises(DecisionError) as raised:
+        deciders.Clef("tok-very-secret", ACCOUNT, opener=opener(reply)).ask("s", [SAFE])
+    text = str(raised.value)
+    assert "tok-very-secret" not in text and ACCOUNT not in text and text.startswith("Cloudflare refused")
+    assert "\n" not in text and "\x1b" not in text  # one plain line, whatever the server wrote
+
+
+@pytest.mark.parametrize("failure", [http_error(401), http_error(500), socket.timeout("timed out"),
+                                     urllib.error.URLError(f"no route to {CLEF_URL}"), b"not json", b"[1]"])
+def test_clef_failures_never_show_the_account_or_the_url(failure):
+    chain = deciders.Chain([deciders.Clef("tok-very-secret", ACCOUNT, opener=opener(failure, failure))])
+    with pytest.raises(DecisionError) as raised:
+        chain.ask("s", [SAFE])
+    shown = str(raised.value) + " ".join(chain.errors)
+    assert ACCOUNT not in shown and "tok-very-secret" not in shown and "cloudflare.com" not in shown
+    assert not isinstance(raised.value, deciders.OutOfTime) and chain.down == {"clef"}  # an outage, not a budget
+
+
+def test_clef_refuses_an_answer_that_was_not_asked_like_jev():
+    with pytest.raises(DecisionError, match="not an option"):
+        clef({"answers": {"q0": {"type": "choice", "choice": "rm -rf", "confidence": 1}}}).ask("s", [KIND])
+    with pytest.raises(DecisionError, match="unexpected answer shape"):
+        clef({"answers": {"q0": {"type": "choice", "choice": "image"}}}).ask("s", [SAFE])
+    with pytest.raises(DecisionError, match="unexpected answer shape"):
+        clef(enveloped({"answers": {}})).ask("s", [SIZE])
+
+
+def test_neither_decision_model_follows_a_redirect_with_the_token():
+    # urllib follows a 30x to any host and keeps the Authorization header: the bearer token would go with it.
+    for backend in (deciders.Jev("k"), deciders.Clef("t", ACCOUNT)):
+        assert backend.opener is deciders.OPEN
+    request = urllib.request.Request(CLEF_URL, data=b"{}", headers={"Authorization": "Bearer t"}, method="POST")
+    headers = http.client.HTTPMessage()
+    headers["Location"] = "https://elsewhere.example/steal"
+    for code in (301, 302, 303, 307, 308):
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            deciders.NoRedirect().http_error_302(request, io.BytesIO(b""), code, "Found", headers)
+        assert raised.value.code == code  # refused as an HTTP error: the chain moves on
+
+
+def test_clef_runs_out_of_time_like_jev():
+    with pytest.raises(deciders.OutOfTime):
+        clef().ask("s", [SAFE], seconds=0.05)
+
+
+@pytest.mark.parametrize("code", [429, 500])
+def test_clef_tries_again_once_on_429_and_5xx(code):
+    urlopen = opener(http_error(code), noul(0.9))
+    assert deciders.Clef("t", ACCOUNT, opener=urlopen).ask("s", [SAFE]) == [Answer("yes", 0.9, "clef")]
+    assert len(urlopen.calls) == 2
+
+
+def test_clef_401_is_a_decision_error_without_retry():
+    urlopen = opener(http_error(401), noul(0.9))
+    with pytest.raises(DecisionError, match="HTTP 401"):
+        deciders.Clef("t", ACCOUNT, opener=urlopen).ask("s", [SAFE])
+    assert len(urlopen.calls) == 1
+
+
+def test_clef_gives_up_after_the_second_try_on_429_and_500():
+    urlopen = opener(http_error(429), http_error(500))
+    with pytest.raises(DecisionError, match="HTTP 500"):
+        deciders.Clef("t", ACCOUNT, opener=urlopen).ask("s", [SAFE])
+
+
+@pytest.mark.parametrize("account", ["", "abc", ACCOUNT.upper(), ACCOUNT + "0", ACCOUNT[:-1] + "/", "../" + ACCOUNT[3:],
+                                     ACCOUNT[:-3] + "?x=", None, 5])
+def test_clef_refuses_an_account_that_is_not_a_cloudflare_id(account):
+    with pytest.raises(DecisionError) as raised:
+        deciders.Clef("t", account)
+    assert "cloudflare_account_id" in str(raised.value) and "0-9 and a-f" in str(raised.value)
+
+
+@pytest.mark.parametrize("model", ["", "clef-pro", "jev-latest", "clef/../x", None])
+def test_clef_refuses_a_model_name_it_does_not_know(model):
+    with pytest.raises(DecisionError) as raised:
+        deciders.Clef("t", ACCOUNT, model=model)
+    assert "clef_model" in str(raised.value)
+
+
+def test_make_clef_returns_nothing_when_nothing_is_set_and_says_what_is_missing_when_half_is():
+    assert deciders.make_clef(None, None, "clef-flash") is None
+    assert deciders.make_clef("", " ", "clef-flash") is None
+    assert isinstance(deciders.make_clef("tok", ACCOUNT, "clef"), deciders.Clef)
+    for token, account, setting in (("tok", None, "cloudflare_account_id"), (None, ACCOUNT, "cloudflare_api_token"),
+                                    ("tok", "nope", "cloudflare_account_id")):
+        missing = deciders.make_clef(token, account, "clef-flash")
+        assert isinstance(missing, deciders.Unavailable) and setting in missing.reason and missing.name == "clef"
+        assert "tok" != missing.reason and "nope" not in missing.reason
+    bad = deciders.make_clef("tok", ACCOUNT, "clef-pro")
+    assert isinstance(bad, deciders.Unavailable) and "clef_model" in bad.reason
+
+
 # LLMDecider
 
 def test_llm_decider_answers_by_index():
@@ -380,6 +556,56 @@ def test_build_puts_the_chosen_backend_first(backend, order):
 ])
 def test_build_skips_backends_without_a_key(backend, keys, order):
     assert names(deciders.build(backend, **keys)) == order
+
+
+# Clef joins the chain: auto asks Jev, then Clef, then the Hermes model.
+def a_clef():
+    return deciders.Clef("t", ACCOUNT)
+
+
+@pytest.mark.parametrize("backend, order", [
+    ("auto", ["jev", "clef", "llm"]),
+    ("jev", ["jev", "clef", "llm"]),
+    ("clef", ["clef", "jev", "llm"]),
+    ("llm", ["llm", "jev", "clef"]),
+    ("openai", ["jev", "clef", "llm"]),
+])
+def test_build_orders_jev_clef_and_the_hermes_model(backend, order):
+    assert names(deciders.build(backend, jev_key="j", complete=complete, clef=a_clef())) == order
+
+
+@pytest.mark.parametrize("keys, order", [
+    ({"clef": a_clef(), "complete": complete}, ["clef", "llm"]),
+    ({"clef": a_clef(), "jev_key": "j"}, ["jev", "clef"]),
+    ({"clef": a_clef()}, ["clef"]),
+    ({"jev_key": "j", "complete": complete}, ["jev", "llm"]),
+    ({"clef": deciders.Unavailable("clef", "x"), "complete": complete}, ["llm"]),  # auto leaves a Clef out that cannot run
+])
+def test_build_in_auto_leaves_out_what_is_not_set(keys, order):
+    assert names(deciders.build("auto", **keys)) == order
+
+
+def test_backend_clef_chosen_with_nothing_set_fails_in_plain_words_then_falls_back():
+    chain = deciders.build("clef", complete=complete)
+    assert names(chain) == ["clef", "llm"]
+    with pytest.raises(DecisionError) as raised:
+        deciders.build("clef").ask("s", [SAFE])
+    said = str(raised.value)
+    assert "clef" in said and "cloudflare_api_token" in said and "cloudflare_account_id" in said
+
+
+def test_backend_clef_with_a_bad_account_says_which_setting():
+    missing = deciders.make_clef("tok", "nope", "clef-flash")
+    with pytest.raises(DecisionError) as raised:
+        deciders.build("clef", clef=missing).ask("s", [SAFE])
+    assert "cloudflare_account_id" in str(raised.value) and "nope" not in str(raised.value)
+
+
+def test_a_clef_that_is_down_hands_over_to_the_hermes_model():
+    model, _ = llm({"answers": [{"index": 0, "answer": "no", "confidence": 0.9}]})
+    down = deciders.Clef("t", ACCOUNT, opener=opener(http_error(401)))
+    chain = deciders.Chain([down, model])
+    assert chain.ask("s", [SAFE]) == [Answer("no", 0.9, "llm")] and chain.used == ["llm"] and chain.down == {"clef"}
 
 
 def test_build_hands_each_backend_its_key():

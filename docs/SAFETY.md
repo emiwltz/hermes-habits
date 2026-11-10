@@ -8,15 +8,16 @@ A habit is a reflex: a skill with a fast path. Its graph (`assets/HABIT.yaml`) r
 
 ## 2. What leaves the machine
 
-The plugin opens one network connection of its own: a decision request. It sends no telemetry.
+The plugin opens one kind of network connection of its own: a decision request. It sends no telemetry.
 
-- **Where.** `POST https://api.typesafe.ai/v1/systemone` (TypeSafe Jev), only when `TYPESAFE_API_KEY` is set. The key is read with `agent.secret_scope.get_secret` and sent as `Authorization: Bearer`. It is never written anywhere.
-- **What.** Each request holds `"model": "jev-latest"`, a `state` of 8,000 characters at most, and up to 50 questions, each with its text and its options (with their descriptions for a choice). A run with more questions sends more requests (2,000 questions per run at most). Nothing else: no session id, no file, no history.
+- **Where.** Two destinations are possible, each only when its key is set. `POST https://api.typesafe.ai/v1/systemone` (TypeSafe Jev), when `TYPESAFE_API_KEY` is set. `POST https://api.cloudflare.com/client/v4/accounts/<account id>/ai/run/@cf/cloudflare/<model>` (Cloudflare Workers AI, Clef; `<model>` is `clef-flash` or `clef`), when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are both set; the account id is accepted only as 32 characters, 0-9 and a-f, since it goes into the URL. The keys are read with `agent.secret_scope.get_secret` and sent as `Authorization: Bearer`. They are never written anywhere. With both set, `auto` asks Jev first and Clef only if Jev fails; `backend` can name one.
+- **What.** Each request holds `"model"` (`jev-latest` for Jev, `clef-flash` or `clef` for Clef), a `state` of 8,000 characters at most, and up to 50 questions, each with its text and its options (with their descriptions for a choice). A run with more questions sends more requests (2,000 questions per run at most). Nothing else, to either destination: no session id, no file, no history.
 - **What a state holds.** For a habit's question, the values the node names in `with`. Those can be tool output and file contents. The questions carry data too: an `each` question holds its whole item (a line of tool output, a file name), and a `pick` lists each item (200 characters at most) as an option. For the message door, `User message:` and your message, sent with the names and descriptions of your request habits that are learning or automatic, and up to 3 paths or URL hosts each habit acts on (never a URL's path or query).
 - **Which messages.** The message door asks only while at least one request habit is learning or automatic, and never for a message over 2,000 characters, a `/command`, a subagent's or the curator's turn, a message that names a saved habit whose name holds `-` or `_`, or one that names `habit_`, or while `/habits pause` is on. A cron job's turn is read like a user message. It asks one question, then one or two more about the habit it picked.
 - **One more.** When `habit_save` first saves a request habit whose steps all count as reads, it asks whether your last message asked for a habit (one yes/no, your message as the state).
-- **Timeouts.** 5 s per call, one retry on 429 or 5xx, never past the time the run has left. A message-door hook stops within 20 s.
-- **The fallback.** Without a key, or when Jev fails, the same questions go to your Hermes model through `ctx.llm` (15 s at most). `backend: llm` asks your Hermes model first. Your Hermes model also gets the `llm` nodes, and the judge calls that compare a learning run with the model's own turn (up to 6,000 characters per text) or check a watch (12,000 at most). Where those go is your Hermes provider's business, not the plugin's.
+- **Clef.** The Clef client follows Cloudflare's published schema and is covered by tests with a stand-in server.
+- **Timeouts.** 5 s per call, one retry on 429 or 5xx, never past the time the run has left. A redirect is refused, never followed, so the key never goes to another host. A message-door hook stops within 20 s.
+- **The fallback.** Without a key, or when the decision model fails, the same questions go to your Hermes model through `ctx.llm` (15 s at most). `backend: llm` asks your Hermes model first. Your Hermes model also gets the `llm` nodes, and the judge calls that compare a learning run with the model's own turn (up to 6,000 characters per text) or check a watch (12,000 at most). Where those go is your Hermes provider's business, not the plugin's.
 
 Any other network access is made by the Hermes tools a habit calls (`web_extract`, `curl` in the terminal, ...).
 
@@ -88,7 +89,7 @@ To delete everything: `hermes habits cleanup`, remove the plugin, delete `$HERME
 | Skill | `writing-habits` | How to write a graph |
 | Command | `/habits` | `yes`, `try`, `rest`, `wrong`, `pause`, `resume`, `undo`, `view` (French words too) |
 | CLI | `hermes habits` | `list`, `show`, `view`, `check`, `run`, `promote`, `pause`, `resume`, `undo`, `tick`, `retire`, `reset`, `cleanup` |
-| Settings | `config_schema` | `promote`, `language`, `backend`, `min_confidence`, `trigger_confidence`, `promote_runs`, `promote_agreement`, `retire_window`, `retire_agreement`, `spot_check`, `judge`, `direct`, and the secret `typesafe_api_key` (`TYPESAFE_API_KEY`) |
+| Settings | `config_schema` | `promote`, `language`, `backend`, `clef_model`, `min_confidence`, `trigger_confidence`, `promote_runs`, `promote_agreement`, `retire_window`, `retire_agreement`, `spot_check`, `judge`, `direct`, and the secrets `typesafe_api_key` (`TYPESAFE_API_KEY`), `cloudflare_api_token` (`CLOUDFLARE_API_TOKEN`) and `cloudflare_account_id` (`CLOUDFLARE_ACCOUNT_ID`) |
 
 `HABITS_OFF` (an environment variable, declared under `optional_env` in `plugin.yaml`), or an `off` file touched in the last 10 minutes, turns every hook off; the tools stay.
 
@@ -99,7 +100,7 @@ Every Hermes import is lazy, inside a function, and wrapped so that a missing on
 | Import | Why | Without it |
 | --- | --- | --- |
 | `plugins.plugin_storage.plugin_data_dir` | The plugin's data folder | None: required inside Hermes |
-| `agent.secret_scope.get_secret` | Reads `TYPESAFE_API_KEY` | No key: the Hermes model decides |
+| `agent.secret_scope.get_secret` | Reads `TYPESAFE_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | No key: the Hermes model decides |
 | `hermes_cli.plugins.get_pre_tool_call_directive` | Asks other plugins' guards before a habit's call | Missing (an older Hermes): logged once, the call goes on. Failing when asked: the step is refused |
 | `tools.approval_detection` / `tools.approval` `.detect_dangerous_command` | Hermes's own dangerous-command check | A built-in pattern |
 | `tools.skills_tool` (`find_all_skills`, `skill_search_dirs`) | Finds habits among your skills | No habits found |

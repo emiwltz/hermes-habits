@@ -125,6 +125,14 @@ def test_runs_answered_by_the_llm_fallback_do_not_count(tmp_path):
     assert ledger.evaluate(HABIT, "v1") == "shadow"
 
 
+def test_runs_answered_by_clef_count_like_runs_answered_by_jev(tmp_path):
+    ledger = ledger_at(tmp_path)
+    for backend in ("clef", "jev", "clef,jev"):
+        compared_run(ledger, 1, backends=(backend,))
+    compared_run(ledger, 0, backends=("clef", "llm"))  # one question went to the fallback: the run is left out
+    assert ledger.agreement(HABIT, "v1") == (1.0, 3)
+
+
 def test_agreed_counts_the_runs_that_agree_on_their_own_since_the_last_shadow(tmp_path):
     # An active habit is checked on every run until 3 agree. A run the LLM fallback decided counts there (the
     # judge compared its answer), unlike in the scores; one under the promotion bar does not.

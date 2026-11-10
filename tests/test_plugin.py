@@ -1011,6 +1011,20 @@ def test_an_active_habit_that_did_everything_answers_without_the_model(setup, mo
     assert "tokens instead of" not in habits.command("")  # no shadow turn was counted in tokens
 
 
+@pytest.mark.parametrize("name, said", [("clef", "(+ Clef)"), ("jev", "(+ Jev)")])
+def test_the_direct_answer_names_the_decision_model_that_answered(setup, monkeypatch, name, said):
+    ctx, habits = setup
+    promote(ctx, habits, monkeypatch)
+    monkeypatch.setitem(sys.modules, "agent.turn_context",
+                        type("Hermes023", (), {"PRE_LLM_BLOCK_EXIT_REASON": "blocked_by_plugin_pre_llm_call"}))
+    fake = deciders.Fake(answer)
+    fake.name = name
+    monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([fake]))
+    reply = habits.on_pre_llm_call(session_id="d", user_message="sort my downloads")
+    assert reply["action"] == "block" and f"0 model calls {said} · not right?" in reply["message"]
+    habits.on_post_llm_call(session_id="d")
+
+
 def test_without_the_block_action_the_model_confirms(setup, monkeypatch):
     ctx, habits = setup
     promote(ctx, habits, monkeypatch)
@@ -3370,14 +3384,72 @@ def test_a_habit_that_still_declares_an_event_is_refused_everywhere_without_a_cr
     assert ctx.calls == []
 
 
-def test_jev_is_the_only_key(setup, monkeypatch):
+CLOUDFLARE_ACCOUNT = "0123456789abcdef0123456789abcdef"
+
+
+def test_the_manifest_names_the_two_decision_models_and_their_secrets(setup, monkeypatch):
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())["config_schema"]
-    assert manifest["backend"]["enum"] == ["auto", "jev", "llm"]
-    assert [v["env"] for v in manifest.values() if v.get("type") == "secret"] == ["TYPESAFE_API_KEY"]
+    assert manifest["backend"]["enum"] == ["auto", "jev", "clef", "llm"] == list(plugin.CHOICES["backend"])
+    assert "else Clef when its token and account are set, then your Hermes model" in manifest["backend"]["description"]
+    assert manifest["clef_model"]["enum"] == ["clef-flash", "clef"] == list(plugin.CHOICES["clef_model"])
+    assert manifest["clef_model"]["default"] == plugin.DEFAULTS["clef_model"] == "clef-flash"
+    secrets = {v["env"]: key for key, v in manifest.items() if v.get("type") == "secret"}
+    assert secrets == {"TYPESAFE_API_KEY": "typesafe_api_key", "CLOUDFLARE_API_TOKEN": "cloudflare_api_token",
+                       "CLOUDFLARE_ACCOUNT_ID": "cloudflare_account_id"}
+    for key in ("cloudflare_api_token", "cloudflare_account_id"):
+        assert manifest[key]["description"] == "Optional. Fast decisions with Clef on Cloudflare Workers AI."
     ctx, habits = setup
     asked = []
     monkeypatch.setattr(habits, "secret", lambda name: asked.append(name))
-    assert [b.name for b in plugin.Habits.decider(habits).backends] == ["llm"] and asked == ["TYPESAFE_API_KEY"]
+    assert [b.name for b in plugin.Habits.decider(habits).backends] == ["llm"]
+    assert sorted(asked) == ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "TYPESAFE_API_KEY"]
+
+
+def decider_with(habits, monkeypatch, secrets, **config):
+    monkeypatch.setattr(habits, "secret", lambda name: secrets.get(name))
+    habits.ctx.config.update(config)
+    return plugin.Habits.decider(habits)
+
+
+@pytest.mark.parametrize("secrets, order", [
+    ({}, ["llm"]),
+    ({"TYPESAFE_API_KEY": "j"}, ["jev", "llm"]),
+    ({"CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": CLOUDFLARE_ACCOUNT}, ["clef", "llm"]),
+    ({"CLOUDFLARE_API_TOKEN": "t"}, ["llm"]),  # half a pair is no Clef: auto leaves it out
+    ({"CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": "not-an-id"}, ["llm"]),
+    ({"TYPESAFE_API_KEY": "j", "CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": CLOUDFLARE_ACCOUNT},
+     ["jev", "clef", "llm"]),
+])
+def test_auto_asks_jev_then_clef_then_the_hermes_model_for_what_is_set(setup, monkeypatch, secrets, order):
+    ctx, habits = setup
+    assert [b.name for b in decider_with(habits, monkeypatch, secrets).backends] == order
+
+
+def test_backend_clef_goes_first_and_the_setting_picks_the_model(setup, monkeypatch):
+    ctx, habits = setup
+    both = {"TYPESAFE_API_KEY": "j", "CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": CLOUDFLARE_ACCOUNT}
+    chain = decider_with(habits, monkeypatch, both, backend="clef", clef_model="clef")
+    assert [b.name for b in chain.backends] == ["clef", "jev", "llm"]
+    assert chain.backends[0].url.endswith(f"/accounts/{CLOUDFLARE_ACCOUNT}/ai/run/@cf/cloudflare/clef")
+    ctx.config["clef_model"] = "nonsense"  # a value it does not know keeps the default
+    assert decider_with(habits, monkeypatch, both).backends[0].model == "clef-flash"
+
+
+def test_backend_clef_with_nothing_set_says_which_settings_are_missing(setup, monkeypatch):
+    ctx, habits = setup
+    chain = decider_with(habits, monkeypatch, {}, backend="clef")
+    assert [b.name for b in chain.backends] == ["clef", "llm"]
+    with pytest.raises(deciders.DecisionError) as raised:
+        chain.backends[0].ask("s", [deciders.question("Is it?", {"yes_no": True})])
+    assert "cloudflare_api_token" in str(raised.value) and "cloudflare_account_id" in str(raised.value)
+
+
+def test_the_cloudflare_secrets_come_from_hermes_never_from_the_environment(setup, monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "from-the-environment")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", CLOUDFLARE_ACCOUNT)
+    monkeypatch.setitem(sys.modules, "agent", None)  # no Hermes secret scope to ask
+    ctx, habits = setup
+    assert [b.name for b in plugin.Habits.decider(habits).backends] == ["llm"]
 
 
 def test_habits_off_turns_every_hook_off_and_the_tools_refuse(setup, monkeypatch, tmp_path):

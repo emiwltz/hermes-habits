@@ -1216,7 +1216,7 @@ class Tools:
             how = "live run" if live else ("it only reads: nothing to write" if reads_all(habit.graph)
                                           else "dry run: writes planned, not done")
             asked, calls = result.counts.get("questions", 0), result.counts.get("tools", 0)
-            # Who answered the questions: with no Jev key it is the Hermes model ("llm"), which costs.
+            # Who answered the questions: with no decision-model key it is the Hermes model ("llm"), which costs.
             who = f" ({', '.join(sorted(set(result.backends)))})" if asked and result.backends else ""
             # The habit's words are written for Hermes: a hand-back says so first, a dry run that its writes wait.
             head = [f"Handed back to Hermes ({result.reason or 'the habit stopped here'}); its words for Hermes:"

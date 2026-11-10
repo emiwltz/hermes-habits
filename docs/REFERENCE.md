@@ -249,7 +249,7 @@ the line as a shell does; what it cannot classify is a write, and the refusal sa
 
 `questions` and `llm` may be 0 (a graph with an `ask` or `llm` under a 0 is refused). Going over ends on the
 fallback. The message door works within 20 s of the hook's start, the trigger questions included; a decision call
-stops at 5 s (Jev) or 15 s (the Hermes model), or the time left. A fan-out has 300 s for all its entries.
+stops at 5 s (Jev or Clef) or 15 s (the Hermes model), or the time left. A fan-out has 300 s for all its entries.
 
 ## The reply of habit_run
 
@@ -413,13 +413,19 @@ description, and called by name it runs dry. Your yes in `/habits` (or `hermes h
 
 | You have | Who answers `ask` nodes | Graduating |
 | --- | --- | --- |
-| a TypeSafe Jev key (`TYPESAFE_API_KEY`) | Jev, in milliseconds, 50 questions per call; your Hermes model when Jev fails | counted runs need Jev's answers |
+| a TypeSafe Jev key (`TYPESAFE_API_KEY`) | Jev, in milliseconds, 50 questions per call; the next model below when Jev fails | counted runs need Jev's or Clef's answers |
+| a Cloudflare token and account (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) | Clef on Workers AI (`clef-flash` or `clef`, the `clef_model` setting), same questions, 50 per call; your Hermes model when Clef fails | same |
 | no key | your configured Hermes model, through Hermes | a habit with `ask` nodes never counts, so it stays learning; habits without `ask` (checks, reads, writes) count as usual |
 
-`backend` picks who is asked first: `auto` (Jev with a key, then the Hermes model), `jev` or `llm`. The fallback
-means the Hermes model answered a typed question with a confidence it reports itself: the run still does its job,
-but it is not counted toward promotion. When no model answers, the run ends on the fallback, and is not counted
-toward retirement either. `llm` nodes and judge calls always use your Hermes model.
+`backend` picks who is asked first: `auto` (Jev when its key is set, else Clef when its token and account are set,
+then the Hermes model), `jev`, `clef` or `llm`. A named backend goes first and the others stay behind it as
+fallbacks. With `backend: clef` and no token or account, the run says which setting is missing and the Hermes model
+answers. The account id is accepted only as 32 characters, 0-9 and a-f (it goes into the URL).
+The fallback means the Hermes model answered a typed question with a confidence it reports itself: the run still
+does its job, but it is not counted toward promotion. When no model answers, the run ends on the fallback, and is
+not counted toward retirement either. `llm` nodes and judge calls always use your Hermes model.
+
+The Clef client follows Cloudflare's published schema and is covered by tests with a stand-in server.
 
 ## Settings
 
@@ -432,9 +438,12 @@ Everyday:
 | --- | --- | --- |
 | `promote` | `ask` | `ask`: a ready habit waits for your yes; `auto`: the thresholds alone |
 | `language` | `en` | `en` or `fr`, for the plugin's own lines |
-| `backend` | `auto` | decision model asked first: `auto`, `jev` or `llm` |
+| `backend` | `auto` | decision model asked first: `auto`, `jev`, `clef` or `llm` |
 | `direct` | `true` | an automatic habit that did the whole request answers itself, with no model call (Hermes 0.22.6+) |
 | `typesafe_api_key` | unset | secret, read from `TYPESAFE_API_KEY`: fast decisions with Jev |
+| `cloudflare_api_token` | unset | secret, read from `CLOUDFLARE_API_TOKEN`: fast decisions with Clef on Cloudflare Workers AI |
+| `cloudflare_account_id` | unset | secret, read from `CLOUDFLARE_ACCOUNT_ID`: the Cloudflare account Clef runs under |
+| `clef_model` | `clef-flash` | which Clef model answers: `clef-flash` or `clef` |
 
 Advanced:
 
@@ -509,7 +518,7 @@ refusal or an error).
 ## Known limits
 
 - The gain depends on the task's size; the message door adds one decision question per message, two when it picks.
-- Without a Jev key, a habit with `ask` nodes is never counted, so it stays learning.
+- Without a Jev or Clef key, a habit with `ask` nodes is never counted, so it stays learning.
 - A message habit that only reads is judged by your Hermes model: one more call per learning turn that ends.
 - Exact matching unrolls simple `for` loops, multi-file `mv`, globs and variables; `while` or `case` logic is left
   to the judge.

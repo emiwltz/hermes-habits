@@ -1,7 +1,7 @@
 name: habits
 version: 0.1.0
 description: >-
-  Reflexes for Hermes: two levels that hand work to each other, Hermes thinks
+  Reflexes for Hermes: two levels handing work to each other, Hermes thinks
   and a habit acts, a small fixed graph that does a known task in about a
   second and always comes back done, or handed back with what is left. It acts
   alone after practising and your yes, except a read-only habit you asked for.
@@ -42,10 +42,16 @@ config_schema:
     description: The language of the plugin's own lines (/habits, hermes habits list, the news of a habit).
   backend:
     type: str
-    enum: [auto, jev, llm]
+    enum: [auto, jev, clef, llm]
     default: auto
     label: Decision backend
-    description: The fast decision model that answers a habit's questions. auto asks Jev first when its key is set, then your Hermes model.
+    description: The fast decision model that answers a habit's questions. auto asks Jev when its key is set, else Clef when its token and account are set, then your Hermes model. A name asks that one first.
+  clef_model:
+    type: str
+    enum: [clef-flash, clef]
+    default: clef-flash
+    label: Clef model
+    description: Which Clef model answers when Clef is used. clef-flash is the fast one.
   min_confidence:
     type: float
     default: 0.8
@@ -88,3 +94,13 @@ config_schema:
     env: TYPESAFE_API_KEY
     label: TypeSafe (Jev) API key
     description: Optional. Fast decisions with Jev.
+  cloudflare_api_token:
+    type: secret
+    env: CLOUDFLARE_API_TOKEN
+    label: Cloudflare API token
+    description: Optional. Fast decisions with Clef on Cloudflare Workers AI.
+  cloudflare_account_id:
+    type: secret
+    env: CLOUDFLARE_ACCOUNT_ID
+    label: Cloudflare account ID
+    description: Optional. Fast decisions with Clef on Cloudflare Workers AI.

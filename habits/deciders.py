@@ -1,8 +1,8 @@
 """Fast decision models (S1): typed questions in, one answer and a confidence out.
 
 Every backend takes a state (plain text) and a list of questions, and returns
-one Answer per question, in order. Chain tries them in order: Jev, then the
-Hermes LLM, so habits work even without any key.
+one Answer per question, in order. Chain tries them in order: Jev (TypeSafe),
+Clef (Cloudflare), then the Hermes LLM, so habits work even without any key.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import json
 import math
+import re
 import time
 import urllib.error
 import urllib.request
@@ -60,6 +61,16 @@ def question(text: str, node: dict) -> Question:
         if isinstance(value, list):
             return Question(text, kind, tuple(str(v) for v in value))
     raise ValueError("an ask node needs yes_no, choice or score")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 30x is refused: urllib would follow it to any host with the Authorization header, the bearer token in it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
+OPEN = urllib.request.build_opener(NoRedirect).open  # urlopen, without redirects
 
 
 def _post(url: str, key: str, body: dict, timeout: float, opener) -> dict:
@@ -124,9 +135,10 @@ class Jev:
 
     name = "jev"
     url = "https://api.typesafe.ai/v1/systemone"
+    model = "jev-latest"
     per_call = 50
 
-    def __init__(self, key: str, timeout: float = TIMEOUT, opener=urllib.request.urlopen):
+    def __init__(self, key: str, timeout: float = TIMEOUT, opener=OPEN):
         self.key, self.timeout, self.opener = key, timeout, opener
 
     def ask(self, state: str, questions: list[Question], seconds: float | None = None) -> list[Answer]:
@@ -138,13 +150,17 @@ class Jev:
             timeout = min(self.timeout, end - time.monotonic())
             if timeout <= MIN_CALL:
                 raise OutOfTime(f"out of time after {done} of {len(chunks)} calls")
-            body = {"model": "jev-latest", "state": state or "(empty)",
+            body = {"model": self.model, "state": state or "(empty)",
                     "questions": {f"q{i}": self._spec(q) for i, q in enumerate(chunk)}}
-            reply = _post(self.url, self.key, body, timeout, self.opener).get("answers")
+            reply = self._answers(_post(self.url, self.key, body, timeout, self.opener))
             if not isinstance(reply, dict):
                 raise DecisionError("no answers in the reply")
             answers += [self._answer(q, reply.get(f"q{i}")) for i, q in enumerate(chunk)]
         return answers
+
+    def _answers(self, data: dict):
+        """The answers of a reply, by question id (None when there are none)."""
+        return data.get("answers")
 
     @staticmethod
     def _spec(q: Question) -> dict:
@@ -177,6 +193,68 @@ class Jev:
             raise DecisionError(f"answer {value!r} is not an option")
         return Answer(value, _confidence(confidence), self.name,
                       {k: round(_confidence(v), 3) for k, v in each.items() if k in q.options})
+
+
+ACCOUNT_ID = re.compile(r"[0-9a-f]{32}")  # a Cloudflare account id: it goes into a URL, so nothing else gets in
+CLEF_MODELS = ("clef-flash", "clef")
+CLEF_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}"
+CLEF_NEEDS = "set the settings cloudflare_api_token and cloudflare_account_id (or choose another backend)"
+ERROR_WORDS = 120  # characters of a Cloudflare error message that reach an error
+
+
+class Clef(Jev):
+    """Cloudflare Clef on Workers AI: the same System One API as Jev, at a Cloudflare URL with the account and the
+    model in it. The reply may come bare or in Cloudflare's {"result": …, "success": …} envelope."""
+
+    name = "clef"
+
+    def __init__(self, token: str, account: str, model: str = "clef-flash", timeout: float = TIMEOUT,
+                 opener=OPEN):
+        if not isinstance(token, str) or not token.strip():
+            raise DecisionError("Clef has no token: set the setting cloudflare_api_token")
+        if not isinstance(account, str) or not ACCOUNT_ID.fullmatch(account):
+            raise DecisionError("Clef needs a Cloudflare account id (32 characters, 0-9 and a-f): "
+                                "check the setting cloudflare_account_id")
+        if model not in CLEF_MODELS:
+            raise DecisionError(f"Clef knows the models {' and '.join(CLEF_MODELS)}: check the setting clef_model")
+        super().__init__(token, timeout, opener)
+        self.account = account
+        self.model, self.url = model, CLEF_URL.format(account=account, model=model)
+
+    def _answers(self, data: dict):
+        if data.get("success") is False:
+            errors = data.get("errors")
+            first = errors[0] if isinstance(errors, list) and errors else None
+            said = first.get("message") if isinstance(first, dict) else None
+            # The server's words reach the ledger and the model: one plain line, with neither secret in it.
+            said = " ".join("".join(c if c.isprintable() else " " for c in str(said)).split()) if said else ""
+            for secret in (self.key, self.account):
+                said = said.replace(secret, "…")
+            raise DecisionError(f"Cloudflare refused the request: {said[:ERROR_WORDS] or 'no reason given'}")
+        inner = data.get("result")
+        return super()._answers(inner if isinstance(inner, dict) and "answers" in inner else data)
+
+
+class Unavailable:
+    """A backend the user chose that cannot run: asked, it says why, in plain words (and the chain moves on)."""
+
+    def __init__(self, name: str, reason: str):
+        self.name, self.reason = name, reason
+
+    def ask(self, state: str, questions: list[Question], seconds: float | None = None) -> list[Answer]:
+        raise DecisionError(self.reason)
+
+
+def make_clef(token, account, model: str = "clef-flash") -> "Clef | Unavailable | None":
+    """A Clef from the settings: None when neither secret is set, Unavailable (with what is wrong) when it
+    cannot be made, never a secret's value in what it says."""
+    token, account = (v.strip() if isinstance(v, str) else v for v in (token, account))
+    if not token and not account:
+        return None
+    try:
+        return Clef(token, account, model)
+    except DecisionError as exc:
+        return Unavailable("clef", str(exc))
 
 
 class LLMDecider:
@@ -220,7 +298,8 @@ class LLMDecider:
             raise
         except Exception as exc:  # the model or its JSON; the chain names the backend
             if type(exc).__name__ == "AuxiliaryClientUnavailable":  # Hermes has no model to lend
-                raise DecisionError("no Hermes model is set up: run `hermes model`, or set TYPESAFE_API_KEY") from None
+                raise DecisionError("no Hermes model is set up: run `hermes model`, or set a decision-model key "
+                                    "(TYPESAFE_API_KEY, or CLOUDFLARE_API_TOKEN with CLOUDFLARE_ACCOUNT_ID)") from None
             if isinstance(exc, (KeyError, IndexError, TypeError, ValueError)):  # a reply not in the asked shape
                 raise DecisionError(f"the Hermes model's answer could not be read ({type(exc).__name__})") from None
             raise DecisionError(f"the Hermes model did not answer ({type(exc).__name__}): check `hermes model`") from None
@@ -302,14 +381,22 @@ class Chain:
         return self
 
 
-def build(backend: str = "auto", jev_key: str | None = None, complete=None) -> Chain:
-    """The chain for the `backend` setting: auto, jev or llm (any other name, such as an old openai, is auto)."""
+def build(backend: str = "auto", jev_key: str | None = None, complete=None,
+          clef: "Clef | Unavailable | None" = None) -> Chain:
+    """The chain for the `backend` setting: auto, jev, clef or llm (any other name, such as an old openai, is auto).
+    Auto asks Jev, then Clef, then the Hermes model, each only if it is set; a named backend goes first and the
+    others stay behind it. A Clef that cannot run is left out, unless it was named: then it stays first and says
+    what is missing when asked."""
     available = {
         "jev": Jev(jev_key) if jev_key else None,
+        "clef": clef,
         "llm": LLMDecider(complete) if complete else None,
     }
-    order = ["jev", "llm"]
+    if backend == "clef" and clef is None:
+        available["clef"] = Unavailable("clef", f"Clef is chosen but not set up: {CLEF_NEEDS}")
+    order = ["jev", "clef", "llm"]
     if backend in order:
         order.remove(backend)
         order.insert(0, backend)
-    return Chain([available[name] for name in order if available[name] is not None])
+    return Chain([available[name] for name in order if available[name] is not None
+                  and (name == backend or not isinstance(available[name], Unavailable))])

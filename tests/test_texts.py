@@ -21,6 +21,13 @@ def test_the_footers_in_french_and_english():
     assert en == "🔁 mac-agents-status · 19 s · 2 model calls · not right? /habits wrong"
 
 
+def test_the_footer_names_the_decision_model_that_answered():
+    assert texts.calls(0, "en", clef=True) == "0 model calls (+ Clef)"
+    assert texts.calls(0, "fr", clef=True) == "0 appel au modèle (+ Clef)"
+    assert texts.calls(0, "en", jev=True, clef=True) == "0 model calls (+ Jev, Clef)"
+    assert texts.calls(1, "en") == "1 model call"
+
+
 def test_the_french_lines_read_as_the_spec_writes_them():
     assert texts.say("retired", "fr", name="vault-watch-triage", why=texts.why("70% over the last 20", "fr")) == (
         "─ vault-watch-triage passe au repos : 14 justes sur 20. La relancer : /habits essai vault-watch-triage")

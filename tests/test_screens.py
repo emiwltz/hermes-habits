@@ -62,6 +62,7 @@ def test_no_hermes_model_is_said_once_with_what_to_do():
         said = str(exc)
     assert "llm: llm:" not in said and "AuxiliaryClientUnavailable" not in said
     assert "no Hermes model is set up" in said and "hermes model" in said
+    assert "TYPESAFE_API_KEY" in said and "CLOUDFLARE_API_TOKEN" in said and "CLOUDFLARE_ACCOUNT_ID" in said
 
     def broken(*_, **__):
         raise TimeoutError()

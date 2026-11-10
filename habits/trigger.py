@@ -367,9 +367,9 @@ class Trigger:
                 # What the answer cost, as it was: its llm nodes, and the model standing in for the S1 (the
                 # trigger's questions included).
                 used = result.counts.get("llm", 0) + result.backends.count("llm") + chain.used.count("llm")
-                jev = "jev" in result.backends or "jev" in chain.used
+                answered = {*result.backends, *chain.used}
                 reply = f"{message}\n\n" + texts.say("footer", lang, name=chosen.name, took=texts.seconds(result.ms, lang),
-                                                      calls=texts.calls(used, lang, jev))
+                                                      calls=texts.calls(used, lang, "jev" in answered, "clef" in answered))
                 return {"action": "block", "message": reply, "context": context}
             return {"context": context}
         context = (f'[Habits] The habit "{chosen.name}" started this request in {took} and handed it back.\n'

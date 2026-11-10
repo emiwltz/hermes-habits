@@ -113,20 +113,21 @@ were trigger misses (Hermes answered instead) and two runs over a 30 s limit: [d
   Run `hermes habits cleanup` before you uninstall: it removes every such job and script.
 - Runs and traces, tool outputs included, are stored unencrypted under `$HERMES_HOME/plugin-data/habits/`.
 - The model cannot change a state, approve itself, or edit a habit's files: only your chat or your terminal can.
-- One outside connection of its own: decision questions to TypeSafe, only when you set its key. No telemetry.
+- One outside connection of its own: decision questions to TypeSafe or Cloudflare, only with that model's key. No telemetry.
 
-## Install and the decision-model key
+## The decision model
 
-Installed as in [Try it](#try-it-in-2-minutes-without-a-key); then start a new Hermes session (restart the gateway
-if you use one). Requires Hermes 0.22.5 or later.
+Typed decisions (yes or no, a choice, a score) are the heart of a habit: a fast decision model answers each
+question at a gate, and the graph follows the answer. Two models today, chosen in the plugin's settings
+(`backend`): **Jev by TypeSafe** (`TYPESAFE_API_KEY`) and **Clef by Cloudflare** (`CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID`, model `clef_model`), set in Hermes's environment file or in the settings. `auto` asks Jev
+when its key is set, else Clef when its token and account are set, then your Hermes model. **Without any key**,
+everything runs (the examples, habits called by name, `habit_save`, dry runs, schedules) and reflexes without
+questions, like `hermes-health`, work fully; typed questions go to your Hermes model, slower, and those runs do not
+count toward graduation: it rates its own confidence.
 
-**Without a key**, everything runs: the examples, habits called by name, `habit_save`, dry runs, schedules.
-Reflexes without questions (like `hermes-health`) work fully; typed questions go to your Hermes model, slower.
-
-**With a key**, the questions go to Jev by TypeSafe, a fast decision model.
-Set `TYPESAFE_API_KEY` in Hermes's environment file or in the plugin's settings.
-A habit that asks questions graduates from learning only with the key: your Hermes model rates its own confidence,
-so its runs do not count.
+Install as in [Try it](#try-it-in-2-minutes-without-a-key), then start a new Hermes session (restart the gateway
+too). Requires Hermes 0.22.5 or later.
 
 ## One short habit
 
@@ -197,13 +198,21 @@ the graph, tests it with `habit_run {dry: true}` (writes only planned), then sav
 ## Limits
 
 - **One user, one decision model.** The tasks and phrases come from one person's sessions; every measured
-  decision ran on Jev. With your Hermes model deciding, the numbers do not apply.
+  decision ran on Jev. Clef follows Cloudflare's published schema and is covered by tests, not yet measured live.
+  With your Hermes model deciding, the numbers do not apply.
 - **Small samples.** Many cases ran 1 to 3 times; some speeds rest on 1 or 2 Hermes-alone baselines.
 - **Two sets of numbers, two dates.** Waves (7-9 Nov, dev builds): 80.3 s alone, from 2 runs. Campaign (10 Nov, v0.1): about 40 s, from 6.
 - **The campaign is small:** one install, one cheap model, each request once per pass, a judge written by the
   authors. Hermes alone took 11 to 70 s on one question, so ratios move.
 - **New wordings are often missed:** 14 of 20 unseen requests recognised; the rest went back to Hermes.
 - **Platforms.** Measured on a Mac, plus one watch on a Raspberry Pi; other Linux is covered by CI tests only.
+
+## Roadmap
+
+- **A local decision model.** Download a small open-weights model for typed decisions and answer on your own
+  machine: no key, nothing leaves it.
+- **More decision providers**, chosen in the same `backend` setting.
+- **`check-links` follows a page's internal links** as well as its full addresses.
 
 ## Links
 
