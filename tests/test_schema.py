@@ -101,7 +101,7 @@ def test_valid_habits_pass(habit):
 
 def test_spec_example_is_the_tidy_example_and_valid():
     example = spec_example()
-    assert example == graph.load((ROOT / "examples" / "tidy-downloads" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    assert example == graph.load((ROOT / "examples" / "tidy-downloads" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
     assert graph.validate(example) == []
     assert list(validator().iter_errors(example)) == []
 

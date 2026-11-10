@@ -27,7 +27,7 @@ def cli(habits, verb, **args):
 
 
 def web_habit(tmp_path):
-    path = tmp_path / "news" / "HABIT.yaml"
+    path = tmp_path / "news" / "reflex.yml"
     path.parent.mkdir()
     path.write_text("spec: habits/0.1\nstart: read\nfallback: help\nnodes:\n"
                     "  read: {do: web_extract, args: {urls: ['https://example.com/news']}, as: page, next: done}\n"
@@ -124,7 +124,7 @@ def test_a_dry_run_and_a_hand_back_say_so_before_the_habits_words(setup, tmp_pat
     ctx, habits = setup
     code, text, _ = cli_run(habits, capsys, "sort-downloads-by-type", as_json=False)
     assert text.splitlines()[0] == "Dry run (nothing written): Downloads sorted."
-    path = tmp_path / "few" / "HABIT.yaml"
+    path = tmp_path / "few" / "reflex.yml"
     path.parent.mkdir()
     path.write_text("spec: habits/0.1\ninputs: [most]\nstart: many\nfallback: help\nnodes:\n"
                     "  many: {check: {greater: [most, 2]}, then: {yes: done, no: help}}\n"
@@ -241,7 +241,7 @@ def test_the_terminal_says_scheduled_not_watch(setup):
 
 
 def test_the_first_example_speaks_the_readme_words():
-    text = (ROOT / "examples" / "tidy-downloads" / "assets" / "HABIT.yaml").read_text(encoding="utf-8")
+    text = (ROOT / "examples" / "tidy-downloads" / "assets" / "reflex.yml").read_text(encoding="utf-8")
     assert not re.search(r"\b(shadow|S1)\b", text)
 
 

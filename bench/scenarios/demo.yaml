@@ -5,7 +5,7 @@
 
 - id: tidy
   task: tidy-folder
-  habit: "{repo}/examples/tidy-downloads/assets/HABIT.yaml"
+  habit: "{repo}/examples/tidy-downloads/assets/reflex.yml"
   scratch: /tmp/habits-bench/tidy
   rewrite:                                  # the copy the bench runs: the real folders become scratch folders
     "~/Downloads": "{scratch}/inbox"
@@ -46,7 +46,7 @@
 
 - id: tidy-not-now                          # a negative case: the message names the task and does not ask for it
   task: tidy-folder
-  habit: "{repo}/examples/tidy-downloads/assets/HABIT.yaml"
+  habit: "{repo}/examples/tidy-downloads/assets/reflex.yml"
   scratch: /tmp/habits-bench/tidy-not-now
   rewrite: {"~/Downloads": "{scratch}/inbox", "~/.Trash/": "{scratch}/trash/"}
   message: "Do not tidy {scratch}/inbox now, I will do it tomorrow."

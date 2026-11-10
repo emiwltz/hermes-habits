@@ -4,7 +4,7 @@ What the Habits plugin does on your machine, what leaves it, and what it refuses
 
 ## 1. What it does on your machine
 
-A habit is a reflex: a skill with a fast path. Its graph (`assets/HABIT.yaml`) runs Hermes tools, asks short typed questions to a decision model, and calls your Hermes model only where the graph says so. A habit starts through one of three doors: called (`habit_run` by name), message (a hook reads your message before the model answers), or schedule (a Hermes cron job). It is learning (it runs dry next to the model and is compared), automatic (it acts), or resting. Each run ends done, or handed back to the model with the reason. The plugin keeps a SQLite ledger and some HTML pages in its own data folder. It no longer has a learning loop of its own: a new habit comes only through `habit_save`.
+A habit is a task Hermes has learned; its reflex is the part that runs: a skill with a fast path. Its graph (`assets/reflex.yml`) runs Hermes tools, asks short typed questions to a decision model, and calls your Hermes model only where the graph says so. A habit starts through one of three doors: called (`habit_run` by name), message (a hook reads your message before the model answers), or schedule (a Hermes cron job). It is learning (it runs dry next to the model and is compared), automatic (it acts), or resting. Each run ends done, or handed back to the model with the reason. The plugin keeps a SQLite ledger and some HTML pages in its own data folder. It no longer has a learning loop of its own: a new habit comes only through `habit_save`.
 
 ## 2. What leaves the machine
 
@@ -39,7 +39,7 @@ Any other network access is made by the Hermes tools a habit calls (`web_extract
 - **Your yes.** With `promote: ask` (the default), a ready habit waits for `/habits yes` in a chat or `hermes habits promote` in your terminal. With `promote: auto`, the thresholds alone make it automatic.
 - **Two exceptions.** A request habit whose steps all count as reads (including `curl` or `ssh` steps marked `read: true`) starts automatic, with spot checks, when the decision model judges at `min_confidence` that your last message asked for a habit. A one-off habit (no message or schedule door) runs live when called by name; it has no learning phase. So do the shipped examples, which have no learning phase either.
 - **Drafts.** A draft graph given to `habit_run` (scenario or file) runs live at once, like a one-off. Its steps meet the same refusals (section 3) and other plugins' guards, but no learning phase and no yes.
-- **Version = fingerprint.** The version is a fingerprint of the graph as parsed, the other files in `assets/`, the habits it uses and the skill's description. A change to any of those is a new version: it starts learning again with fresh scores, and a yes for an older version does not carry over. Editing the body of `SKILL.md`, or a comment in `HABIT.yaml`, keeps the version.
+- **Version = fingerprint.** The version is a fingerprint of the graph as parsed, the other files in `assets/`, the habits it uses and the skill's description. A change to any of those is a new version: it starts learning again with fresh scores, and a yes for an older version does not carry over. Editing the body of `SKILL.md`, or a comment in `reflex.yml`, keeps the version.
 - **Files the plugin did not save.** A habit copied, synced or cloned into your skills runs dry when called and when its message comes, until it is automatic. Its description stays out of the prompt section until then, but its name, the end message of a dry run and Hermes's skill index can reach the model. Under `promote: auto` the thresholds can still make it automatic.
 - **Going back.** An automatic habit rests after agreement falls under 75 % over the last 20 runs, 3 errors in a row, or 2 low spot checks in a row. Once you said yes to a habit, or it agreed 3 times, a spot check only asks whether its answer is wrong, not whether it says as much as the model; the first 3 checks of a habit that became automatic without your yes compare it with the model's answer. A request habit that hands back 3 times in a row goes back to learning. `/habits wrong`, `rest`, `undo` and `pause` are yours.
 
@@ -49,10 +49,10 @@ A `pre_tool_call` hook (the guard) blocks the model's own calls that would:
 
 - **change a state**: `hermes habits promote|undo|resume|reset|retire`, `hermes config set|unset` of the plugin's settings, Hermes's plugin-command code or `/habits` with a state word passed to `hermes`;
 - **approve itself**: only your chat or your terminal moves a state, and the ledger records who did;
-- **edit a habit's files by hand**: `SKILL.md`, `assets/HABIT.yaml`, `assets/LEARNED.md` change through `habit_save` only, whether the write comes from `write_file`, `patch`, `skill_manage`, a terminal line or code; a habit is never deleted or merged through `skill_manage`;
+- **edit a habit's files by hand**: `SKILL.md`, `assets/reflex.yml`, `assets/LEARNED.md` change through `habit_save` only, whether the write comes from `write_file`, `patch`, `skill_manage`, a terminal line or code; a habit is never deleted or merged through `skill_manage`;
 - **write the ledger**: any write that names `habits.db`, or both `plugin-data` and `habits`.
 
-The guard fails closed, while any habit exists, on a line that names a habit's file (`SKILL.md`, `HABIT.yaml`, `LEARNED.md`) but whose target it cannot place: a relative path, a variable, a glob, or code that writes by itself. A line that names no such file is not refused, so `cp x "$DEST"` passes, and so does a terminal `rm -r` or `mv` of a habit's whole folder. The honest limit: this is a text check, and a model with a shell cannot be fully contained. A path built so that no text names it is not seen. So the ledger trusts an automatic state only when its own history records the move, and anything else goes back to learning.
+The guard fails closed, while any habit exists, on a line that names a habit's file (`SKILL.md`, `reflex.yml`, `LEARNED.md`) but whose target it cannot place: a relative path, a variable, a glob, or code that writes by itself. A line that names no such file is not refused, so `cp x "$DEST"` passes, and so does a terminal `rm -r` or `mv` of a habit's whole folder. The honest limit: this is a text check, and a model with a shell cannot be fully contained. A path built so that no text names it is not seen. So the ledger trusts an automatic state only when its own history records the move, and anything else goes back to learning.
 
 ## 6. Scheduled habits
 
@@ -68,7 +68,7 @@ Everything is unencrypted, under `$HERMES_HOME/plugin-data/habits/`. No key of t
 
 - `habits.db` (SQLite). `runs`: each run, its status and scores, and a trace of 64,000 characters of JSON at most. It holds each step's output cut to 400 characters, the final message (8,000 at most), the planned writes with their arguments, and the values the last node names, whole. `runs` also has `said`, the request the run answered (300 characters, cleared once it is 14 days old, at the next recorded run). `habits`, `history`, `news`: states, who changed them, news still to tell. `memory`: the last value of each `check: changed` node. `calls`: the model's tool calls in a learning or spot-checked turn, with full arguments, deleted at the comparison; older ones are cleared at the next comparison. `failures`: a watch's failed checks in a row.
 - `pages/`: HTML diagram pages with the last run's trace (the same traces, up to 30 one-off pages). `locks/`: one lock file per habit. `paused` and `off`: switch files.
-- Your habits themselves are skills (`SKILL.md`, `assets/HABIT.yaml`) in your skills folder.
+- Your habits themselves are skills (`SKILL.md`, `assets/reflex.yml`) in your skills folder.
 
 To delete everything: `hermes habits cleanup`, remove the plugin, delete `$HERMES_HOME/plugin-data/habits/`, then delete the habit skills you no longer want.
 

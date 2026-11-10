@@ -64,6 +64,23 @@ nodes:
 """
 
 
+def legacy(value):
+    """A guard case with its file named as v0.1 wrote it: assets/HABIT.yaml, where the case says assets/reflex.yml."""
+    if isinstance(value, str):
+        return value.replace("reflex.yml", "HABIT.yaml")
+    if isinstance(value, dict):
+        return {key: legacy(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(legacy(item) for item in value)
+    return value
+
+
+def both(cases):
+    """The cases, then the same cases about the legacy file name (those that name the file only)."""
+    cases = list(cases)
+    return cases + [legacy(case) for case in cases if legacy(case) != case]
+
+
 def small(**nodes):
     """A valid three-node habit, with nodes added or replaced."""
     habit = {

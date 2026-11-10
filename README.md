@@ -6,10 +6,20 @@ Hermes thinks it through once; after that, it's a reflex.
 Habits splits an agent's work into two levels that hand work to each other. Hermes thinks: slow, general, costly.
 A habit acts: fast, narrow, nearly free, a small fixed graph that runs without the model. A habit can step in
 before the model thinks, in the middle of a task or while Hermes sleeps, and it always comes back: done, or
-handed back with what is left.
+handed back with what is left. Two words: a **habit** is what Hermes has learned, with its state (learning,
+automatic, resting); its **reflex** is the part that runs, a small graph of gates. Its gates are tools, rules and
+typed decisions (yes or no, a choice, a score) answered by a small, fast decision model.
+
+A habit can be small or large. The smallest one shipped, `watch-hermes-releases`, is one command and two rules:
+look for a new release, wake Hermes only if there is one. The largest, `hermes-health`, is six reads and six rules.
+And a habit can act, not only read: `tidy-downloads` asks a typed question about each file, then moves it, once you
+have said yes. Small or large, it is the same thing: a graph you can read, that Hermes writes, checks, repairs and
+rests.
 
 Ask Hermes "Is Hermes OK?". Alone, it answers in about **40 s**. As an automatic reflex, the same check takes
-about **2.5 s**, with **no model call**, and it still answers when the model is the broken part.
+about **2.5 s**, with **no model call**, and it still answers when the model is the broken part. In one pair of
+real chats timed end to end, start-up included: 32.8 s and 8 model calls alone, 3.6 s and no call to Hermes's model
+with the habit.
 
 *Measured on v0.1 in real chats: 6 turns alone (11 to 70 s), 15 as a reflex (15 of 15 without the model). One
 user's Mac, one cheap model: run the three commands below to check for yourself. Method and caveats:
@@ -131,7 +141,7 @@ too). Requires Hermes 0.22.5 or later.
 
 ## One short habit
 
-A reflex is a skill folder: `SKILL.md` (the slow way) and `assets/HABIT.yaml` (the fast way).
+A habit is a skill folder: `SKILL.md` (the slow way) and its reflex, `assets/reflex.yml` (the fast way).
 This is `examples/check-links`, comments removed. A broken link is what it is there to find: it ends done with
 each link marked ok, blocked (the site refused a script) or broken, and hands back only when the page did not load
 or the check stopped:
@@ -213,6 +223,8 @@ the graph, tests it with `habit_run {dry: true}` (writes only planned), then sav
   machine: no key, nothing leaves it.
 - **More decision providers**, chosen in the same `backend` setting.
 - **`check-links` follows a page's internal links** as well as its full addresses.
+- **Habits in place of bare tools.** A habit that reads a note and acts on it, where today the model calls `read`
+  and then decides: gates and commands chosen for the environment.
 
 ## Links
 

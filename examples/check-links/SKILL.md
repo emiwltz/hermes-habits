@@ -8,7 +8,7 @@ description: "Check the links of a web page and report broken ones"
 Input: `page`, the URL of the page. Run it by name:
 `habit_run {name: "check-links", inputs: {page: "https://…"}}`.
 
-The slow way, with the same commands as `assets/HABIT.yaml`:
+The slow way, with the same commands as `assets/reflex.yml`:
 
 1. List the absolute links of the page, 30 at most:
    `curl -sL --max-time 20 '<page>' | tr '\n\t' '  ' | grep -oiE '<a [^>]*href="?https?://[^" >]+' | sed -E 's/^.*[hH][rR][eE][fF]="?(https?:)/\1/' | sort -u | head -n 30`

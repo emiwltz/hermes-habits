@@ -66,9 +66,11 @@ SSH_VALUE = set("bceilmopBDEFIJLOPQRSwW")  # OpenSSH options that take a value (
 DOWNLOADS = re.compile(r"""(?:^|[\s/'"=:({\[])downloads(?:/|$|[\s'"):;&|*,.}\]])""", re.I | re.M)
 # What no model turn may find in the roots' base, to REACH folders deep (its own root included): an old bench's copy
 # folder, a proof script, a scenario file (by the names of the files loaded), and a copy of a case's
-# habit (an assets/HABIT.yaml in a folder named like it). Other habits there are examples, as the plugin ships.
+# habit (an assets/reflex.yml, or HABIT.yaml, in a folder named like it). Other habits there are examples, as the
+# plugin ships.
 GUARDED = {".bench", "prove.py", "check_regex.py", "cases.tsv"}
 REACH = 6
+GRAPH_FILES = ("reflex.yml", "HABIT.yaml")  # a habit's graph file, by its name and by the one v0.1 wrote
 FENCE = "Read nothing outside {scratch}; your test files go in {scratch}."  # a turn whose setup built it
 HIDDEN = "HABITS_BENCH_HIDDEN"  # set once the bench runs under a command line that names no file
 NEAR = 0.1  # a trap's trigger answer held this close under its gate is flagged
@@ -97,14 +99,14 @@ def roots_base() -> Path:
 
 def within_reach(base: Path, names: set, habits=frozenset(), depth: int = REACH) -> list[str]:
     """Every file or folder under base, depth folders deep at most, whose name is one of names, and every
-    <habit>/assets/HABIT.yaml of one of habits (links not followed): what a model turn would find by walking up from
+    <habit>/assets/reflex.yml (or HABIT.yaml) of one of habits (links not followed): what a model turn would find by walking up from
     its root and looking around. 20 at most."""
     found, top = [], len(base.parts)
     for folder, dirs, files in os.walk(base):
         here = Path(folder)
         found += [str(here / n) for n in sorted(dirs + files) if n in names]
-        if "HABIT.yaml" in files and here.name == "assets" and here.parent.name in habits:
-            found.append(str(here / "HABIT.yaml"))
+        if here.name == "assets" and here.parent.name in habits:
+            found += [str(here / n) for n in GRAPH_FILES if n in files]
         dirs[:] = [] if len(here.parts) - top >= depth else [d for d in dirs if d not in names]
         if len(found) >= 20:
             break
@@ -451,7 +453,7 @@ def copy_path(case) -> Path:
     (a model turn there would read the answer)."""
     if case.get("_work") is None:
         raise BenchError(f"{case['id']}: it rewrites its habit, and no work folder takes the copy")
-    return case["_work"] / "copies" / slug(case["id"]) / case["_source"].parent.parent.name / "assets" / "HABIT.yaml"
+    return case["_work"] / "copies" / slug(case["id"]) / case["_source"].parent.parent.name / "assets" / case["_source"].name
 
 
 def habit_of(case, find=None) -> dict:
@@ -793,7 +795,7 @@ def summary(records: list[dict]) -> list[dict]:
 
 
 def habit_name(habit) -> str:
-    """A run record's habit by its folder's name (…/<name>/assets/HABIT.yaml), else as the record names it."""
+    """A run record's habit by its folder's name (…/<name>/assets/reflex.yml), else as the record names it."""
     path = Path(str(habit))
     return path.parent.parent.name if path.parent.name == "assets" else str(habit)
 
@@ -1718,13 +1720,13 @@ class Bench:
 
     def folders(self, name: str | None = None) -> set:
         """The folders under skills/ with that name, or (no name) every skill's folder, habit or not, hidden ones
-        too: a SKILL.md's folder, and a HABIT.yaml's skill folder."""
+        too: a SKILL.md's folder, and a reflex.yml's (or HABIT.yaml's) skill folder."""
         skills = self.home / "skills"
         if not skills.is_dir():
             return set()
         return ({p.resolve() for p in skills.rglob(name)} if name else
                 {p.parent.resolve() for p in skills.rglob("SKILL.md")}
-                | {p.parent.parent.resolve() for p in skills.rglob("HABIT.yaml") if p.parent.name == "assets"})
+                | {p.parent.parent.resolve() for n in GRAPH_FILES for p in skills.rglob(n) if p.parent.name == "assets"})
 
     def taken(self, name: str) -> str:
         """Why a create run may not make a habit of this name, or "": a habit, a skill, a folder (hidden ones too)
@@ -1850,7 +1852,9 @@ class Bench:
                 with contextlib.suppress(UnicodeDecodeError):
                     data = rewritten(rewritten(data.decode("utf-8"), moved), case.get("rewrite") or {})
                 files[path.relative_to(kept)] = data
-        text = files.get(Path("assets/HABIT.yaml"), "")
+        graph_file = next((Path("assets") / n for n in GRAPH_FILES if Path("assets") / n in files),
+                          Path("assets") / GRAPH_FILES[0])
+        text = files.get(graph_file, "")
         try:
             subs = [sub for _, sub in subhabits(case["id"], text, self.find)]
         except BenchError as exc:
@@ -1868,12 +1872,12 @@ class Bench:
             if code != 0:
                 return {"works": None, "works_why": [f"create.before failed (exit {code}): {tail(err or said)}"]}
             case["memory"] = str(copy.parent / "memory.json")  # the bench's own, new: no reference yet
-            code, out, stderr, _ = self.habit_run(case, str(copy / "assets" / "HABIT.yaml"), env)
+            code, out, stderr, _ = self.habit_run(case, str(copy / graph_file), env)
             first = {"works_before": (out or {}).get("status")}  # what the check before the change gave
         why = self.setup(case)
         if why:
             return {"works": None, "works_why": [why], **first}
-        code, out, stderr, _ = self.habit_run(case, str(copy / "assets" / "HABIT.yaml"), env)
+        code, out, stderr, _ = self.habit_run(case, str(copy / graph_file), env)
         if out is None:
             return {"works": False, "works_why": [f"no JSON from hermes habits run (exit {code}): {tail(stderr)}"],
                     **first}

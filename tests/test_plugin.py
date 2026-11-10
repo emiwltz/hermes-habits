@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from habits import catalog, cockpit, deciders, display, graph, guard, plugin, replay, runner, texts, tools, trigger, watch
-from test_graph import BROKEN, DEMO, small
+from test_graph import BROKEN, DEMO, both, small
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ["Setup-Figma-125.dmg", "photo plage.jpg", "invoice.pdf", "Slack-4.41.dmg"]
@@ -77,8 +77,8 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([deciders.Fake(answer)]))
     skill = tmp_path / "skills" / "sort-downloads-by-type"
     (skill / "assets").mkdir(parents=True)
-    (skill / "assets" / "HABIT.yaml").write_text(DEMO)
-    saved = [catalog.Habit("sort-downloads-by-type", "Sort the downloads", skill / "assets" / "HABIT.yaml")]
+    (skill / "assets" / "reflex.yml").write_text(DEMO)
+    saved = [catalog.Habit("sort-downloads-by-type", "Sort the downloads", skill / "assets" / "reflex.yml")]
     monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(h.path, h.name, h.description, "skill") for h in saved])
     monkeypatch.setattr(plugin.threading, "Thread", Inline)
     habits.ledger.adopt(saved[0].name, catalog.skills()[0].version, "asked")  # saved with habit_save, as the user asked
@@ -283,8 +283,8 @@ def test_a_dry_run_attaches_nothing_and_says_what_it_would_send(setup, monkeypat
     ctx, habits = setup
     folder = notes.parent / "skills" / "my-note" / "assets"
     folder.mkdir(parents=True)
-    (folder / "HABIT.yaml").write_text(yaml.safe_dump(note_habit(notes)))
-    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(folder / "HABIT.yaml", "my-note", "The note", "skill")])
+    (folder / "reflex.yml").write_text(yaml.safe_dump(note_habit(notes)))
+    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(folder / "reflex.yml", "my-note", "The note", "skill")])
     habits.ledger.adopt("my-note", catalog.find("my-note").version, "asked")
     plan = str((notes / "plan.md").resolve())
     monkeypatch.setattr(ctx, "dispatch_tool", lambda name, args: json.dumps({"output": plan, "exit_code": 0}))
@@ -577,14 +577,14 @@ def test_a_draft_in_hermess_scratch_folder_is_read(setup, tmp_path, monkeypatch)
     home = tmp_path / "home"
     scratch = home / ".hermes" / "cache" / "scratch" / "bench-agents-stuck"
     scratch.mkdir(parents=True)
-    (scratch / "HABIT.yaml").write_text(DEMO)
+    (scratch / "reflex.yml").write_text(DEMO)
     (scratch / "draft.json").write_text(json.dumps(graph.load(DEMO)))
     (home / ".hermes" / "config.yaml").write_text("model:\n  api_key: FAKE-CONFIG-KEY-0123456789\n")
     (home / ".hermes" / "cache" / "other.yaml").write_text(DEMO)
     (scratch / "credentials.json").write_text('{"token": "FAKE-TOKEN-0123456789"}')
     (scratch / "link.yaml").symlink_to(home / ".hermes" / "config.yaml")
     monkeypatch.setenv("HOME", str(home))
-    for file in ("~/.hermes/cache/scratch/bench-agents-stuck/HABIT.yaml", f"{scratch}/draft.json"):
+    for file in ("~/.hermes/cache/scratch/bench-agents-stuck/reflex.yml", f"{scratch}/draft.json"):
         assert json.loads(habits.tool_run({"file": file}))["status"] == "end", file
     for file in ("~/.hermes/config.yaml", "~/.hermes/cache/other.yaml", f"{scratch}/credentials.json", f"{scratch}/link.yaml"):
         reply = json.loads(habits.tool_run({"file": file}))
@@ -594,13 +594,16 @@ def test_a_draft_in_hermess_scratch_folder_is_read(setup, tmp_path, monkeypatch)
 def test_a_saved_habits_own_file_and_a_draft_named_after_tokens_still_run(setup, tmp_path, monkeypatch):
     _, habits = setup
     home = tmp_path / "home"
-    saved = home / ".hermes" / "skills" / "sort" / "assets" / "HABIT.yaml"
+    saved = home / ".hermes" / "skills" / "sort" / "assets" / "reflex.yml"
     saved.parent.mkdir(parents=True)
     saved.write_text(DEMO)
+    (home / ".hermes" / "skills" / "old" / "assets").mkdir(parents=True)  # saved by v0.1
+    (home / ".hermes" / "skills" / "old" / "assets" / "HABIT.yaml").write_text(DEMO)
     (home / "scratch").mkdir()
     (home / "scratch" / "token-refresh-watch.yaml").write_text(DEMO)
     monkeypatch.setenv("HOME", str(home))
-    for file in ("~/.hermes/skills/sort/assets/HABIT.yaml", "~/scratch/token-refresh-watch.yaml"):
+    for file in ("~/.hermes/skills/sort/assets/reflex.yml", "~/.hermes/skills/old/assets/HABIT.yaml",
+                 "~/scratch/token-refresh-watch.yaml"):
         assert json.loads(habits.tool_run({"file": file}))["status"] == "end", file
     no_spec = home / "scratch" / "draft.yaml"
     no_spec.write_text(DEMO.replace("spec: habits/0.1", "spec: habits/9"))
@@ -654,6 +657,29 @@ def test_commands_hermes_would_ask_about_never_run(setup):
     assert ctx.calls == []
 
 
+def test_a_habit_saved_by_v01_under_its_old_file_name_is_listed_once_and_runs(tmp_path, monkeypatch):
+    ctx = FakeCtx({"promote": "auto"})
+    habits = plugin.Habits(ctx, home=tmp_path / "plugin-data" / "habits")
+    root = tmp_path / "skills"
+    (root / "old-timer" / "assets").mkdir(parents=True)
+    (root / "old-timer" / "SKILL.md").write_text("---\nname: old-timer\ndescription: Sort the downloads\n---\n\n1. Sort\n")
+    (root / "old-timer" / "assets" / "HABIT.yaml").write_text(
+        "spec: habits/0.1\nstart: scan\nfallback: stuck\nnodes:\n  scan: {do: terminal, read: true, args: {command: "
+        "\"ls /Applications\"}, next: done}\n  done: {end: Done.}\n  stuck: {wake: Stuck.}\n")
+    module = types.ModuleType("tools.skills_tool")
+    module.find_all_skills = lambda: [{"name": "old-timer", "description": "Sort the downloads", "category": None}]
+    module.skill_search_dirs = lambda: ([("local", root)], root)
+    monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
+    monkeypatch.setitem(sys.modules, "tools.skills_tool", module)
+    monkeypatch.setattr(catalog, "_cache", {})
+    found = [h for h in catalog.all_habits() if h.name == "old-timer"]
+    assert [(h.path.name, h.valid) for h in found] == [("HABIT.yaml", True)]
+    assert list(catalog.folders()) == ["old-timer"]
+    reply = json.loads(habits.tool_run({"name": "old-timer"}))
+    assert reply["status"] == "end" and ctx.calls[-1][1]["command"] == "ls /Applications"
+    assert json.loads(habits.tool_run({"file": str(root / "old-timer" / "assets" / "HABIT.yaml")}))["status"] == "end"
+
+
 def test_save_checks_name_description_and_graph(setup):
     _, habits = setup
     bad = json.loads(habits.tool_save({"name": "Ranger !", "description": "x" * 61, "procedure": "", "scenario": BROKEN}))
@@ -664,7 +690,7 @@ def test_save_checks_name_description_and_graph(setup):
 
 def test_save_never_turns_a_skill_of_the_user_into_a_habit(setup, tmp_path, monkeypatch):
     # Skill_manage create failed on a plain skill's name, the retry with edit rewrote that
-    # skill's SKILL.md and put a HABIT.yaml in its folder. A half-done save of a habit is still finished.
+    # skill's SKILL.md and put a reflex.yml in its folder. A half-done save of a habit is still finished.
     ctx, habits = setup
     root = tmp_path / "hermes-skills"
     plain = root / "notes" / "probe-x"
@@ -673,7 +699,7 @@ def test_save_never_turns_a_skill_of_the_user_into_a_habit(setup, tmp_path, monk
     half = root / "sort-dl"
     half.mkdir()
     (half / "SKILL.md").write_text("---\nname: sort-dl\ndescription: Sort\n---\n\n1. Sort\n\n## Habit\n\n"
-                                   "The Habits plugin runs `assets/HABIT.yaml` on its own when a request matches.\n")
+                                   "The Habits plugin runs `assets/reflex.yml` on its own when a request matches.\n")
     module = types.ModuleType("tools.skills_tool")
     module.skill_search_dirs = lambda: ([("local", root)], root)
     monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
@@ -707,6 +733,50 @@ def test_save_writes_the_skill_through_skill_manage(setup):
     assert reply["status"] == "saved" and reply["state"] == "learning"
     actions = [args["action"] for name, args in ctx.calls if name == "skill_manage"]
     assert actions == ["edit", "write_file"]  # the skill exists: procedure and graph are both rewritten
+
+
+def writing(ctx, monkeypatch, root):
+    """A skill_manage that writes what habit_save asks, into root, as Hermes does: create and edit a SKILL.md, write_file
+    a file of the skill."""
+    def dispatch(name, args):
+        ctx.calls.append((name, args))
+        folder = root / args["name"]
+        if args["action"] in ("create", "edit"):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "SKILL.md").write_text(args["content"])
+        else:
+            (folder / args["file_path"]).parent.mkdir(parents=True, exist_ok=True)
+            (folder / args["file_path"]).write_text(args["file_content"])
+        return json.dumps({"success": True})
+    monkeypatch.setattr(ctx, "dispatch_tool", dispatch)
+
+
+def test_habit_save_writes_a_new_habit_as_reflex_yml(setup, monkeypatch, tmp_path):
+    ctx, habits = setup
+    writing(ctx, monkeypatch, tmp_path / "skills")
+    habits.tool_save({"name": "fresh-sort", "description": "Sort the downloads", "procedure": "1. Sort", "scenario": DEMO})
+    steps = [args for name, args in ctx.calls if name == "skill_manage"]
+    assert [(s["action"], s.get("file_path")) for s in steps] == [("create", None), ("write_file", "assets/reflex.yml")]
+    assert "`assets/reflex.yml`" in steps[0]["content"] and "HABIT.yaml" not in steps[0]["content"]
+    assert sorted(p.name for p in (tmp_path / "skills" / "fresh-sort" / "assets").iterdir()) == ["reflex.yml"]
+
+
+def test_habit_save_on_a_habit_saved_by_v01_rewrites_its_old_file_and_adds_none(setup, monkeypatch, tmp_path):
+    # No migration: the habit keeps assets/HABIT.yaml, so a save never leaves two graphs in one folder.
+    ctx, habits = setup
+    assets = tmp_path / "skills" / "sort-downloads-by-type" / "assets"
+    (assets / "reflex.yml").rename(assets / "HABIT.yaml")
+    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(
+        assets / "HABIT.yaml", "sort-downloads-by-type", "Sort the downloads", "skill")])
+    writing(ctx, monkeypatch, tmp_path / "skills")
+    wider = DEMO.replace("Downloads sorted.", "Sorted.")
+    reply = json.loads(habits.tool_save({"name": "sort-downloads-by-type", "description": "Sort the downloads",
+                                         "procedure": "1. List\n2. Sort", "scenario": wider}))
+    steps = [args for name, args in ctx.calls if name == "skill_manage"]
+    assert [(s["action"], s.get("file_path")) for s in steps] == [("edit", None), ("write_file", "assets/HABIT.yaml")]
+    assert "`assets/HABIT.yaml`" in steps[0]["content"] and "reflex.yml" not in steps[0]["content"]
+    assert sorted(p.name for p in assets.iterdir()) == ["HABIT.yaml"] and "Sorted." in (assets / "HABIT.yaml").read_text()
+    assert reply["status"] == "saved" and reply["path"] == str(assets / "HABIT.yaml")
 
 
 def test_unrelated_message_triggers_nothing(setup):
@@ -752,7 +822,7 @@ def test_a_shadow_watch_sets_its_reference_then_wakes_hermes_to_do_the_task(setu
     ctx, habits = setup
     assets = tmp_path / "skills" / "watch" / "assets"
     assets.mkdir(parents=True)
-    (assets / "HABIT.yaml").write_text(
+    (assets / "reflex.yml").write_text(
         "spec: habits/0.1\ntrigger: {every: 5m}\nstart: look\nfallback: tell\nnodes:\n"
         "  look: {do: terminal, read: true, args: {command: ls /Applications}, as: apps, next: diff}\n"
         "  diff: {check: {changed: apps}, then: {yes: tell, no: quiet}}\n"
@@ -760,7 +830,7 @@ def test_a_shadow_watch_sets_its_reference_then_wakes_hermes_to_do_the_task(setu
     judged = []
     monkeypatch.setattr(habits, "judge_watch", lambda habit, result: judged.append(result.status) or True)
     monkeypatch.setattr(random, "random", lambda: 0.99)  # no judge on silent checks
-    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(assets / "HABIT.yaml", "watch", "Veille", "skill")])
+    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(assets / "reflex.yml", "watch", "Veille", "skill")])
     assert habits.tick("watch") == [watch.GATE_SILENT]  # the first check only sets the reference
     assert habits.tick("watch") == [watch.GATE_SILENT]
     original = ctx.dispatch_tool
@@ -770,7 +840,7 @@ def test_a_shadow_watch_sets_its_reference_then_wakes_hermes_to_do_the_task(setu
     assert lines[-1] == watch.GATE_WAKE and lines[0] == 'Habits watch "watch": Something changed.'
     assert any(line.startswith("values: ") and "Zed.app" in line for line in lines)
     assert any("The watch is learning" in line for line in lines)
-    assert f"Its graph: {assets / 'HABIT.yaml'}" in lines  # the cron agent never has to search the disk for it
+    assert f"Its graph: {assets / 'reflex.yml'}" in lines  # the cron agent never has to search the disk for it
     assert judged == ["wake"]
     run = habits.ledger.runs("watch", 1)[0]
     assert run["mode"] == "shadow" and run["woke"] == 1 and run["compared"] == 1
@@ -2307,31 +2377,31 @@ def test_terminal_steps_start_in_each_backends_home(setup):
 
 
 def test_a_habit_changes_only_through_habit_save(setup, monkeypatch, tmp_path):
-    # Seen on the Pi: asked for a one-off variation, the model rewrote SKILL.md and HABIT.yaml with its file
+    # Seen on the Pi: asked for a one-off variation, the model rewrote SKILL.md and reflex.yml with its file
     # tools, skipped the checks, and the habit stopped working.
     ctx, habits = setup
     folder = tmp_path / "skills" / "sort-downloads-by-type"
     monkeypatch.setattr(catalog, "folders", lambda: {"sort-downloads-by-type": folder})
-    blocked = [
-        ("write_file", {"path": f"{folder}/assets/HABIT.yaml", "content": "spec: habits/0.1"}),
+    blocked = both([
+        ("write_file", {"path": f"{folder}/assets/reflex.yml", "content": "spec: habits/0.1"}),
         ("patch", {"path": "~/.hermes/skills/sort-downloads-by-type/SKILL.md", "old_string": "type", "new_string": "date"}),
-        ("patch", {"mode": "patch", "patch": "*** Update File: /h/.hermes/skills/sort-downloads-by-type/assets/HABIT.yaml"}),
-        ("terminal", {"command": "sed -i 's/type/date/' ~/.hermes/skills/sort-downloads-by-type/assets/HABIT.yaml"}),
-        ("terminal", {"command": "cat new.yaml > $HOME/.hermes/skills/productivity/sort-downloads-by-type/assets/HABIT.yaml"}),
-        ("terminal", {"command": "curl -s {-o,~/.hermes/skills/sort-downloads-by-type/assets/HABIT.yaml} https://x.test/h"}),
-        ("skill_manage", {"name": "sort-downloads-by-type", "action": "write_file", "file_path": "assets/HABIT.yaml"}),
+        ("patch", {"mode": "patch", "patch": "*** Update File: /h/.hermes/skills/sort-downloads-by-type/assets/reflex.yml"}),
+        ("terminal", {"command": "sed -i 's/type/date/' ~/.hermes/skills/sort-downloads-by-type/assets/reflex.yml"}),
+        ("terminal", {"command": "cat new.yaml > $HOME/.hermes/skills/productivity/sort-downloads-by-type/assets/reflex.yml"}),
+        ("terminal", {"command": "curl -s {-o,~/.hermes/skills/sort-downloads-by-type/assets/reflex.yml} https://x.test/h"}),
+        ("skill_manage", {"name": "sort-downloads-by-type", "action": "write_file", "file_path": "assets/reflex.yml"}),
         ("skill_manage", {"operations": [{"name": "sort-downloads-by-type", "action": "patch", "old_string": "a"}]}),
-    ]
+    ])
     for tool, args in blocked:
         reply = habits.on_pre_tool_call(tool_name=tool, args=args)
         assert reply and reply["action"] == "block" and "habit_save" in reply["message"], (tool, args)
-    allowed = [
-        ("terminal", {"command": f"cat {folder}/assets/HABIT.yaml"}),
-        ("read_file", {"path": f"{folder}/assets/HABIT.yaml"}),
+    allowed = both([
+        ("terminal", {"command": f"cat {folder}/assets/reflex.yml"}),
+        ("read_file", {"path": f"{folder}/assets/reflex.yml"}),
         ("write_file", {"path": "~/.hermes/skills/other-skill/SKILL.md", "content": "x"}),  # not a habit
-        ("write_file", {"path": "~/notes/HABIT.yaml", "content": "x"}),
+        ("write_file", {"path": "~/notes/reflex.yml", "content": "x"}),
         ("terminal", {"command": "ls ~/Downloads"}),
-    ]
+    ])
     for tool, args in allowed:
         assert habits.on_pre_tool_call(tool_name=tool, args=args) is None, (tool, args)
     # Removing it is the user's call, in /habits: Hermes cannot say whether a review or the curator asks.
@@ -2357,15 +2427,15 @@ def test_a_habit_changes_only_through_habit_save(setup, monkeypatch, tmp_path):
 
 def test_checking_a_habits_file_from_the_shell_is_no_hand_edit(setup, monkeypatch, tmp_path):
     # The guide says to check a draft with `hermes habits check <file>`, and the guard blocked
-    # it on a habit's own HABIT.yaml, as if it were an edit.
+    # it on a habit's own reflex.yml, as if it were an edit.
     ctx, habits = setup
     folder = tmp_path / "skills" / "sort-downloads-by-type"
     monkeypatch.setattr(catalog, "folders", lambda: {"sort-downloads-by-type": folder})
-    for command in (f"hermes habits check {folder}/assets/HABIT.yaml", "hermes habits show sort-downloads-by-type --json",
-                    f"~/.local/bin/hermes habits check {folder}/assets/HABIT.yaml 2>&1 | tail -5"):
+    for command in both((f"hermes habits check {folder}/assets/reflex.yml", "hermes habits show sort-downloads-by-type --json",
+                         f"~/.local/bin/hermes habits check {folder}/assets/reflex.yml 2>&1 | tail -5")):
         assert habits.on_pre_tool_call(tool_name="terminal", args={"command": command}) is None, command
-    for command in (f"cp /tmp/x.yaml {folder}/assets/HABIT.yaml",
-                    f"hermes habits check {folder}/assets/HABIT.yaml && cp /tmp/x.yaml {folder}/assets/HABIT.yaml"):
+    for command in both((f"cp /tmp/x.yaml {folder}/assets/reflex.yml",
+                         f"hermes habits check {folder}/assets/reflex.yml && cp /tmp/x.yaml {folder}/assets/reflex.yml")):
         assert habits.on_pre_tool_call(tool_name="terminal", args={"command": command})["action"] == "block"
 
 
@@ -2600,9 +2670,9 @@ def test_saving_a_second_habit_with_the_same_description_warns(setup, monkeypatc
     ctx, habits = setup
     twin = tmp_path / "skills" / "sort-2" / "assets"
     twin.mkdir(parents=True)
-    (twin / "HABIT.yaml").write_text(DEMO)
+    (twin / "reflex.yml").write_text(DEMO)
     first = catalog.skills()[0]
-    monkeypatch.setattr(catalog, "skills", lambda: [first, catalog.read(twin / "HABIT.yaml", "sort-2",
+    monkeypatch.setattr(catalog, "skills", lambda: [first, catalog.read(twin / "reflex.yml", "sort-2",
                                                                         "sort the  downloads", "skill")])
     reply = json.loads(habits.tool_save({"name": "sort-2", "description": "sort the  downloads",
                                          "procedure": "1. List", "scenario": DEMO}))
@@ -2800,8 +2870,8 @@ def test_a_direct_answer_sends_the_file_its_end_attaches(setup, monkeypatch, not
     habit = note_habit(notes)
     folder = notes.parent / "skills" / "my-note" / "assets"
     folder.mkdir(parents=True)
-    (folder / "HABIT.yaml").write_text(yaml.safe_dump(habit))
-    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(folder / "HABIT.yaml", "my-note",
+    (folder / "reflex.yml").write_text(yaml.safe_dump(habit))
+    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(folder / "reflex.yml", "my-note",
                                                                  "Send the plan note", "skill")])
     habits.ledger.set_status("my-note", catalog.find("my-note").version, "active")
     monkeypatch.setattr(random, "random", lambda: 0.99)
@@ -2829,7 +2899,7 @@ def test_a_direct_answer_sends_the_file_its_end_attaches(setup, monkeypatch, not
 
 def test_hermes_habits_run_says_which_file_its_end_would_send(setup, monkeypatch, notes, capsys):
     ctx, habits = setup
-    path = notes.parent / "my-note" / "HABIT.yaml"
+    path = notes.parent / "my-note" / "reflex.yml"
     path.parent.mkdir()
     path.write_text(yaml.safe_dump(note_habit(notes)))
     monkeypatch.setattr(ctx, "dispatch_tool", lambda name, args: json.dumps({"output": str(notes / "plan.md"),
@@ -2860,25 +2930,29 @@ def test_a_shadow_send_matches_the_file_the_model_attached_to_its_reply(setup, m
 
 
 def test_a_skill_becomes_a_habit_through_habit_save_only(setup, monkeypatch):
-    # Writing assets/HABIT.yaml into any skill turns it into a habit that no check has seen.
+    # Writing assets/reflex.yml (or assets/HABIT.yaml, as v0.1 named it) into any skill turns it into a habit that no
+    # check has seen.
     ctx, habits = setup
     monkeypatch.setattr(catalog, "folders", lambda: {})
-    for tool, args in (
-            ("skill_manage", {"name": "umbrella", "action": "write_file", "file_path": "./assets/HABIT.yaml",
+    for tool, args in both((
+            ("skill_manage", {"name": "umbrella", "action": "write_file", "file_path": "./assets/reflex.yml",
                               "file_content": "x"}),
-            ("skill_manage", {"operations": [{"name": "umbrella", "action": "patch", "file_path": "assets/HABIT.yaml"}]}),
-            ("write_file", {"path": "~/.hermes/skills/umbrella/assets/HABIT.yaml", "content": "spec: habits/0.1"}),
-            ("write_file", {"path": "/Users/x/.hermes/skills/tools/umbrella/./assets/HABIT.yaml", "content": "x"})):
+            ("skill_manage", {"operations": [{"name": "umbrella", "action": "patch", "file_path": "assets/reflex.yml"}]}),
+            ("write_file", {"path": "~/.hermes/skills/umbrella/assets/reflex.yml", "content": "spec: habits/0.1"}),
+            ("write_file", {"path": "/Users/x/.hermes/skills/tools/umbrella/./assets/reflex.yml", "content": "x"}))):
         reply = habits.on_pre_tool_call(tool_name=tool, args=args)
         assert reply and reply["action"] == "block" and "habit_save" in reply["message"] and "umbrella" in reply["message"]
-    for path in ("~/.hermes/skills/umbrella/assets/notes.yaml", "~/code/plugin/examples/triage/assets/HABIT.yaml"):
+    for path in both(("~/.hermes/skills/umbrella/assets/notes.yaml", "~/code/plugin/examples/triage/assets/reflex.yml")):
         assert habits.on_pre_tool_call(tool_name="write_file", args={"path": path, "content": "x"}) is None
     assert habits.on_pre_tool_call(tool_name="skill_manage", args={
         "name": "umbrella", "action": "write_file", "file_path": "references/notes.md", "file_content": "x"}) is None
-    saving = guard.SAVING.set(True)  # habit_save's own write
+    saving = guard.SAVING.set(True)  # habit_save's own write, under either name
     try:
-        assert habits.on_pre_tool_call(tool_name="skill_manage", args={
-            "name": "umbrella", "action": "write_file", "file_path": "assets/HABIT.yaml"}) is None
+        for file in ("assets/reflex.yml", "assets/HABIT.yaml"):
+            assert habits.on_pre_tool_call(tool_name="skill_manage", args={
+                "name": "umbrella", "action": "write_file", "file_path": file}) is None
+            assert habits.on_pre_tool_call(tool_name="write_file", args={
+                "path": f"~/.hermes/skills/umbrella/{file}", "content": "x"}) is None
     finally:
         guard.SAVING.reset(saving)
 
@@ -2887,11 +2961,11 @@ def with_habit(tmp_path, monkeypatch, name, text, description="A habit"):
     """One more saved habit next to the demo."""
     folder = tmp_path / "skills" / name / "assets"
     folder.mkdir(parents=True)
-    (folder / "HABIT.yaml").write_text(text)
+    (folder / "reflex.yml").write_text(text)
     shown = catalog.skills()
-    monkeypatch.setattr(catalog, "skills", lambda: shown + [catalog.read(folder / "HABIT.yaml", name, description,
+    monkeypatch.setattr(catalog, "skills", lambda: shown + [catalog.read(folder / "reflex.yml", name, description,
                                                                           "skill")])
-    return folder / "HABIT.yaml"
+    return folder / "reflex.yml"
 
 
 def test_a_one_off_is_shown_as_what_it_is(setup, monkeypatch, tmp_path, capsys):
@@ -3337,7 +3411,7 @@ def test_a_saved_file_is_read_as_written_never_normalized(setup, tmp_path):
                  {"do": {"tool": "terminal", "command": "ls"}, "next": "e"}):
         scenario = {"spec": "habits/0.1", "start": "s", "fallback": "w", "nodes": {"s": node, "e": {"end": "ok"},
                                                                                      "w": {"wake": "w"}}}
-        path = tmp_path / "old" / "assets" / "HABIT.yaml"
+        path = tmp_path / "old" / "assets" / "reflex.yml"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(scenario))
         catalog._cache.clear()
@@ -3460,7 +3534,7 @@ def test_habits_off_turns_every_hook_off_and_the_tools_refuse(setup, monkeypatch
     monkeypatch.setattr(plugin, "Habits", lambda _ctx: habits)
     plugin.register(registered)
     hooks = registered.hooks
-    edit = {"path": str(tmp_path / "skills" / "sort-downloads-by-type" / "assets" / "HABIT.yaml"), "content": "x"}
+    edit = {"path": str(tmp_path / "skills" / "sort-downloads-by-type" / "assets" / "reflex.yml"), "content": "x"}
     monkeypatch.setenv("HABITS_OFF", "1")
     assert hooks["pre_llm_call"](session_id="s1", user_message="Sort my downloads please") is None
     assert hooks["pre_tool_call"](tool_name="write_file", args=edit) is None  # the guard steps aside too
@@ -3518,7 +3592,7 @@ def test_hermes_habits_run_gives_what_a_web_read_brought_back_as_data(setup, mon
         {"results": [{"content": f"A news item\n{INJECTED}"}]}) if name == "web_extract" else original(name, args))
     monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([deciders.Fake(
         lambda q, state: ("yes", 0.95) if "A news item" in q.text else ("no", 0.5))]))
-    path = tmp_path / "news" / "HABIT.yaml"
+    path = tmp_path / "news" / "reflex.yml"
     path.parent.mkdir()
     path.write_text("spec: habits/0.1\nstart: read\nfallback: help\nnodes:\n"
                     "  read: {do: web_extract, args: {urls: ['https://example.com/news']}, as: page, next: judge}\n"
@@ -3571,11 +3645,16 @@ def test_hermes_habits_run_writes_the_replay_of_that_run_and_prints_its_path(set
     page = replay.read_text(encoding="utf-8")
     assert "Downloads sorted." in page and "dry run" in page and "<h1>sort-downloads-by-type</h1>" in page
     assert real.read_bytes() == before and habits.ledger.runs("sort-downloads-by-type", 50) == runs and used == []
-    path = tmp_path / "triage" / "assets" / "HABIT.yaml"  # a file: the replay is named after its folder
+    path = tmp_path / "triage" / "assets" / "reflex.yml"  # a file: the replay is named after its folder
     path.parent.mkdir(parents=True)
     path.write_text(yaml.safe_dump(small()))
     code, text, _ = cli_run(habits, capsys, str(path), as_json=False)
     assert code == 0 and text.rstrip().endswith(f"replay: {habits.home() / 'pages' / '_run-triage.html'}")
+    old = tmp_path / "vieux" / "assets" / "HABIT.yaml"  # v0.1's name: the same
+    old.parent.mkdir(parents=True)
+    old.write_text(yaml.safe_dump(small()))
+    code, text, _ = cli_run(habits, capsys, str(old), as_json=False)
+    assert code == 0 and text.rstrip().endswith(f"replay: {habits.home() / 'pages' / '_run-vieux.html'}")
     replay.unlink()
     cli_run(habits, capsys, "sort-downloads-by-type")  # --json is a measurement: no page
     assert not replay.exists()
@@ -3610,7 +3689,7 @@ def test_a_write_that_names_downloads_is_found(text):
 
 def test_hermes_habits_run_takes_a_file_and_its_inputs(setup, tmp_path, capsys):
     ctx, habits = setup
-    path = tmp_path / "triage" / "assets" / "HABIT.yaml"
+    path = tmp_path / "triage" / "assets" / "reflex.yml"
     path.parent.mkdir(parents=True)
     path.write_text("spec: habits/0.1\ninputs: [folder, most]\nstart: look\nfallback: help\nnodes:\n"
                     "  look: {do: terminal, read: true, args: {command: 'ls {folder}'}, as: files, next: many}\n"
@@ -3639,7 +3718,7 @@ def test_hermes_habits_run_says_the_answer_first_then_one_line_of_how_it_went(se
     assert re.fullmatch(r"sort-downloads-by-type · done in \d+\.\d s · 6 questions \([a-z0-9, -]+\) · \d+ tool calls · "
                         r"dry run: writes planned, not done", lines[1]), lines[1]
     assert lines[2] == "steps:" and lines[-1].startswith("replay: ")
-    path = tmp_path / "look" / "assets" / "HABIT.yaml"  # a habit that only reads: no dry run to speak of
+    path = tmp_path / "look" / "assets" / "reflex.yml"  # a habit that only reads: no dry run to speak of
     path.parent.mkdir(parents=True)
     path.write_text("spec: habits/0.1\nstart: look\nfallback: help\nnodes:\n"
                     "  look: {do: terminal, read: true, args: {command: 'ls /tmp'}, as: files, next: done}\n"
@@ -3779,7 +3858,7 @@ def test_hermes_habits_run_prints_every_planned_call_and_every_value(setup, monk
     names = [f"{'rapport-annuel-' * 6}{i:03}.pdf" for i in range(60)]  # 60 moves, 100 tool calls at most
     monkeypatch.setattr(ctx, "dispatch_tool", lambda name, args: json.dumps(
         {"output": "\n".join(names) if args["command"].startswith("ls -p") else "", "exit_code": 0}))
-    path = tmp_path / "triage" / "HABIT.yaml"
+    path = tmp_path / "triage" / "reflex.yml"
     path.parent.mkdir()
     path.write_text(DEMO.replace('sorted."}', 'sorted.", with: [kind]}'))
     code, out, _ = cli_run(habits, capsys, str(path))
@@ -3817,7 +3896,7 @@ def test_hermes_habits_run_takes_a_message_as_its_hook_would(setup, monkeypatch,
     with_habit(tmp_path, monkeypatch, "photo-arsorter", DEMO, description="Arrange the photos")
     code, out, _ = cli_run(habits, capsys, "sort-downloads-by-type", message="Arrange my photos")
     assert out["status"] == "other" and out["trigger"]["fired"] == "photo-arsorter"
-    path = tmp_path / "echo" / "assets" / "HABIT.yaml"
+    path = tmp_path / "echo" / "assets" / "reflex.yml"
     path.parent.mkdir(parents=True)
     (path.parent.parent / "SKILL.md").write_text('---\nname: echo\ndescription: "Repeat the message"\n---\n')
     seen = []
@@ -3847,7 +3926,7 @@ def test_hermes_habits_run_json_keeps_what_decided_each_hand_back(setup, monkeyp
     # the JSON now keeps every ask's answers and probabilities, what it dropped, the trigger's own answers, and the
     # time of each llm node.
     ctx, habits = setup
-    path = tmp_path / "kinds" / "assets" / "HABIT.yaml"
+    path = tmp_path / "kinds" / "assets" / "reflex.yml"
     path.parent.mkdir(parents=True)
     (path.parent.parent / "SKILL.md").write_text('---\nname: kinds\ndescription: "Say which files are images"\n---\n')
     path.write_text(KINDS_GRAPH)
@@ -3873,7 +3952,7 @@ def test_hermes_habits_run_json_keeps_what_decided_each_hand_back(setup, monkeyp
     assert (out["trigger"]["confirm"]["answer"], out["trigger"]["confirm"]["gate"]) == ("run", 0.8)
     assert "note" not in out
     # A run that does not fire keeps them too, and a file with no SKILL.md beside it says what the S1 saw.
-    bare = tmp_path / "bare" / "HABIT.yaml"
+    bare = tmp_path / "bare" / "reflex.yml"
     bare.parent.mkdir()
     bare.write_text(KINDS_GRAPH)
     monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([deciders.Fake(
@@ -3901,7 +3980,7 @@ PICK_GRAPH = ("spec: habits/0.1\nstart: look\nfallback: help\nnodes:\n"
 def test_hermes_habits_run_json_keeps_a_picks_options_probabilities_and_margin(setup, monkeypatch, tmp_path, capsys):
     # A pick's near miss is read from its options, their probabilities and the margin.
     ctx, habits = setup
-    path = tmp_path / "invoice" / "HABIT.yaml"
+    path = tmp_path / "invoice" / "reflex.yml"
     path.parent.mkdir()
     path.write_text(PICK_GRAPH)
 
@@ -3925,7 +4004,7 @@ def test_hermes_habits_show_json_says_which_file_a_run_reads(setup, monkeypatch,
         "then: {yes: finished, no: stuck}", "then: {yes: subcall, no: stuck}"))
     assert habits.cli_handle(SimpleNamespace(habits_command="show", name="morning", json=True)) == 0
     shown = json.loads(capsys.readouterr()[0])
-    assert shown["path"] == str(tmp_path / "skills" / "morning" / "assets" / "HABIT.yaml") and shown["valid"]
+    assert shown["path"] == str(tmp_path / "skills" / "morning" / "assets" / "reflex.yml") and shown["valid"]
     assert (shown["habit"], shown["kind"], shown["origin"], shown["uses"]) == ("morning", "one-off", "skill",
                                                                             ["sort-downloads-by-type"])
     rows = [{"name": "notes-perso"}, {"name": "morning"}]
@@ -3957,7 +4036,7 @@ def test_hermes_habits_run_takes_the_trigger_as_an_input(setup, monkeypatch, tmp
     # A layer-1 case runs a request habit's graph alone on the user's words: --input trigger= is its {trigger}, as
     # written (never read as JSON), with no pick nor confirm. A watch hears what a tick says, "watch check <now>".
     ctx, habits = setup
-    path = tmp_path / "echo" / "assets" / "HABIT.yaml"
+    path = tmp_path / "echo" / "assets" / "reflex.yml"
     path.parent.mkdir(parents=True)
     path.write_text(ECHO)
     code, out, _ = cli_run(habits, capsys, str(path), "trigger=send me the Recipes note")
@@ -4035,7 +4114,7 @@ def test_run_and_save_refuse_an_ssh_that_waits_for_a_person_but_a_saved_one_stil
     assert reply["status"] == "refused" and any("waits for a person" in i for i in reply["issues"])
     saved = json.loads(habits.tool_save({"name": "x", "description": "d", "procedure": "p", "scenario": scenario}))
     assert saved["status"] == "refused"
-    path = tmp_path / "old" / "assets" / "HABIT.yaml"
+    path = tmp_path / "old" / "assets" / "reflex.yml"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(scenario))
     assert catalog.read(path, "old", "d", "file").valid
@@ -4108,7 +4187,7 @@ def test_a_sub_habit_saved_again_sends_the_habits_that_use_it_back_to_shadow(set
     ctx, habits = setup
     paths = {}
     for name, text in (("list-apps", SUB_APPS), ("mac-apps", PARENT_APPS)):
-        paths[name] = tmp_path / "skills" / name / "assets" / "HABIT.yaml"
+        paths[name] = tmp_path / "skills" / name / "assets" / "reflex.yml"
         paths[name].parent.mkdir(parents=True)
         paths[name].write_text(text)
     demo = catalog.skills()
@@ -4140,8 +4219,8 @@ def test_an_end_that_sends_a_file_is_a_write_and_starts_in_shadow(setup, monkeyp
     ctx, habits = setup
     folder = notes.parent / "skills" / "last-pdf" / "assets"
     folder.mkdir(parents=True)
-    (folder / "HABIT.yaml").write_text(yaml.safe_dump(note_habit(notes)))
-    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(folder / "HABIT.yaml", "last-pdf",
+    (folder / "reflex.yml").write_text(yaml.safe_dump(note_habit(notes)))
+    monkeypatch.setattr(catalog, "skills", lambda: [catalog.read(folder / "reflex.yml", "last-pdf",
                                                                  "Send the plan note", "skill")])
     assert not trigger.read_only(note_habit(notes)) and trigger.read_only(note_habit(notes, end="Here is {note}"))
     reply, asked = asking(lambda state: "habit" in state)

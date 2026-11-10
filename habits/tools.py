@@ -747,7 +747,7 @@ STORE_FILE = re.compile(r"\.?(?:credentials?|tokens?|secrets?|hosts)\.(?:json|ya
 
 def graph_file(path: str) -> Path:
     """The real path of a graph file (links followed), or ValueError when it is not a .yaml or .json file, or is a
-    file Hermes keeps from its own tools, a file of Hermes's home other than a skill's HABIT.yaml, a file of a folder
+    file Hermes keeps from its own tools, a file of Hermes's home other than a skill's reflex.yml, a file of a folder
     of keys, or a token store by its name. Folders are compared as the disk compares them: ~/.HERMES is ~/.hermes
     on macOS."""
     full = Path(path.strip()).expanduser()
@@ -781,8 +781,8 @@ def _kept_from_tools(real: Path) -> str:
         # cache/scratch is Hermes's own drafts folder (every Hermes process's TMPDIR): a graph file there is a draft.
         if (inside is not None and _below(real, home / "cache" / "scratch", by_name=False) is None
                 and not (len(inside) > 1 and inside[0].lower() == "skills" and ".hub" not in
-                         [p.lower() for p in inside] and inside[-1].lower() == "habit.yaml")):
-            return ("in Hermes's home, beside its config file and keys; only a skill's assets/HABIT.yaml and a draft "
+                         [p.lower() for p in inside] and inside[-1].lower() in ("reflex.yml", "habit.yaml"))):
+            return ("in Hermes's home, beside its config file and keys; only a skill's assets/reflex.yml and a draft "
                     "in its cache/scratch folder are read there")
     for folder in CREDENTIAL_DIRS:
         if _below(real, Path.home() / folder) is not None:
@@ -816,25 +816,26 @@ def _below(path: Path, folder: Path, by_name: bool = True):
     return None
 
 
-def skill_text(name: str, description: str, procedure: str, kind: str) -> str:
+def skill_text(name: str, description: str, procedure: str, kind: str, file: str = "assets/reflex.yml") -> str:
     """A habit's SKILL.md: its name and description for Hermes's skill index, its procedure, and what the model
     reads of the habit when it loads the skill."""
     return (f"---\nname: {name}\ndescription: {json.dumps(description, ensure_ascii=False)}\n---\n\n"
-            f"{procedure}\n\n## Habit\n\n{footer(name, kind)}\n")
+            f"{procedure}\n\n## Habit\n\n{footer(name, kind, file)}\n")
 
 
-def footer(name: str, kind: str) -> str:
-    """What the model reads of a habit at the end of its SKILL.md, by kind."""
+def footer(name: str, kind: str, file: str = "assets/reflex.yml") -> str:
+    """What the model reads of a habit at the end of its SKILL.md, by kind (file: the reflex file it names, which
+    stays assets/HABIT.yaml for a habit saved by v0.1)."""
     if kind == "one-off":  # nothing runs it on its own: the model calls it by name
-        return (f"Run this task with habit_run, name: {name}: the Habits plugin runs `assets/HABIT.yaml`, live. "
+        return (f"Run this task with habit_run, name: {name}: the Habits plugin runs `{file}`, live. "
                 "Do it by hand, with the procedure above, only if the run hands it back.")
     if kind == "watch":  # a woken turn loads this skill: what it gets, and what it must not do
-        return ("The Habits plugin checks this on its schedule with `assets/HABIT.yaml`, through a Hermes cron "
+        return (f"The Habits plugin checks this on its schedule with `{file}`, through a Hermes cron "
                 "job and with no model, and wakes you only when a check ends on a wake: you then get its "
                 "report and its values (while it learns, the calls it planned too). Do what is left with the "
                 "procedure above and the same commands, and nothing the user did not ask for. Do not sleep "
                 "or wait in that turn for something to change: the next check comes on its own.")
-    return ("The Habits plugin runs `assets/HABIT.yaml` on its own when a request matches. When you do this "
+    return (f"The Habits plugin runs `{file}` on its own when a request matches. When you do this "
             "task, follow the procedure above by hand, with the same commands: the habit is measured against "
             "what you do.")
 
@@ -1071,7 +1072,7 @@ class Tools:
 
     def cli_run(self, target: str, pairs=(), live: bool = False, as_json: bool = False, within=None,
                 message=None, memory=None) -> int:
-        """`hermes habits run`: a saved habit or a HABIT.yaml file, here, with Hermes's tools and no model turn (its
+        """`hermes habits run`: a saved habit or a reflex.yml file, here, with Hermes's tools and no model turn (its
         questions go to the decision chain). Dry unless live. A measurement: nothing reaches the ledger, the curator,
         the habit's page or the memory of check: changed, so it never promotes or retires anything. Without --json
         it writes the replay of that run, _run-<name>.html beside the habit pages, and prints its path last.
@@ -1121,8 +1122,9 @@ class Tools:
                 folder_of = path.parent.parent if path.parent.name == "assets" else path.parent
                 meta = catalog._frontmatter(folder_of / "SKILL.md")  # the trigger reads its description, as saved
                 described = str(meta.get("description") or "")
-                # A draft beside others (drafts/good.yaml) by its own name; HABIT.yaml or graph.yaml by its folder's
-                named = folder_of.name if path.stem.lower() in ("habit", "graph") else path.stem
+                # A draft beside others (drafts/good.yaml) by its own name; reflex.yml, HABIT.yaml or graph.yaml by
+                # its folder's
+                named = folder_of.name if path.stem.lower() in ("reflex", "habit", "graph") else path.stem
                 habit, saved = catalog.read(path, str(meta.get("name") or named), described, "file"), False
                 if message is not None and not described:  # a wording tried here would mean nothing
                     note = (f"no SKILL.md with a description beside {path}: the decision model saw only the folder "
@@ -1296,7 +1298,7 @@ class Tools:
         return self.save(name, description, procedure, scenario, notes, session=session)
 
     def save(self, name: str, description: str, procedure: str, scenario: dict, notes=(), session: str = "") -> dict:
-        """Keep a checked graph as a skill, SKILL.md then assets/HABIT.yaml, through skill_manage (habit_save's:
+        """Keep a checked graph as a skill, SKILL.md then assets/reflex.yml, through skill_manage (habit_save's:
         origin asked)."""
         existing = catalog.find(name)
         if existing is not None and existing.origin == "example":
@@ -1308,12 +1310,16 @@ class Tools:
         first = self.ledger.fresh(name)
         before = self.ledger.info(name)
         kind = catalog.kind_of(scenario)
-        skill_md = skill_text(name, description, procedure, kind)
+        # An existing habit keeps the file it has: a habit saved by v0.1 stays in assets/HABIT.yaml (no move, no
+        # second file). A new habit gets assets/reflex.yml.
+        base = existing.path.parent.parent if existing else folder
+        reflex = catalog.reflex_file(base).relative_to(base) if base else catalog.HABIT_FILE
+        skill_md = skill_text(name, description, procedure, kind, reflex.as_posix())
         habit_yaml = yaml12.dump(readable(scenario))  # no anchor: catalog.read refuses an alias
         # A new habit creates its skill; an existing one gets its procedure rewritten too ("edit"). Its graph comes
         # last: it makes the folder a habit.
         steps = [{"action": "edit" if existing else "create", "name": name, "content": skill_md}]
-        steps.append({"action": "write_file", "name": name, "file_path": str(catalog.HABIT_FILE), "file_content": habit_yaml})
+        steps.append({"action": "write_file", "name": name, "file_path": str(reflex), "file_content": habit_yaml})
         error, staged = self.skill_writes(steps, half=folder is not None)
         if error:
             return {"status": "error", "error": error}
@@ -1323,7 +1329,7 @@ class Tools:
                     "cron job"}.get(kind, "the habit then starts learning")
             return {"status": "staged", "habit": name, "pending": staged, **normalized,
                     "message": "Waiting for the user to approve the skill writes: SKILL.md first, then "
-                               f"assets/HABIT.yaml; {then}. Do not call habit_save again before they are approved."}
+                               f"{reflex}; {then}. Do not call habit_save again before they are approved."}
         habit = catalog.find(name)
         if habit is None:
             return {"status": "error", "error": "saved, but the habit could not be read back; try `hermes habits list`"}

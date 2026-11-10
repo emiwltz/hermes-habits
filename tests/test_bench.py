@@ -179,11 +179,11 @@ def test_a_forbidden_command_is_found_where_it_runs(tmp_path, command, item, ran
 
 def test_a_relative_habit_path_is_read_from_the_scenario_files_folder(tmp_path, monkeypatch):
     (tmp_path / "habits" / "h" / "assets").mkdir(parents=True)
-    habit = tmp_path / "habits" / "h" / "assets" / "HABIT.yaml"
+    habit = tmp_path / "habits" / "h" / "assets" / "reflex.yml"
     habit.write_text("spec: habits/0.1\n")
     (tmp_path / "scenarios").mkdir()
     (tmp_path / "scenarios" / "h.json").write_text(json.dumps([
-        {"id": "a", "task": "t", "habit": "../habits/h/assets/HABIT.yaml", "expect": {"end": {}}}]))
+        {"id": "a", "task": "t", "habit": "../habits/h/assets/reflex.yml", "expect": {"end": {}}}]))
     monkeypatch.chdir(tmp_path)
     case, = bench.load(Path("scenarios/h.json"))  # a relative scenario path, as from a tasks folder
     ready = bench.prepare(case, tmp_path)
@@ -306,7 +306,7 @@ parent = subprocess.run(["ps", "-o", "command=", "-p", str(os.getppid())], captu
 ran = Path(argv[2]) if argv[:2] == ["habits", "run"] else None  # the file a run read, and the SKILL.md beside it
 # What a model turn finds in its temp folder ($TMPDIR, where Hermes's own tools write theirs).
 import tempfile
-temp = sorted(str(p) for p in Path(tempfile.gettempdir()).rglob("*") if p.name in ("HABIT.yaml", "SKILL.md")) \
+temp = sorted(str(p) for p in Path(tempfile.gettempdir()).rglob("*") if p.name in ("reflex.yml", "SKILL.md")) \
     if argv[:1] == ["-z"] and os.environ.get("FAKE_SCAN_TMP") else None
 # And around its root: each folder's names from there up to the home folder, and what its root holds.
 here = Path.cwd()
@@ -327,7 +327,7 @@ with open(home / "calls.jsonl", "a") as log:
                           "skill": skill.read_text() if skill and skill.is_file() else None,
                           # The other files of its assets/: their bytes as text, and whether each may run.
                           "assets": {p.name: [p.read_bytes().decode("latin-1"), os.access(p, os.X_OK)]
-                                     for p in sorted(ran.parent.iterdir()) if p.is_file() and p.name != "HABIT.yaml"}
+                                     for p in sorted(ran.parent.iterdir()) if p.is_file() and p.name != "reflex.yml"}
                           if ran and ran.is_file() else None}) + "\n")
 
 
@@ -338,8 +338,8 @@ def config(name):
 
 def habit(name):
     for folder in (home / "skills" / name, Path("REPO") / "examples" / name):
-        if (folder / "assets" / "HABIT.yaml").is_file():
-            return folder / "assets" / "HABIT.yaml"
+        if (folder / "assets" / "reflex.yml").is_file():
+            return folder / "assets" / "reflex.yml"
 
 
 if argv[:2] == ["habits", "run"]:
@@ -374,7 +374,7 @@ elif argv[0] == "--finish":  # what Hermes's gateway still does after the bench 
     time.sleep(float(argv[2]))
     db = sqlite3.connect(home / "state.db")
     for name in argv[3:]:  # a habit_save that lands late
-        made = home / "skills" / name / "assets" / "HABIT.yaml"
+        made = home / "skills" / name / "assets" / "reflex.yml"
         made.parent.mkdir(parents=True, exist_ok=True)
         made.write_text("spec: habits/0.1\n")
         (made.parent.parent / "SKILL.md").write_text("---\nname: " + name + "\n---\n")
@@ -407,7 +407,7 @@ elif argv[0] == "-z":
         names = [wanted.group(1)] + turn.get("also", [])  # also: other names the turn saves
         saved = []
         for name in names:
-            made = home / "skills" / turn.get("paths", {}).get(name, name) / "assets" / "HABIT.yaml"
+            made = home / "skills" / turn.get("paths", {}).get(name, name) / "assets" / "reflex.yml"
             made.parent.mkdir(parents=True, exist_ok=True)
             made.write_text(turn.get("habit", "spec: habits/0.1\n"))
             (made.parent.parent / "SKILL.md").write_text("---\nname: " + name + "\n---\n")
@@ -463,7 +463,7 @@ def fake(tmp_path, monkeypatch):
     hermes = tmp_path / "hermes"
     hermes.write_text(FAKE.replace("PYTHON", sys.executable).replace("REPO", str(ROOT)))
     hermes.chmod(0o755)
-    case = {"id": "tidy", "task": "tidy-folder", "habit": "{repo}/examples/tidy-downloads/assets/HABIT.yaml",
+    case = {"id": "tidy", "task": "tidy-folder", "habit": "{repo}/examples/tidy-downloads/assets/reflex.yml",
             "scratch": "~/tmp/bench/tidy", "rewrite": {"~/Downloads": "{scratch}/inbox", "~/.Trash/": "{scratch}/trash/"},
             "setup": 'mkdir -p "$SCRATCH/inbox" && touch "$SCRATCH/inbox/a.pdf"', "repeat": 2,
             "expect": {"end": {"message_contains": "sorted", "planned_tools": ["terminal"]}},
@@ -504,7 +504,7 @@ def test_a_whole_case_with_a_fake_hermes(fake, tmp_path, capsys):
     made = calls()
     runs = [c for c in made if c["argv"][:2] == ["habits", "run"]]
     copy = Path(runs[0]["argv"][2])  # the rewritten copy: in the bench's own folder, gone with it
-    assert copy.parts[-3:] == ("tidy-downloads", "assets", "HABIT.yaml") and not copy.exists()
+    assert copy.parts[-3:] == ("tidy-downloads", "assets", "reflex.yml") and not copy.exists()
     assert f"ls -p {scratch}/inbox" in runs[0]["text"] and "Downloads" not in runs[0]["text"]
     assert f'description: "Sort {scratch}/inbox by file type' in runs[0]["skill"]
     assert not (scratch / ".bench").exists()
@@ -522,10 +522,10 @@ def test_a_whole_case_with_a_fake_hermes(fake, tmp_path, capsys):
     create = printed[3]
     assert (create["saves"], create["statuses"], create["first_try"], create["valid"]) == (2, ["refused", "saved"], False, True)
     assert not (home / "skills" / "bench-x").exists() and len(list((user / ".Trash").glob("bench-x-bench-*"))) == 1
-    assert (Path(create["kept"]) / "assets" / "HABIT.yaml").is_file() and Path(create["kept"]).parent.parent == tmp_path
+    assert (Path(create["kept"]) / "assets" / "reflex.yml").is_file() and Path(create["kept"]).parent.parent == tmp_path
     assert create["works"] is True and "clean_error" not in create  # Hermes's habit, run dry against the expect
     works = [c for c in made if c["argv"][:2] == ["habits", "run"]][-1]  # a copy of what was kept, rewritten
-    assert works["text"] == (Path(create["kept"]) / "assets" / "HABIT.yaml").read_text() and works["skill"]
+    assert works["text"] == (Path(create["kept"]) / "assets" / "reflex.yml").read_text() and works["skill"]
     assert Path(works["argv"][2]).parent.parent.name == Path(create["kept"]).name
     assert Path(create["kept"]) not in Path(works["argv"][2]).parents
     assert "2/2 100%" in err and "1/1 valid, 0 first try, 1 work" in err and "model turns: 2" in err
@@ -590,9 +590,9 @@ def test_the_llm_nodes_calls_and_their_estimated_cost_are_said_apart_from_the_mo
     assert ("own model calls of tidy-downloads: 4 by llm nodes (rediger, titre), 2 by questions no "
             "decision model took, in 2 runs: about 0.0120 $, not measured (the CLI's llm calls write no session)"
             ) in err
-    found, = bench.own_calls([{"case": "c", "kind": "run", "habit": "/r/x/assets/HABIT.yaml", "model_calls": 1,
+    found, = bench.own_calls([{"case": "c", "kind": "run", "habit": "/r/x/assets/reflex.yml", "model_calls": 1,
                                "counts": {"llm": 1}, "llm_ms": {"words": 9}, "plan_model_calls": 2},
-                              {"case": "c", "kind": "run", "habit": "/r/x/assets/HABIT.yaml", "model_calls": 0},
+                              {"case": "c", "kind": "run", "habit": "/r/x/assets/reflex.yml", "model_calls": 0},
                               {"case": "d", "kind": "run", "habit": "y", "model_calls": 0, "counts": {"llm": 0}},
                               {"case": "c", "kind": "baseline", "api_calls": 9}])
     assert found == {"habit": "x", "runs": 2, "nodes": 1, "questions": 0, "plan": 2, "names": ["words"]}
@@ -605,7 +605,7 @@ def test_a_create_run_never_rewrites_a_habit_or_a_skill(fake, capsys):
     run, calls, home, user, case, records, configure = fake
     skills = home / "skills"
     for made, said in (
-            (skills / "bench-x" / "assets" / "HABIT.yaml", 'a habit named "bench-x" exists already'),
+            (skills / "bench-x" / "assets" / "reflex.yml", 'a habit named "bench-x" exists already'),
             (skills / "bench-x" / "SKILL.md", 'a skill named "bench-x" exists already'),  # a skill, no habit
             (skills / ".archive" / "bench-x" / "notes.md", "/.archive/bench-x exists already"),
             (skills / "notes" / "SKILL.md", 'notes/SKILL.md is named "bench-x"'),  # its folder has another name
@@ -626,9 +626,9 @@ def test_a_folder_there_before_the_turn_is_left_where_it_is(fake, tmp_path):
     run, calls, home, user, case, records, configure = fake
     folder = home / "skills" / "bench-x"
     (folder / "assets").mkdir(parents=True)
-    (folder / "assets" / "HABIT.yaml").write_text("spec: habits/0.1\n")
+    (folder / "assets" / "reflex.yml").write_text("spec: habits/0.1\n")
     runner = bench.Bench("hermes", home, bench.Budget(0.02), None, tmp_path)
-    kept, trouble = runner.clean("bench-x", folder / "assets" / "HABIT.yaml", "one-off", "c-0", {folder.resolve()})
+    kept, trouble = runner.clean("bench-x", folder / "assets" / "reflex.yml", "one-off", "c-0", {folder.resolve()})
     assert kept is None and "was there before the turn" in trouble and folder.is_dir()
 
 
@@ -638,9 +638,9 @@ def test_a_case_that_could_touch_downloads_or_a_real_folder_is_refused(fake, cap
     for name, graph in (("sort-dl", "nodes: {list: {do: terminal, read: true, args: {command: ls ~/Downloads}}}"),
                         ("morning", "nodes: {a: {use: sort-dl, next: b}}")):
         (home / "skills" / name / "assets").mkdir(parents=True)
-        (home / "skills" / name / "assets" / "HABIT.yaml").write_text(graph + "\n")
+        (home / "skills" / name / "assets" / "reflex.yml").write_text(graph + "\n")
     (home / "skills" / ".archive" / "sort-dl" / "assets").mkdir(parents=True)  # an archived, clean copy
-    (home / "skills" / ".archive" / "sort-dl" / "assets" / "HABIT.yaml").write_text("nodes: {}\n")
+    (home / "skills" / ".archive" / "sort-dl" / "assets" / "reflex.yml").write_text("nodes: {}\n")
     clean = {k: v for k, v in case.items() if k not in ("rewrite", "setup", "baseline", "create")}
     refused = [
         ({**case, "scratch": "/etc/bench"}, "must be inside"),
@@ -657,7 +657,7 @@ def test_a_case_that_could_touch_downloads_or_a_real_folder_is_refused(fake, cap
           "scratch": None}, "mode: live needs a scratch folder"),
         ({**{k: v for k, v in case.items() if k not in ("scratch", "setup", "rewrite")},
           "habit": "{scratch}/x.yaml"}, "names no scratch folder"),
-        ({**case, "habit": "missing/HABIT.yaml", "rewrite": {}}, "no habit file"),
+        ({**case, "habit": "missing/reflex.yml", "rewrite": {}}, "no habit file"),
     ]
     for wrong, said in refused:
         assert run(cases=[wrong]) == 2, said
@@ -809,7 +809,7 @@ def test_two_benches_in_one_second_keep_their_own_copies(fake, capsys, monkeypat
     assert run("--no-baseline", "--out", str(out)) == 0
     assert run("--no-baseline", "--out", str(out)) == 0
     kept = [r["kept"] for r in records(capsys)[0] if r["kind"] == "create"]
-    assert len(set(kept)) == 2 and all((Path(k) / "assets" / "HABIT.yaml").is_file() for k in kept)
+    assert len(set(kept)) == 2 and all((Path(k) / "assets" / "reflex.yml").is_file() for k in kept)
     assert not (home / "skills" / "bench-x").exists() and len(list((user / ".Trash").glob("bench-x-bench-*"))) == 2
     # A copy that fails still lets the habit go, retired first: a watch's cron job never outlives the bench.
     configure("turn.json", {"kind": "watch", "calls": None})
@@ -838,7 +838,7 @@ def test_the_demo_scenario_loads_and_runs_its_tidy_case_on_a_scratch_copy(tmp_pa
     cases = bench.load(ROOT / "bench" / "scenarios" / "demo.yaml")
     assert [c["id"] for c in cases] == ["tidy", "tidy-not-now", "release", "links"]
     tidy = bench.prepare(cases[0], Path(os.path.expanduser("~/.hermes")), work=tmp_path)
-    assert tidy["_target"] == str(tmp_path / "copies" / "tidy" / "tidy-downloads" / "assets" / "HABIT.yaml")
+    assert tidy["_target"] == str(tmp_path / "copies" / "tidy" / "tidy-downloads" / "assets" / "reflex.yml")
     assert "/habits-bench/tidy/inbox" in tidy["_copy"] and not bench.DOWNLOADS.search(tidy["_copy"])
     assert "{scratch}" not in json.dumps(tidy["baseline"]) and str(tidy["_scratch"]) in tidy["create"]["prompt"]
     assert cases[3]["mode"] == "live" and cases[3]["scratch"]  # a live case keeps its writes in a scratch folder
@@ -868,12 +868,12 @@ def test_a_one_off_is_charged_the_two_model_calls_around_it():
 def test_a_one_off_has_its_own_goal_line_next_to_its_capped_figures():
     # The 2 model calls around a one-off cap its speedup, so
     # it is also judged on what it can reach: right, never a silent wrong end, and its own model calls per run.
-    habit = "/r/habits/vault-save/assets/HABIT.yaml"
+    habit = "/r/habits/vault-save/assets/reflex.yml"
     runs = [{"case": c, "task": c, "kind": "run", "ok": ok, "status": status, "wall_ms": 900, "model_calls": calls,
              "habit": habit, "habit_kind": "one-off"}
             for c, ok, status, calls in (("racine", True, "end", 1), ("racine", True, "wake", 1),
                                          ("bien-etre", False, "end", 2), ("piege", True, "wake", 0))]
-    other = {**runs[0], "case": "req", "habit": "/r/habits/t1/assets/HABIT.yaml", "habit_kind": "request"}
+    other = {**runs[0], "case": "req", "habit": "/r/habits/t1/assets/reflex.yml", "habit_kind": "request"}
     found, = bench.one_offs(runs + [other, {"case": "racine", "task": "racine", "kind": "baseline", "ok": True}])
     assert (found["habit"], found["cases"], found["runs"], found["right"], found["silent"]) == ("vault-save", 3, 4, 3, 1)
     assert found["calls"] == 1.0 and found["slow"] == 0
@@ -941,7 +941,7 @@ def test_a_create_turn_takes_away_every_habit_it_saved(fake, capsys):
     # retired watches only, and the user's ledger kept bench-agents-stuck active with its skill in the Trash.
     run, calls, home, user, case, records, configure = fake
     (home / "skills" / "mine" / "assets").mkdir(parents=True)
-    (home / "skills" / "mine" / "assets" / "HABIT.yaml").write_text("spec: habits/0.1\n")
+    (home / "skills" / "mine" / "assets" / "reflex.yml").write_text("spec: habits/0.1\n")
     configure("turn.json", {"also": ["bench-x-watch", "mine"], "kinds": {"bench-x": "request",
                                                                           "bench-x-watch": "watch"}})
     assert run("--no-baseline", cases=[{**case, "repeat": 1}]) == 0
@@ -951,7 +951,7 @@ def test_a_create_turn_takes_away_every_habit_it_saved(fake, capsys):
     assert len(list((user / ".Trash").glob("bench-x-watch-bench-*"))) == 1
     assert [c["argv"] for c in calls() if c["argv"][:2] == ["habits", "retire"]] == [
         ["habits", "retire", "bench-x"], ["habits", "retire", "bench-x-watch"]]
-    assert (home / "skills" / "mine" / "assets" / "HABIT.yaml").is_file()
+    assert (home / "skills" / "mine" / "assets" / "reflex.yml").is_file()
     assert "was there before the turn" in create["clean_error"] and "mine" in create["clean_error"]
     assert "retire" not in create["clean_error"]  # each found by its skill: retired before the Trash
 
@@ -995,13 +995,13 @@ def test_dry_check_loads_every_file_and_runs_nothing(fake, tmp_path, capsys):
 
 def test_a_habit_its_setup_makes_is_read_once_the_setup_ran(fake, capsys):
     run, calls, home, user, case, records, configure = fake
-    late = {**case, "habit": "{scratch}/made/assets/HABIT.yaml", "repeat": 1, "baseline": None, "create": None,
+    late = {**case, "habit": "{scratch}/made/assets/reflex.yml", "repeat": 1, "baseline": None, "create": None,
             "setup": case["setup"] + ' && mkdir -p "$SCRATCH/made/assets" && cp '
-                     '"$REPO/examples/tidy-downloads/assets/HABIT.yaml" "$SCRATCH/made/assets/"'}
+                     '"$REPO/examples/tidy-downloads/assets/reflex.yml" "$SCRATCH/made/assets/"'}
     assert run(cases=[late]) == 0
     scratch = user / "tmp" / "bench" / "tidy"
     ran, = [c for c in calls() if c["argv"][:2] == ["habits", "run"]]
-    assert Path(ran["argv"][2]).parts[-3:] == ("made", "assets", "HABIT.yaml") and scratch not in Path(
+    assert Path(ran["argv"][2]).parts[-3:] == ("made", "assets", "reflex.yml") and scratch not in Path(
         ran["argv"][2]).parents
     assert f"{scratch}/inbox" in ran["text"] and "Downloads" not in ran["text"]
     capsys.readouterr()
@@ -1058,7 +1058,7 @@ def test_a_model_turn_runs_in_a_fresh_empty_root_far_from_the_answer_key(fake, t
         assert usage.parent == cwd.parent and cwd not in copy.parents and cwd.parent not in copy.parents
         assert len(turn["around"]) == 5  # tidy, hb-…, the turns' folder, the temp folder, the home folder, as the turn saw them
         for folder, names in turn["around"].items():  # up to the home folder
-            assert not set(names) & {"HABIT.yaml", "SKILL.md", ".bench", "cases.json", "suite"}, folder
+            assert not set(names) & {"reflex.yml", "SKILL.md", ".bench", "cases.json", "suite"}, folder
             assert not [n for n in names if n.endswith((".yaml", ".yml"))] and "run.py" not in names
         assert set(turn["inside"]) == {"inbox", "a.pdf"}  # what its setup made, nothing more
         assert not cwd.parent.exists()  # gone once its record was out
@@ -1087,10 +1087,10 @@ def test_no_model_turn_runs_while_an_old_copy_of_a_habit_sits_near_its_root(fake
     run, calls, home, user, case, records, configure = fake
     old = user / "tmp" / "habits-bench-turns" / "habits-bench" / "dashboard-publish" / "published" / ".bench" / "dashboard-publish" / "assets"
     old.mkdir(parents=True)
-    (old / "HABIT.yaml").write_text("spec: habits/0.1\n")
+    (old / "reflex.yml").write_text("spec: habits/0.1\n")
     other = user / "tmp" / "habits-bench-turns" / "habits-demo" / "zz" / "assets"  # another habit: an example, as the plugin ships
     other.mkdir(parents=True)
-    (other / "HABIT.yaml").write_text("spec: habits/0.1\n")
+    (other / "reflex.yml").write_text("spec: habits/0.1\n")
     assert run("--budget", "0.05") == 1
     printed, err = records(capsys)
     turned = [r for r in printed if r["kind"] in ("baseline", "create")]
@@ -1102,18 +1102,18 @@ def test_no_model_turn_runs_while_an_old_copy_of_a_habit_sits_near_its_root(fake
     assert "warning: no model turn will run" in capsys.readouterr().err
     copy = user / "tmp" / "habits-bench-turns" / "old" / "tidy-downloads" / "assets"  # a copy of the case's own habit
     copy.mkdir(parents=True)
-    (copy / "HABIT.yaml").write_text("spec: habits/0.1\n")
+    (copy / "reflex.yml").write_text("spec: habits/0.1\n")
     shutil.rmtree(user / "tmp" / "habits-bench-turns" / "habits-bench")
     assert run("--budget", "0.05", "--no-baseline") == 1
     create = [r for r in records(capsys)[0] if r["kind"] == "create"][0]
-    assert "old/tidy-downloads/assets/HABIT.yaml" in create["why"][0] and "habits-demo" not in create["why"][0]
+    assert "old/tidy-downloads/assets/reflex.yml" in create["why"][0] and "habits-demo" not in create["why"][0]
     shutil.rmtree(user / "tmp" / "habits-bench-turns" / "old")
     assert run("--budget", "0.05", "--no-baseline") == 0  # an example habit nearby stops nothing
 
 
 def test_a_turn_never_finds_what_an_earlier_turn_wrote(fake, tmp_path, capsys):
     run, calls, home, user, case, records, configure = fake
-    configure("turn.json", {"writes": {"{cwd}/HABIT.yaml": "spec: habits/0.1\n"}})  # a create's draft, in its root
+    configure("turn.json", {"writes": {"{cwd}/reflex.yml": "spec: habits/0.1\n"}})  # a create's draft, in its root
     assert run("--budget", "0.05", cases=[{**case, "create": {**case["create"], "repeat": 2}}]) == 0
     model = turns(calls)
     assert len(model) == 3 and all(set(t["inside"]) == {"inbox", "a.pdf"}
@@ -1153,9 +1153,9 @@ def test_a_turn_on_a_folder_its_setup_builds_is_told_to_stay_there(fake, tmp_pat
     capsys.readouterr()
     # A case that reads the real machine (no setup) keeps its prompt: the line would forbid its task.
     (tmp_path / "sante" / "assets").mkdir(parents=True)
-    (tmp_path / "sante" / "assets" / "HABIT.yaml").write_text("spec: habits/0.1\n")
+    (tmp_path / "sante" / "assets" / "reflex.yml").write_text("spec: habits/0.1\n")
     alone = {k: v for k, v in case.items() if k not in ("setup", "rewrite", "scratch")}
-    assert run("--no-create", cases=[{**alone, "habit": str(tmp_path / "sante" / "assets" / "HABIT.yaml"),
+    assert run("--no-create", cases=[{**alone, "habit": str(tmp_path / "sante" / "assets" / "reflex.yml"),
                                       "baseline": {"prompt": "Hermes va bien ?"}}]) == 0
     assert turns(calls)[-1]["argv"][1] == "Hermes va bien ?" and "/hb-" in turns(calls)[-1]["cwd"]
     # A prompt that says it already is not told twice.
@@ -1271,7 +1271,7 @@ MAC_CREATE = [said("terminal", {"command": f"cd {S} && hermes habits check {S}/s
 FIND_CREATE = [said("tool_call", {"calls": BROKEN}, NOT_JSON)] * 3 + [
     said("habit_save", {"name": "vault-find-send-made", "scenario": {"spec": "habits/0.1"}},
          {"status": "saved", "habit": "vault-find-send-made", "kind": "request"}),
-    said("terminal", {"command": "hermes habits check /Users/alex/.hermes/skills/vault-find-send-made/assets/HABIT.yaml"},
+    said("terminal", {"command": "hermes habits check /Users/alex/.hermes/skills/vault-find-send-made/assets/reflex.yml"},
          {"error": "vault-find-send-made is a habit: the Habits plugin checks and versions its files"})]
 PROBE = '[{"arguments": {"description": "probe", "name": "probe-simple", "procedure": "probe", "scenario": {"'
 D5 = "/tmp/habits-bench/vault-watch-triage/hour-kind/watch.yaml"
@@ -1318,9 +1318,9 @@ def test_first_try_is_the_first_graph_the_plugin_judged_and_save_tries_count_wha
                             ("rule 2 (exits): node a has no exit", False), ("format: nodes must be a mapping", False),
                             ("format: [Errno 2] No such file or directory: 'x.yaml'", None),
                             # a draft in Hermes's own scratch folder, refused for its place
-                            ("format: file /Users/alex/.hermes/cache/scratch/b/HABIT.yaml looks like a secrets or "
+                            ("format: file /Users/alex/.hermes/cache/scratch/b/reflex.yml looks like a secrets or "
                              "config file (in Hermes's home, beside its config file and keys; only a skill's "
-                             "assets/HABIT.yaml is read there), not a habit graph", None),
+                             "assets/reflex.yml is read there), not a habit graph", None),
                             ("format: file x.txt is not a graph: give a .yaml, .yml or .json file", None),
                             ('{"status": "refused", "message": "invalid graph: rule 1"}', False),
                             ('{"status": "refused", "message": "no file /x.yaml"}', None),
@@ -1423,7 +1423,7 @@ def test_works_takes_its_own_expect_mode_rewrite_hour_and_message(fake, capsys):
 
 def test_works_copies_the_habits_own_scripts_and_points_its_paths_at_the_copy(fake, capsys):
     # T8: Hermes saved its checks as scripts in the habit's assets/ and named them by their saved path.
-    # works copied only HABIT.yaml and SKILL.md, so --within refused check_markers.py as outside the root, and the
+    # works copied only reflex.yml and SKILL.md, so --within refused check_markers.py as outside the root, and the
     # saved folder had gone to the Trash anyway.
     run, calls, home, user, case, records, configure = fake
     saved = home / "skills" / "bench-x" / "assets"
@@ -1682,7 +1682,7 @@ def test_a_run_that_read_the_web_is_read_back_whole(setup, monkeypatch, tmp_path
     plugin_tests.test_hermes_habits_run_gives_what_a_web_read_brought_back_as_data(setup, monkeypatch, tmp_path,
                                                                                     capsys, True)
     ctx, habits = setup
-    code, out, _ = plugin_tests.cli_run(habits, capsys, str(tmp_path / "news" / "HABIT.yaml"))
+    code, out, _ = plugin_tests.cli_run(habits, capsys, str(tmp_path / "news" / "reflex.yml"))
     back = bench.last_json("notice\n" + json.dumps(out, ensure_ascii=False))
     assert "untrusted" in out and "untrusted" not in back
     assert back["doubted"][0]["item"] == plugin_tests.INJECTED and back["asks"][0]["node"] == "judge"
@@ -1813,3 +1813,13 @@ def test_a_cron_job_a_model_turn_made_is_taken_away_and_named(fake, capsys):
     printed, err = records(capsys)
     assert printed[-1]["kind"] == "baseline" and printed[-1]["cron_left"] == ["a1b2c3"]
     assert "hermes cron remove a1b2c3" in err
+
+
+def test_the_bench_sees_a_habit_file_under_either_name(tmp_path):
+    # reflex.yml, and the HABIT.yaml that v0.1 wrote: what a model turn finds near its root, and a habit's folder
+    for name in ("reflex.yml", "HABIT.yaml"):
+        assets = tmp_path / f"in-{name}" / "assets"
+        assets.mkdir(parents=True)
+        (assets / name).write_text("spec: habits/0.1\n")
+    found = bench.within_reach(tmp_path, set(), {"in-reflex.yml", "in-HABIT.yaml"})
+    assert sorted(Path(f).name for f in found) == ["HABIT.yaml", "reflex.yml"]

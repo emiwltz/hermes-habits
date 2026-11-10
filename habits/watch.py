@@ -30,7 +30,7 @@ WATCH_PROMPT = (
     "A Habits watch woke you. The script output above says what the watch found and what is left to do. "
     "Do what is left, or tell the user in two sentences at most what changed. If the watch stopped because of "
     "its own graph (a page that moved, a case it does not know), propose a repair to the user: what is wrong and "
-    "what you would change in its HABIT.yaml. Save it with habit_save under the same name only once the user agrees."
+    "what you would change in its reflex.yml. Save it with habit_save under the same name only once the user agrees."
 )
 
 

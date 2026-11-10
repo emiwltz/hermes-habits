@@ -51,5 +51,5 @@ jobs:
           hermes plugins install "file://$GITHUB_WORKSPACE" --enable --yes-deps
           hermes plugins list | grep -i habits
           hermes habits list
-          for f in "$GITHUB_WORKSPACE"/examples/*/assets/HABIT.yaml; do hermes habits check "$f"; done
+          for f in "$GITHUB_WORKSPACE"/examples/*/assets/reflex.yml; do hermes habits check "$f"; done
           hermes habits tick watch-hermes-releases | tail -1 | grep -q '"wakeAgent": false'

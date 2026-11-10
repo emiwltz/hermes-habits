@@ -1,9 +1,9 @@
 """The guard on habits, as a pre_tool_call hook: the wall, a new habit through habit_save only, and no self-approval.
 
-- The wall: a habit's SKILL.md, assets/HABIT.yaml and assets/LEARNED.md (a file older versions wrote) change through
-  habit_save only, whoever writes (the model, the review, the curator).
-- A new habit: an assets/HABIT.yaml written into a skill that is no habit yet is refused, whoever writes it; a habit
-  is saved with habit_save.
+- The wall: a habit's SKILL.md, assets/reflex.yml (or assets/HABIT.yaml, the name v0.1 wrote) and assets/LEARNED.md
+  (a file older versions wrote) change through habit_save only, whoever writes (the model, the review, the curator).
+- A new habit: an assets/reflex.yml (or HABIT.yaml) written into a skill that is no habit yet is refused, whoever
+  writes it; a habit is saved with habit_save.
 - No self-approval: only the user changes a state, so the model's `hermes habits promote|undo|resume|reset|retire`,
   its writes into the plugin's own folder (the ledger, the paused and off files), however the path is
   spelled (any write that names habits.db, or plugin-data and habits), its `hermes config set` of the plugin's
@@ -32,7 +32,7 @@ HAND_EDIT = ("{name} is a habit: the Habits plugin checks and versions its files
              "itself (a new version of a request habit or a watch starts learning again). For a variation just this "
              "once, do the task by hand and leave the habit as it is. A helper script in its assets/ folder is written "
              "with the write_file tool, on its full path.")
-DOOR = ("Habits refused assets/HABIT.yaml for {name}: a habit is saved with habit_save only, which checks the graph "
+DOOR = ("Habits refused assets/reflex.yml for {name}: a habit is saved with habit_save only, which checks the graph "
         "and writes the skill's files. Draft it outside the skills folders, as graph.yaml in a scratch folder named "
         "by its full path, try it with habit_run {{file: <its full path>}}, then call habit_save with that file.")
 STOP = (" Stop: {n} refusals in 10 minutes. Do not write this habit again; tell the user what you wanted to make, or "
@@ -43,7 +43,7 @@ OWN_FILES = ("plugin-data/habits holds the Habits ledger and its switches (pause
              "To change a habit's state, point the user to /habits.")
 OWN_SETTINGS = ("The Habits settings (promote, promote_runs…) are the user's: they change them in their own "
                 "terminal. To change a habit's state, point the user to /habits.")
-WHERE = ("Habits cannot tell where this writes a habit's file (SKILL.md, assets/HABIT.yaml, assets/LEARNED.md): a "
+WHERE = ("Habits cannot tell where this writes a habit's file (SKILL.md, assets/reflex.yml, assets/LEARNED.md): a "
          "relative path from a folder the line does not name, a variable or a glob, or code that writes by itself. "
          "A habit's files change through habit_save only. For another file, name it by its full path, or start the "
          "line with cd <its folder's full path>; from code, write it with write_file.")
@@ -67,10 +67,14 @@ SLASH = re.compile(r"/habits\b[\s'\",]+(?:oui|yes|promote|essai|try|trial|repos|
 REFUSALS = 2  # refusals in REFUSALS_SECONDS before the next one says stop
 REFUSALS_SECONDS = 600
 HABIT_FILES = re.compile(r"(?:^|[\s'\"=/])skills/(?:[^\s'\"]+/)?([a-z0-9][a-z0-9_-]{0,39})/"
-                         r"(?:SKILL\.md|assets/HABIT\.yaml|assets/LEARNED\.md)", re.I)  # the Mac's disk ignores case
-OWN_PARTS = ("SKILL.md", "assets/HABIT.yaml", "assets/LEARNED.md")  # the files of a habit only habit_save writes
-OWN_NAMES = ("skill.md", "habit.yaml", "learned.md")
-HABIT_YAML = re.compile(r"(?:^|[\s'\"=/])skills/(?:[^\s'\"]+/)?([a-z0-9][a-z0-9_-]{0,39})/assets/HABIT\.yaml", re.I)
+                         r"(?:SKILL\.md|assets/(?:reflex\.yml|HABIT\.yaml)|assets/LEARNED\.md)",
+                         re.I)  # the Mac's disk ignores case
+# The files of a habit only habit_save writes
+OWN_PARTS = ("SKILL.md", "assets/reflex.yml", "assets/HABIT.yaml", "assets/LEARNED.md")
+OWN_NAMES = ("skill.md", "reflex.yml", "habit.yaml", "learned.md")
+GRAPH_NAMES = ("reflex.yml", "habit.yaml")  # the graph file, by its new and its v0.1 name
+HABIT_YAML = re.compile(r"(?:^|[\s'\"=/])skills/(?:[^\s'\"]+/)?([a-z0-9][a-z0-9_-]{0,39})/"
+                        r"assets/(?:reflex\.yml|HABIT\.yaml)", re.I)
 # Commands each word of which is a path (Hermes's skill lock reads the same verbs): the first ones write their last,
 # the others each of theirs. Which skill a line writes into is where they land.
 WRITE_LAST = {"cp", "install", "ln", "rsync", "ditto", "scp"}
@@ -101,7 +105,7 @@ DRY_RUN = {"--input", "--message", "--within"}
 def reads(line: str) -> bool:
     """Every command of the line only reads, as shell.py reads them, and two more the guard sees as reads, though no
     habit step may hold them: a cd, which moves no file, and a dry `hermes habits run`. Without them, `cd
-    <root> && hermes habits check draft/HABIT.yaml` and `hermes habits run … | tail` were refused as writes, again
+    <root> && hermes habits check draft/reflex.yml` and `hermes habits run … | tail` were refused as writes, again
     and again while a habit was being written."""
     if shell.EXPANSION in line or shell.MARK in line:
         return False
@@ -170,8 +174,8 @@ ANYWHERE = "?"  # edited_habit: a habit's file may be written where the guard ca
 
 
 def edited_habit(tool: str, args: dict) -> str | None:
-    """The saved habit whose SKILL.md, HABIT.yaml or LEARNED.md this call would rewrite, if any (habit_save's own
-    writes go through dispatch_tool, which Hermes does not guard; SAVING covers a Hermes that would). A shell, code or
+    """The saved habit whose SKILL.md, reflex.yml, HABIT.yaml or LEARNED.md this call would rewrite, if any
+    (habit_save's own writes go through dispatch_tool, which Hermes does not guard; SAVING covers a Hermes that would). A shell, code or
     file write that names one of those files is read as the shell and the disk read it: its words with quotes and
     escapes undone, in any case (a cd into the folder, a relative path, a doubled slash), and where its writes land,
     links resolved (_landing). While a habit exists, one whose writes land where the guard cannot tell is ANYWHERE:
@@ -210,7 +214,8 @@ def edited_habit(tool: str, args: dict) -> str | None:
 
 
 def unplaced(tool: str, args: dict) -> bool:
-    """A file tool's write of assets/HABIT.yaml on a relative path: the guard cannot tell which skill it lands in."""
+    """A file tool's write of assets/reflex.yml or HABIT.yaml on a relative path: the guard cannot tell which skill
+    it lands in."""
     path = posixpath.expanduser(str(args.get("path") or ""))
     return tool in ("write_file", "patch") and not posixpath.isabs(path)
 
@@ -437,36 +442,38 @@ def _opens_to_write(call) -> bool:
 
 
 def made_habit(tool: str, args: dict) -> str | None:
-    """The skill a call would turn into a habit, writing its assets/HABIT.yaml outside habit_save. A shell or code
-    write that names the file is one unless it surely lands outside every skill (_landing, _skilled); a file tool's
+    """The skill a call would turn into a habit, writing its assets/reflex.yml (or HABIT.yaml) outside habit_save. A
+    shell or code write that names the file is one unless it surely lands outside every skill (_landing, _skilled); a file tool's
     write is read by its path, links resolved."""
     if tool in ("terminal", "execute_code"):  # a shell write: cp, tee, a redirection; or code
         command = str(args.get("command") or args.get("code") or "")
-        if not _names(command, ("habit.yaml",), tool == "execute_code") or tool == "terminal" and reads(command):
+        if not _names(command, GRAPH_NAMES, tool == "execute_code") or tool == "terminal" and reads(command):
             return None
         found = HABIT_YAML.search(_paths(QUOTES.sub("", command) if tool == "terminal" else command))
         if found:
             return found.group(1)
-        places = _landing(tool, args, ("habit.yaml",), door=True)
+        places = _landing(tool, args, GRAPH_NAMES, door=True)
         return "this skill" if places is None or any(_skilled(p) for p in places) else None
     if tool in ("write_file", "patch"):  # Hermes does not protect the skills folder from its file tools
         given = posixpath.expanduser(str(args.get("path") or ""))
         path = posixpath.normpath(os.path.realpath(given) if posixpath.isabs(given) else given).lower()
-        found = re.search(r"(?:^|/)(?:skills/(?:.+/)?)?([^/]+)/assets/habit\.yaml$", path) if unplaced(tool, args) \
-            else re.search(r"/skills/(?:.+/)?([^/]+)/assets/habit\.yaml$", path)
+        found = re.search(r"(?:^|/)(?:skills/(?:.+/)?)?([^/]+)/assets/(?:reflex\.yml|habit\.yaml)$", path) \
+            if unplaced(tool, args) else re.search(r"/skills/(?:.+/)?([^/]+)/assets/(?:reflex\.yml|habit\.yaml)$", path)
         if found:
             return found.group(1)
-        if posixpath.isabs(given) and path.endswith("/assets/habit.yaml") and \
+        if posixpath.isabs(given) and path.endswith(("/assets/reflex.yml", "/assets/habit.yaml")) and \
                 any(_inside(path, root) for root in _roots()):  # a skills folder of another name
             return path.split("/")[-3]
-        return "this skill" if unplaced(tool, args) and path.endswith("assets/habit.yaml") else None
+        unplaced_graph = unplaced(tool, args) and path.endswith(("assets/reflex.yml", "assets/habit.yaml"))
+        return "this skill" if unplaced_graph else None
     if tool != "skill_manage":
         return None
     ops = args.get("operations") if isinstance(args.get("operations"), list) else [args]
     for op in ops:
         if not isinstance(op, dict) or op.get("action") not in ("write_file", "patch"):
             continue
-        if posixpath.normpath(str(op.get("file_path") or "")).lower() == str(catalog.HABIT_FILE).lower():
+        if posixpath.normpath(str(op.get("file_path") or "")).lower() in (
+                str(catalog.HABIT_FILE).lower(), str(catalog.LEGACY_FILE).lower()):
             return str(op.get("name") or "this skill")
     return None
 
@@ -535,8 +542,8 @@ class Guard:
                      and op.get("name") in folders), None)
 
     def door(self, name: str, session: str = ""):
-        """A HABIT.yaml written into a skill outside habit_save: refused toward habit_save. Each session (or task, when
-        the call names none) counts its own refusals; past 2 in 10 minutes the refusal says stop."""
+        """A reflex.yml (or HABIT.yaml) written into a skill outside habit_save: refused toward habit_save. Each
+        session (or task, when the call names none) counts its own refusals; past 2 in 10 minutes the refusal says stop."""
         now = time.monotonic()
         self.refusals = {key: kept for key, times in self.refusals.items()
                          if (kept := [at for at in times if now - at < REFUSALS_SECONDS])}

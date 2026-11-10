@@ -57,7 +57,7 @@ def test_the_six_examples_are_shipped():
 
 @pytest.mark.parametrize("folder", EXAMPLES, ids=lambda p: p.name)
 def test_example_habit_loads_and_validates(folder):
-    habit = graph.load((folder / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    habit = graph.load((folder / "assets" / "reflex.yml").read_text(encoding="utf-8"))
     assert [str(issue) for issue in graph.validate(habit)] == []
 
 
@@ -70,12 +70,12 @@ def test_example_skill_has_its_name_and_a_short_description(folder):
 
 
 def test_the_tidy_example_is_the_example_of_the_spec():
-    shipped = graph.load((ROOT / "examples" / "tidy-downloads" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    shipped = graph.load((ROOT / "examples" / "tidy-downloads" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
     assert shipped == spec_example()
 
 
 def test_the_tidy_example_never_moves_over_a_file():
-    shipped = graph.load((ROOT / "examples" / "tidy-downloads" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    shipped = graph.load((ROOT / "examples" / "tidy-downloads" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
     moves = [n["args"]["command"] for n in shipped["nodes"].values() if " mv " in f' {n.get("args", {}).get("command", "")}']
     assert len(moves) == 2 and all("mv -n " in m for m in moves)
 
@@ -126,7 +126,7 @@ def test_the_guides_hold_their_graphs():
 def test_a_habit_with_inputs_has_no_trigger():
     """A request habit or a watch is started with no inputs: inputs make a one-off."""
     habits = [graph.load(block) for _, _, block in all_blocks()]
-    habits += [graph.load((p / "assets" / "HABIT.yaml").read_text(encoding="utf-8")) for p in EXAMPLES]
+    habits += [graph.load((p / "assets" / "reflex.yml").read_text(encoding="utf-8")) for p in EXAMPLES]
     assert [h for h in habits if h.get("inputs") and "trigger" in h] == []
 
 
@@ -136,7 +136,7 @@ def test_the_guide_quotes_the_examples_exactly():
     quoted = [(name, block) for _, name, block in all_blocks() if name in shipped_names]
     assert quoted
     for name, block in quoted:
-        shipped = graph.load((ROOT / "examples" / name / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+        shipped = graph.load((ROOT / "examples" / name / "assets" / "reflex.yml").read_text(encoding="utf-8"))
         for node, body in graph.load(block)["nodes"].items():
             assert shipped["nodes"].get(node) == body, f"{name}: node {node} differs from the guide"
 
@@ -147,11 +147,12 @@ def test_the_guides_stay_short(path, most):
 
 
 def test_the_guide_drafts_never_use_a_guarded_name():
-    """The guard matches skill.md and habit.yaml in any path: a draft named so is refused, or taken for a habit."""
+    """The guard matches skill.md, reflex.yml and habit.yaml in any path: a draft named so is refused, or taken for
+    a habit."""
     for path in GUIDES:
         spans = re.findall(r"`([^`\n]+)`", path.read_text(encoding="utf-8"))
         drafts = [s for s in spans if "/tmp/" in s]
-        assert not [s for s in drafts if re.search(r"(?i)(habit\.yaml|skill\.md)", s)], path.parent.name
+        assert not [s for s in drafts if re.search(r"(?i)(habit\.yaml|reflex\.yml|skill\.md)", s)], path.parent.name
     loop = GUIDE.read_text(encoding="utf-8")
     assert "/tmp/<name>-draft/graph.yaml" in loop and "/tmp/<name>-draft/procedure.md" in loop
 
@@ -179,7 +180,7 @@ def test_the_guide_reads_whether_a_phrasing_would_run_from_fired():
 
 
 # The hero: examples/hermes-health only reads, asks nothing and calls no model, so it answers when the model is down.
-HEALTH = graph.load((ROOT / "examples" / "hermes-health" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+HEALTH = graph.load((ROOT / "examples" / "hermes-health" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
 # Every end says where it read: one gateway serves every profile from the default home, a profile's own file is
 # read too (for a failed state only: its heartbeat is not), and hermes logs reads the active home.
 READ = "Read: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
@@ -411,13 +412,13 @@ def test_every_reflex_the_habits_guide_calls_is_listed_in_the_prompt():
     # A reflex's name, not a tool's: `tool_call {calls: [{name: habit_run, …}]}` names the tool itself.
     names = set(re.findall(r"\{name: ([a-z0-9-]+)[,}]", HABITS_GUIDE.read_text(encoding="utf-8")))
     assert names
-    shipped = {p.name: graph.load((p / "assets" / "HABIT.yaml").read_text(encoding="utf-8")) for p in EXAMPLES}
+    shipped = {p.name: graph.load((p / "assets" / "reflex.yml").read_text(encoding="utf-8")) for p in EXAMPLES}
     assert sorted(n for n in names if n not in shipped or not trigger.reads_all(shipped[n])) == []
 
 
 def check_links(probe, page_links="https://a.example/ok\nhttps://b.example/gone"):
     """A run of the shipped check-links with fake tools: probe(command) gives each link's (output, exit code)."""
-    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
 
     def tool(name, args):
         command = args["command"]
@@ -458,7 +459,7 @@ def test_check_links_tells_a_link_it_could_not_check_from_a_broken_one():
 def test_check_links_lists_the_links_a_reader_can_click_not_every_href():
     # Seen live: a <link rel="preconnect" href="https://…algolia.net"> in the head, a network hint, was reported as a
     # broken link and the model re-checked by hand (8 model calls instead of 2).
-    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
     command = links["nodes"]["links"]["args"]["command"].split("| tr ", 1)[1]
     html = ('<head><link data-rh="true" rel="preconnect" href="https://hint.example" crossorigin="anonymous">'
             '<link rel=preload href=https://hint2.example></head>\n'
@@ -475,7 +476,7 @@ def test_check_links_lists_the_links_a_reader_can_click_not_every_href():
     ("404", "broken"), ("410", "broken"), ("500", "broken"), ("503", "broken"), ("000", "broken"), ("4290", "broken"),
 ])
 def test_check_links_awk_gives_one_word_per_http_code(code, word):
-    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
     command = links["nodes"]["probe"]["args"]["command"]
     awk = command.split("| awk ", 1)[1].strip().replace("{''", "{")  # the '' that keeps {print} from being a template
     done = subprocess.run(["sh", "-c", f"printf %s {code} | awk {awk}"], capture_output=True, text=True, timeout=10)
@@ -499,7 +500,7 @@ def test_the_guide_template_probes_links_as_the_shipped_check_links():
 
 
 def test_check_links_probe_is_a_read_that_prints_one_word_per_link():
-    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "HABIT.yaml").read_text(encoding="utf-8"))
+    links = graph.load((ROOT / "examples" / "check-links" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
     probe = links["nodes"]["probe"]
     assert runner._reads(probe) and runner._reads(links["nodes"]["links"])  # awk with no system, pipe or >: a reader
     assert "-f" not in probe["args"]["command"].split()  # curl prints 000 and goes on: a broken link fails nothing
@@ -507,7 +508,7 @@ def test_check_links_probe_is_a_read_that_prints_one_word_per_link():
 
 
 def test_the_readme_habit_is_the_shipped_check_links_without_comments():
-    shipped = (ROOT / "examples" / "check-links" / "assets" / "HABIT.yaml").read_text(encoding="utf-8")
+    shipped = (ROOT / "examples" / "check-links" / "assets" / "reflex.yml").read_text(encoding="utf-8")
     bare = "\n".join(re.sub(r"\s+#.*$|^#.*$", "", line).rstrip() for line in shipped.splitlines())
     bare = "\n".join(line for line in bare.splitlines() if line) + "\n"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

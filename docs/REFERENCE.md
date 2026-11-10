@@ -4,7 +4,7 @@ Everything beyond the README: the doors, the format, the checks, the reply of `h
 the settings and the commands. The protocol itself is [SPEC.md](../SPEC.md) (`habits/0.1`); what the plugin does
 on your machine and what leaves it is [SAFETY.md](SAFETY.md).
 
-A habit is a reflex: a skill with a fast path. It always comes back **done**, or **handed back** with what is left.
+A habit is a task Hermes has learned; its reflex is the part that runs: a skill with a fast path. It always comes back **done**, or **handed back** with what is left.
 
 1. [The three doors](#the-three-doors)
 2. [The format](#the-format)
@@ -70,10 +70,11 @@ wakes once and says so; any check that works starts the count again. A daily wat
 
 ## The format
 
-A habit is a skill folder: `SKILL.md` (name, description, the slow way by hand) and `assets/HABIT.yaml` (the fast
+A habit is a skill folder: `SKILL.md` (name, description, the slow way by hand) and `assets/reflex.yml` (the fast
 way). A helper script the graph calls lives in `assets/` too and counts in the version (50 files and their first
 megabyte at most; `.DS_Store`, `._` files, hidden folders and `__pycache__` aside). A helper never writes into
 `assets/`: every run would be a new version. YAML 1.2: only `true` and `false` are booleans, so `yes` is text.
+A habit saved by v0.1 as `assets/HABIT.yaml` is still read and still protected; if a folder holds both files, `assets/reflex.yml` is the one used.
 Quote times and numbers with leading zeros (`"09:00"`).
 
 | Field | Required | Value |
@@ -160,7 +161,7 @@ nodes:
 ```
 
 The full sorting example, with `each`, `where` and `check: {empty: doubts}`, is
-[examples/tidy-downloads](../examples/tidy-downloads/assets/HABIT.yaml), the same graph as SPEC.md §10.
+[examples/tidy-downloads](../examples/tidy-downloads/assets/reflex.yml), the same graph as SPEC.md §10.
 
 **Decision-model pitfalls.** It leans toward the first option: put `other` last. It counts and compares dates
 badly: do that in a `check`. Keep the question short and the material in `with`. To judge every item use `each`;
@@ -289,7 +290,7 @@ fakes (a fake decision model, a fake terminal) on `examples/tidy-downloads` and 
  "left": ["mystery.xyz: unsure (0.55 under 0.8) (at classify)"],
  "next": "Handed back (1 doubt left): do only what is left.",
  "report": "wake at 'help' after 0.0 s (fake, 7 questions, 7 tool calls)\n- list: terminal ok\n- apps: terminal ok\n- classify: 5 answers (installer 2, image 1, document 1), 1 doubts\n- move: 4 terminal calls done\n- installed: 2 answers (no 1, yes 1)\n- trash: 1 terminal call done\n- doubts: empty doubts: no",
- "repair": "If the habit itself is wrong (a case it does not know, a folder that moved), propose a repair to the user once the task is done; save it with habit_save, same name, only once the user agrees (~/.hermes/skills/tidy-downloads/assets/HABIT.yaml)."}
+ "repair": "If the habit itself is wrong (a case it does not know, a folder that moved), propose a repair to the user once the task is done; save it with habit_save, same name, only once the user agrees (~/.hermes/skills/tidy-downloads/assets/reflex.yml)."}
 ```
 
 **Refused** (nothing ran):
@@ -403,7 +404,7 @@ saved ──► learning ── 12 counted runs at ≥ 90 %, then your yes ─�
 
 ### A file the plugin did not save
 
-A `HABIT.yaml` copied by hand, synced or cloned into your skills never acts on its own before your yes (or, under
+A `reflex.yml` copied by hand, synced or cloned into your skills never acts on its own before your yes (or, under
 `promote: auto`, the thresholds). It learns
 on its message door like any other, the plugin's prompt section lists its name and state without its
 description, and called by name it runs dry. Your yes in `/habits` (or `hermes habits promote`) makes it automatic; under
@@ -480,7 +481,7 @@ In a terminal (`hermes habits`):
 | Command | What it does |
 | --- | --- |
 | `list` | the list `/habits` shows (also the default) |
-| `show <name> [--json]` | the detail, with the path of its `HABIT.yaml` and its steps in the order a reader follows (to explain a reflex without running it); `--json`: path, door, origin, version, issues and the habits it uses (unknown: exit 1) |
+| `show <name> [--json]` | the detail, with the path of its `reflex.yml` and its steps in the order a reader follows (to explain a reflex without running it); `--json`: path, door, origin, version, issues and the habits it uses (unknown: exit 1) |
 | `view [name]` | write the gallery or one diagram page, print its path, open it on macOS |
 | `check <file>` | check a graph file as `habit_run` and `habit_save` would, without running it |
 | `run <name or file>` | run it here with Hermes's tools and no model turn; dry unless `--live`; records nothing; prints `replay: <path>`, a page of that run |

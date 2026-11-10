@@ -8,7 +8,7 @@ description: "Sort ~/Downloads by file type (macOS)"
 macOS only: it reads `/Applications` and moves installers to `~/.Trash`.
 
 The slow way: what you do by hand when the habit does not run. These are the same commands as
-`assets/HABIT.yaml`, in the same order, so that the comparison while learning finds each step.
+`assets/reflex.yml`, in the same order, so that the comparison while learning finds each step.
 
 1. List the files: `ls -p ~/Downloads | grep -v /`
 2. List the installed applications: `ls /Applications`

@@ -9,7 +9,7 @@ A watch: once a day Hermes reads the Hacker News front page with no LLM. A fast 
 the 30 stories against your interests in one call (under a second), and Hermes wakes only when one of
 them is close. With no key for the fast model, Hermes's own model answers the sort.
 
-The slow way, the same steps as `assets/HABIT.yaml`:
+The slow way, the same steps as `assets/reflex.yml`:
 
 1. Read the front page, one line per story:
    `curl -sfL --max-time 15 'https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30&attributesToRetrieve=title,url&attributesToHighlight=none' | grep -oE '"title":"([^"\\]|\\.)*"(,"url":"[^"]*")?'`

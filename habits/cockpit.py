@@ -68,7 +68,7 @@ PROMPT_TAIL = (
     "The user owns the states (/habits): never change one yourself (no `hermes habits` promote, undo, resume, "
     "reset or retire, no write under plugin-data/habits). The user says a habit got it wrong: point them to "
     "/habits wrong. To change a habit, save it again with habit_save. Never patch, merge or delete a skill "
-    "that holds assets/HABIT.yaml, reviewing or curating skills included.")
+    "that holds assets/reflex.yml, reviewing or curating skills included.")
 PROMPT_NONE_OWN = "None is the user's own yet: to keep a task the user repeats, load the skill habits:writing-habits."
 PROMPT_MORE = "+{n} more reflexes, not listed here."  # /habits is the user's command, not one the model can run
 PROMPT_CURATOR = "Leave these habits alone (never archive, merge, patch or delete them): "

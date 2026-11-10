@@ -6,15 +6,15 @@ import types
 
 import pytest
 
-from habits import catalog, guard, plugin
+from habits import catalog, graph, guard, plugin
 from test_graph import DEMO
 
 
-def skill(root, folder, name=None, description="d", graph=DEMO):
+def skill(root, folder, name=None, description="d", graph=DEMO, file="reflex.yml"):
     path = root / folder
     (path / "assets").mkdir(parents=True)
     (path / "SKILL.md").write_text(f"---\nname: {name or path.name}\ndescription: {description}\n---\n\nSteps.\n")
-    (path / "assets" / "HABIT.yaml").write_text(graph)
+    (path / "assets" / file).write_text(graph)
     return path
 
 
@@ -33,10 +33,39 @@ def hermes(tmp_path, monkeypatch):
 
 def test_a_broken_link_is_an_invalid_habit_not_a_crash(tmp_path):
     (tmp_path / "x" / "assets").mkdir(parents=True)
-    link = tmp_path / "x" / "assets" / "HABIT.yaml"
+    link = tmp_path / "x" / "assets" / "reflex.yml"
     link.symlink_to(tmp_path / "nowhere")
     habit = catalog.read(link, "x", "d", "skill")
     assert not habit.valid and habit.issues[0].startswith("format:")
+
+
+def test_a_habit_saved_by_v01_under_assets_habit_yaml_is_still_found_once(hermes):
+    root, rows = hermes
+    old = skill(root, "old-timer", file="HABIT.yaml")
+    skill(root, "cat/new-one")
+    rows += [{"name": "old-timer", "description": "d", "category": None}, {"name": "new-one", "description": "d", "category": "cat"}]
+    assert [(h.name, h.path.name) for h in catalog.skills()] == [("new-one", "reflex.yml"), ("old-timer", "HABIT.yaml")]
+    assert [h.name for h in catalog.skills()] == ["new-one", "old-timer"]  # again, from the cache: still once each
+    assert catalog.find("old-timer").valid and set(catalog.folders()) == {"old-timer", "new-one"}
+    assert catalog.skill_folder("old-timer") == (old, True)
+
+
+def test_a_folder_with_both_files_uses_reflex_yml_and_counts_the_old_one_as_a_file_of_assets(hermes):
+    root, rows = hermes
+    folder = skill(root, "both")
+    other = DEMO.replace("Downloads sorted.", "Sorted.")
+    (folder / "assets" / "HABIT.yaml").write_text(other)
+    rows.append({"name": "both", "description": "d", "category": None})
+    found = catalog.skills()
+    assert [(h.name, h.path.name) for h in found] == [("both", "reflex.yml")] and found[0].graph == graph.load(DEMO)
+    assert catalog.reflex_file(folder) == folder / "assets" / "reflex.yml"
+    assert found[0].files  # the legacy file is one more file of assets/: it is in the version
+    (folder / "assets" / "HABIT.yaml").write_text(DEMO)
+    assert catalog.skills()[0].version != found[0].version
+    (folder / "assets" / "reflex.yml").unlink()  # the new file gone: the old one is the reflex again
+    assert [h.path.name for h in catalog.skills()] == ["HABIT.yaml"]
+    assert catalog.reflex_file(folder) == folder / "assets" / "HABIT.yaml"
+    assert catalog.reflex_file(root / "nothing-yet") == root / "nothing-yet" / "assets" / "reflex.yml"
 
 
 def test_one_file_that_cannot_be_read_never_hides_the_others(hermes, monkeypatch):
@@ -67,12 +96,12 @@ def test_a_skill_named_apart_from_its_folder_is_still_found(hermes):
     assert [h.name for h in catalog.skills()] == ["tidying"]
     assert catalog.folders()["tidying"] == root / "folder"  # the edit guard knows it by that name too
     for args in ({"name": "tidying", "action": "patch", "old_string": "a", "new_string": "b"},
-                 {"name": "tidying", "action": "remove_file", "file_path": "assets/HABIT.yaml"}):
+                 {"name": "tidying", "action": "remove_file", "file_path": "assets/reflex.yml"}):
         assert guard.edited_habit("skill_manage", args) == "tidying"
 
 
 def test_a_graph_that_cannot_be_read_has_no_kind(tmp_path):
-    path = tmp_path / "HABIT.yaml"
+    path = tmp_path / "reflex.yml"
     path.write_text("nodes: [unclosed")
     habit = catalog.read(path, "x", "d", "skill")
     assert not habit.valid and habit.kind == "?"
@@ -80,7 +109,7 @@ def test_a_graph_that_cannot_be_read_has_no_kind(tmp_path):
 
 def test_a_habit_whose_start_is_a_list_stays_listed_and_refused(tmp_path):
     path = skill(tmp_path, "tidying", graph=DEMO.replace("start: scan", "start: [scan]"))
-    habit = catalog.read(path / "assets" / "HABIT.yaml", "tidying", "d", "skill")
+    habit = catalog.read(path / "assets" / "reflex.yml", "tidying", "d", "skill")
     assert not habit.valid and "format: start must be the name of a node." in habit.issues
 
 
@@ -91,13 +120,13 @@ def test_a_check_that_crashes_keeps_the_habit_listed(tmp_path, monkeypatch):
     def boom(habit):
         raise TypeError("unhashable")
     monkeypatch.setattr(catalog.graph, "validate", boom)
-    habit = catalog.read(path / "assets" / "HABIT.yaml", "tidying", "d", "skill")
+    habit = catalog.read(path / "assets" / "reflex.yml", "tidying", "d", "skill")
     assert not habit.valid and habit.issues == ["format: the graph could not be checked (TypeError)"]
 
 
 def test_a_habit_that_still_declares_an_event_is_invalid_with_no_kind(tmp_path):
     path = skill(tmp_path, "relance", graph=DEMO.replace("trigger: message", "trigger: {event: kanban_task_blocked}"))
-    habit = catalog.read(path / "assets" / "HABIT.yaml", "relance", "d", "skill")
+    habit = catalog.read(path / "assets" / "reflex.yml", "relance", "d", "skill")
     assert not habit.valid and habit.kind == "?"  # neither a one-off nor anything that runs
     assert habit.issues == ["format: trigger {event: …} is no longer supported: check on a schedule with "
                             "{every: 30m}, or leave trigger out to run the habit by name."]
@@ -105,7 +134,7 @@ def test_a_habit_that_still_declares_an_event_is_invalid_with_no_kind(tmp_path):
 
 def test_a_habit_with_its_graph_alone_keeps_the_version_it_had(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog, "_cache", {})
-    path = skill(tmp_path, "triage") / "assets" / "HABIT.yaml"
+    path = skill(tmp_path, "triage") / "assets" / "reflex.yml"
     # DEMO's version before helper files, then before descriptions counted: its first 12 characters.
     assert catalog.read(path, "triage", "d", "skill").version[:12] == "fc9e42872269"
     assert {h.name: h.version[:12] for h in catalog.examples()} == {
@@ -117,7 +146,7 @@ def test_a_helper_file_in_assets_is_part_of_the_version(tmp_path, monkeypatch):
     # A graph may call a helper script in its own assets/: a changed script is a new version, measured in shadow again.
     monkeypatch.setattr(catalog, "_cache", {})
     assets = skill(tmp_path, "triage") / "assets"
-    path = assets / "HABIT.yaml"
+    path = assets / "reflex.yml"
 
     def version():
         return catalog.read(path, "triage", "d", "skill").version
@@ -154,7 +183,7 @@ def test_the_files_a_version_reads_are_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog, "ASSET_FILES", 3)
     monkeypatch.setattr(catalog, "ASSET_BYTES", 10)
     assets = skill(tmp_path, "triage") / "assets"
-    path = assets / "HABIT.yaml"
+    path = assets / "reflex.yml"
     for name in "abcd":
         (assets / f"{name}.txt").write_text("0123456789xyz")
     before = catalog.read(path, "triage", "d", "skill").version
@@ -168,7 +197,7 @@ def test_the_files_a_version_reads_are_bounded(tmp_path, monkeypatch):
 def test_the_description_is_part_of_the_version(tmp_path, monkeypatch):
     # The trigger picks a habit by its description: a wider one is a habit that answers other asks, so it learns again.
     monkeypatch.setattr(catalog, "_cache", {})
-    path = skill(tmp_path, "triage") / "assets" / "HABIT.yaml"
+    path = skill(tmp_path, "triage") / "assets" / "reflex.yml"
     narrow = catalog.read(path, "triage", "Sort my downloads", "skill")
     wide = catalog.read(path, "triage", "Any question about the Mac", "skill")
     assert narrow.version != wide.version and narrow.version[:12] == wide.version[:12]  # the same graph
@@ -178,7 +207,7 @@ def test_a_version_from_before_the_description_counted_keeps_its_state_and_runs(
     from habits.ledger import Ledger
     from habits.runner import Result
     monkeypatch.setattr(catalog, "_cache", {})
-    habit = catalog.read(skill(tmp_path, "triage") / "assets" / "HABIT.yaml", "triage", "Sort", "skill")
+    habit = catalog.read(skill(tmp_path, "triage") / "assets" / "reflex.yml", "triage", "Sort", "skill")
     ledger = Ledger(tmp_path / "habits.db")
     old = habit.version[:12]  # how the plugin named this graph before
     ledger.set_status("triage", old, "active", "100% over 12 runs", by="rules")

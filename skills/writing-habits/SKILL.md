@@ -5,7 +5,7 @@ description: "Write Habits graphs: format, rules, examples"
 
 # Writing habits
 
-A habit is a reflex: a skill folder whose `assets/HABIT.yaml` is a small graph (`habits/0.1`, YAML 1.2 or JSON).
+A habit is a skill folder; its reflex is `assets/reflex.yml`, a small graph (`habits/0.1`, YAML 1.2 or JSON).
 Tools act through the normal tool path, a fast decision model answers typed questions in milliseconds,
 and the run comes back done, or handed back with what is left. This guide is the whole contract.
 
@@ -17,7 +17,7 @@ and the run comes back done, or handed back with what is left. This guide is the
 3. `write_file /tmp/<name>-draft/procedure.md`: the slow way, by hand (below).
 4. `habit_save {name, description, procedure: /tmp/<name>-draft/procedure.md, file: /tmp/<name>-draft/graph.yaml}`.
 
-Name drafts `graph.yaml` and `procedure.md`, never HABIT.yaml; a SKILL.md only for the `--message` trial (below).
+Name drafts `graph.yaml` and `procedure.md`, never reflex.yml; a SKILL.md only for the `--message` trial (below).
 
 ## When a task deserves a reflex
 

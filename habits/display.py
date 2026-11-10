@@ -244,10 +244,10 @@ class Display:
                            ("reset", "Send a habit back to learning with fresh scores (one called by name: back "
                                      "to called by name)")):
             sub.add_parser(verb, help=text).add_argument("name")
-        sub.add_parser("check", help="Validate a HABIT.yaml file").add_argument("file")
+        sub.add_parser("check", help="Validate a reflex.yml file").add_argument("file")
         run = sub.add_parser("run", help="Run a habit here without the model, dry unless --live; nothing is "
                              "recorded; prints the path of the replay page of that run")
-        run.add_argument("target", help="a habit's name, or a path to a HABIT.yaml file")
+        run.add_argument("target", help="a habit's name, or a path to a reflex.yml file")
         run.add_argument("--input", action="append", default=[], metavar="NAME=VALUE",
                          help="a value for one of its inputs (JSON when it reads as JSON); repeat for each")
         run.add_argument("--live", action="store_true", help="do its writes for real (never under ~/Downloads)")

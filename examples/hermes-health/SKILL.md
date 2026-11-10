@@ -8,7 +8,7 @@ description: "Is Hermes OK? Gateway, model, internet, disk"
 Run it by name: `habit_run {name: "hermes-health"}`, or from a terminal: `hermes habits run hermes-health`.
 It only reads and calls no model, so it answers even when the model is down.
 
-The slow way, the same steps as `assets/HABIT.yaml`:
+The slow way, the same steps as `assets/reflex.yml`:
 
 1. Gateway: `~/.hermes/gateway_state.json`, and `$HERMES_HOME/gateway_state.json` in a profile. A problem is `startup_failed`, `degraded`, a platform `fatal` or
    `retrying`, or a file older than 3 minutes while it says `running`. No file: no gateway here.

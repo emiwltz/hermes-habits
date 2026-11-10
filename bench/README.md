@@ -32,7 +32,7 @@ free for a habit with `llm` nodes.
 ```yaml
 - id: tidy
   task: tidy-folder                                    # the family of tasks it belongs to
-  habit: "{repo}/examples/tidy-downloads/assets/HABIT.yaml"   # or a saved habit's name
+  habit: "{repo}/examples/tidy-downloads/assets/reflex.yml"   # or a saved habit's name
   inputs: {folder: "{scratch}/inbox"}
   message: "tidy my downloads"                         # a request habit: start from this message
   scratch: /tmp/habits-bench/tidy                      # must sit in the temp folder

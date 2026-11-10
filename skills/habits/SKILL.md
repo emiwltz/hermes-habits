@@ -5,7 +5,8 @@ description: "When to call a reflex (habit_run) and read its reply"
 
 # Reflexes: when to pass the baton
 
-A habit is a reflex: a skill with a fast path. You think (slow, general, costly); a reflex does one known task
+A habit is a task you have learned; its reflex is the part that runs: a skill with a fast path. You think (slow,
+general, costly); a reflex does one known task
 in about a second, without you. Your system prompt lists yours as `name(inputs) · state · what for`.
 The one relay rule: a reflex always comes back, **done** or **handed back** with what is left.
 

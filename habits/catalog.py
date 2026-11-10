@@ -1,4 +1,5 @@
-"""Find habits: a skill with assets/HABIT.yaml, plus the examples shipped with the plugin.
+"""Find habits: a skill with assets/reflex.yml (or assets/HABIT.yaml, the name v0.1 wrote), plus the examples
+shipped with the plugin.
 
 Skills are read through Hermes's public skills API. Each habit is loaded once
 per file change, and identified by a fingerprint of its graph and of the other
@@ -20,7 +21,8 @@ from .yaml12 import load as load_yaml
 
 logger = logging.getLogger(__name__)
 
-HABIT_FILE = Path("assets") / "HABIT.yaml"
+HABIT_FILE = Path("assets") / "reflex.yml"
+LEGACY_FILE = Path("assets") / "HABIT.yaml"  # what v0.1 wrote: still read, still protected
 # An older version kept a learned habit's text here. Nothing writes it any more; it stays out of the fingerprint
 # so such a habit keeps its version.
 LEARNED_FILE = Path("assets") / "LEARNED.md"
@@ -38,11 +40,11 @@ ASSET_BYTES = 1_000_000
 class Habit:
     name: str
     description: str
-    path: Path  # the HABIT.yaml file
+    path: Path  # the reflex file (reflex.yml, or HABIT.yaml for a habit saved by v0.1)
     graph: dict = field(default_factory=dict)
     issues: list = field(default_factory=list)
     origin: str = "skill"  # skill or example
-    files: str = ""  # the fingerprint of the other files of assets/, "" when HABIT.yaml is alone
+    files: str = ""  # the fingerprint of the other files of assets/, "" when the reflex file is alone
 
     @property
     def version(self) -> str:
@@ -69,7 +71,7 @@ class Habit:
 
 def _version(habit: Habit, depth: int) -> str:
     """The graph's fingerprint, with its other assets/ files and the versions of the habits it uses (as deep as a
-    run goes): a sub-habit saved again, with a write maybe, sends its callers back to shadow. With HABIT.yaml alone
+    run goes): a sub-habit saved again, with a write maybe, sends its callers back to shadow. With the reflex file alone
     and no use, it is the graph's alone, as before helper files and sub-habits counted."""
     canonical = json.dumps(habit.graph, sort_keys=True, ensure_ascii=False, default=str)
     nodes = habit.graph.get("nodes") if isinstance(habit.graph, dict) else None
@@ -87,6 +89,20 @@ def kind_of(habit: dict) -> str:
 
 
 _cache: dict[str, tuple[tuple, Habit]] = {}
+
+
+def reflex_file(folder: Path) -> Path:
+    """A habit folder's reflex file: assets/reflex.yml if it exists, else the legacy assets/HABIT.yaml when that
+    exists (a habit saved by v0.1), else reflex.yml (a habit not saved yet). With both files, the new name wins and
+    the legacy file is one more file of assets/."""
+    new, old = folder / HABIT_FILE, folder / LEGACY_FILE
+    return old if os.path.lexists(old) and not os.path.lexists(new) else new
+
+
+def _reflex_folders(root, where: str = "**") -> list[Path]:
+    """The habit folders under root (folders with a reflex file of either name), sorted, each once."""
+    return sorted({path.parent.parent for name in (HABIT_FILE, LEGACY_FILE)
+                   for path in Path(root).glob(f"{where}/{name.as_posix()}")})
 
 
 def _assets(path: Path) -> list[tuple[str, Path, int, int]]:
@@ -120,7 +136,7 @@ def _fingerprint(files) -> str:
 
 
 def read(path: Path, name: str, description: str, origin: str) -> Habit:
-    """Load one HABIT.yaml, from cache when neither it nor another file of its assets/ changed."""
+    """Load one reflex file, from cache when neither it nor another file of its assets/ changed."""
     key = str(path)
     try:
         mtime = path.stat().st_mtime
@@ -161,8 +177,8 @@ def _frontmatter(skill_md: Path) -> dict:
 
 def examples() -> list[Habit]:
     found = []
-    for path in sorted(EXAMPLES.glob("*/assets/HABIT.yaml")):
-        folder = path.parent.parent
+    for folder in _reflex_folders(EXAMPLES, "*"):
+        path = reflex_file(folder)
         meta = _frontmatter(folder / "SKILL.md")
         try:
             found.append(read(path, str(meta.get("name") or folder.name), str(meta.get("description") or ""), "example"))
@@ -182,7 +198,7 @@ def _warn_once(message: str, *args):
 
 
 def skills() -> list[Habit]:
-    """Habits saved as skills: one pass over the skill folders for assets/HABIT.yaml, kept to the
+    """Habits saved as skills: one pass over the skill folders for assets/reflex.yml (or HABIT.yaml), kept to the
     skills Hermes lists (visible, enabled), so the cost stays flat with hundreds of skills."""
     try:
         from tools.skills_tool import find_all_skills, skill_search_dirs
@@ -198,11 +214,11 @@ def skills() -> list[Habit]:
     found, seen = [], {}
     for tier, root in roots:
         try:
-            paths = sorted(Path(root).glob("**/assets/HABIT.yaml"))
+            habit_folders = _reflex_folders(root)
         except OSError:
             continue
-        for path in paths:
-            folder = path.parent.parent
+        for folder in habit_folders:
+            path = reflex_file(folder)
             relative = folder.relative_to(root)
             if any(part.startswith(".") for part in relative.parts):
                 continue  # .archive, .curator_backups and other hidden folders
@@ -238,8 +254,7 @@ def folders() -> dict[str, Path]:
     found: dict[str, Path] = {}
     for _tier, root in roots:
         try:
-            for path in Path(root).glob("**/assets/HABIT.yaml"):
-                folder = path.parent.parent
+            for folder in _reflex_folders(root):
                 if not any(part.startswith(".") for part in folder.relative_to(root).parts):
                     found.setdefault(folder.name, folder)
                     declared = str(_frontmatter(folder / "SKILL.md").get("name") or "")
@@ -264,7 +279,7 @@ FOOTER = "## Habit\n\nThe Habits plugin"  # what habit_save writes at the end of
 
 def skill_folder(name: str) -> tuple:
     """(the folder of a visible skill named name, whether habit_save wrote it), or (None, False): its folder name or
-    the name its SKILL.md declares. A folder with a SKILL.md and no assets/HABIT.yaml is a habit half saved only
+    the name its SKILL.md declares. A folder with a SKILL.md and neither assets/reflex.yml nor assets/HABIT.yaml is a habit half saved only
     when that SKILL.md ends as habit_save writes it."""
     try:
         from tools.skills_tool import skill_search_dirs
@@ -283,7 +298,7 @@ def skill_folder(name: str) -> tuple:
             if folder.name != name and str(_frontmatter(skill_md).get("name") or "") != name:
                 continue
             try:
-                ours = (folder / HABIT_FILE).exists() or FOOTER in skill_md.read_text(encoding="utf-8")
+                ours = (folder / HABIT_FILE).exists() or (folder / LEGACY_FILE).exists() or FOOTER in skill_md.read_text(encoding="utf-8")
             except OSError:
                 ours = False
             return folder, ours

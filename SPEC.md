@@ -6,18 +6,20 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119
 
 ## 1. File
 
-A saved habit is the file `assets/HABIT.yaml` in a skill folder, next to the `SKILL.md` that holds the habit's name, its description (used to trigger it) and the slow procedure:
+A saved habit is the file `assets/reflex.yml` in a skill folder, next to the `SKILL.md` that holds the habit's name, its description (used to trigger it) and the slow procedure:
 
 ```text
 ~/.hermes/skills/tidy-downloads/
 ├── SKILL.md
 └── assets/
-    └── HABIT.yaml
+    └── reflex.yml
 ```
+
+A habit saved by v0.1 as `assets/HABIT.yaml` is still read and still protected; if a folder holds both files, `assets/reflex.yml` is the one used.
 
 A helper script the graph calls (by its full path) lives in the same `assets/` folder: it is part of the habit, and its version (§9) covers it. Writers SHOULD keep the logic in the graph and call a helper only for what a node cannot do.
 
-A one-off scenario is the same mapping, passed to the `habit_run` tool (a host MAY also take `dry: true`, §7.10, and several calls at once, §8) as an object, as YAML or JSON text, or as the path of a `.yaml`, `.yml` or `.json` file that holds it (`file`); `habit_save` takes the same two forms, and exactly one of them, and its procedure as its text or as the full path of a `.md` file that holds it, read under the same checks (a secret's name refused too). A graph takes no YAML alias (`*name`), and its text or file is 256 KB at most. The reference reader follows a file's links, then refuses a file Hermes keeps from its own tools, any file of Hermes's home but a skill's `assets/HABIT.yaml` and a draft in its `cache/scratch/` folder, a file of a folder of keys (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.codex`…), and a token store by its name; a mapping whose `spec` is not `habits/0.1` is refused with that one issue and no page, and a YAML error gives its line and column, never the line itself. A reader MUST use YAML 1.2 booleans: only `true` and `false` are booleans, and `yes`, `no`, `on` and `off` stay text. Writers SHOULD quote dates, times and numbers with leading zeros (`"2026-11-07"`, `"1:30"`, `"012"`), because the reference reader still applies YAML 1.1 rules to them.
+A one-off scenario is the same mapping, passed to the `habit_run` tool (a host MAY also take `dry: true`, §7.10, and several calls at once, §8) as an object, as YAML or JSON text, or as the path of a `.yaml`, `.yml` or `.json` file that holds it (`file`); `habit_save` takes the same two forms, and exactly one of them, and its procedure as its text or as the full path of a `.md` file that holds it, read under the same checks (a secret's name refused too). A graph takes no YAML alias (`*name`), and its text or file is 256 KB at most. The reference reader follows a file's links, then refuses a file Hermes keeps from its own tools, any file of Hermes's home but a skill's `assets/reflex.yml` and a draft in its `cache/scratch/` folder, a file of a folder of keys (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.codex`…), and a token store by its name; a mapping whose `spec` is not `habits/0.1` is refused with that one issue and no page, and a YAML error gives its line and column, never the line itself. A reader MUST use YAML 1.2 booleans: only `true` and `false` are booleans, and `yes`, `no`, `on` and `off` stay text. Writers SHOULD quote dates, times and numbers with leading zeros (`"2026-11-07"`, `"1:30"`, `"012"`), because the reference reader still applies YAML 1.1 rules to them.
 
 ## 2. Top-level fields
 
@@ -186,7 +188,7 @@ A saved habit is in shadow, active or retired; a one-off scenario has no status.
 - **Repair.** When a run failed or left doubts (not a `wake` the graph planned), the host MAY ask the LLM to propose a repair to the user: what is wrong and what it would change. The LLM saves a new version only once the user agrees, or when the user asked for a fix.
 - **Status notes.** Each move keeps its reason; a host SHOULD show why a habit is in shadow or retired when a threshold or a person moved it there.
 - **Who decides.** Each move is recorded with who made it (the user, the thresholds, the host's bookkeeping, or the save that made the habit). The LLM MUST NOT approve a habit, nor undo or resume anything: a host SHOULD block the LLM's state commands and its writes to the host's ledger. A host SHOULD let the user undo their last move of the last 24 hours, only while the habit is still where that move put it, and pause every habit (no run, every watch silent) until they resume.
-- **Habits the host did not save.** A `HABIT.yaml` the host first finds without its own save (copied by hand, synced, cloned) MUST NOT act on its own before the user's yes, or, when the user set `promote: auto`, before the thresholds: it starts in shadow and runs dry when called by name, and a host SHOULD keep its description out of what it tells the LLM of its habits until then. Any change to a habit's files is a new version that practises again (above).
+- **Habits the host did not save.** A `reflex.yml` the host first finds without its own save (copied by hand, synced, cloned) MUST NOT act on its own before the user's yes, or, when the user set `promote: auto`, before the thresholds: it starts in shadow and runs dry when called by name, and a host SHOULD keep its description out of what it tells the LLM of its habits until then. Any change to a habit's files is a new version that practises again (above).
 - **Told retirements.** A host MUST tell the user of a retirement the thresholds made, once: the next reply to a user (a request turn, the direct answer included; not a cron job's turn, and it counts as told only once a reply that is not empty or `[SILENT]` went out) says in one line which habit retired, why, and how to bring it back (`hermes habits reset <name>`). A watch's wake tells its own retirement alone; a watch retired by a check that would stay silent wakes once to say so, since it never wakes again. A retirement a person made is not told.
 
 ## 10. Example
