@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Habits</title>
+<script>
+(function () {
+  document.documentElement.className += ' js'; // without JavaScript, the plain table shows instead
+  var t = null;
+  try { t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('habits-theme'); } catch (e) {}
+  if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #fff; --ink: #141a22; --muted: #5c6774; --line: #e3e7ec; --line2: #cfd6dd;
+  --decide: #a35a00; --act: #0a7a6a; --compose: #6a46c9; --finish: #46546a; --finish-bg: #eef1f5;
+  --accent: #2563eb; --accent-bg: #e9f0fe; --ok: #1a7f45; --ok-bg: #e7f5ec; --bad: #c0362c; --bad-bg: #fcebe9;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0e1116; --panel: #151a21; --ink: #e5e9ef; --muted: #98a3b1; --line: #252c35; --line2: #343d48;
+  --decide: #e3a54a; --act: #3fc2a6; --compose: #a68ef2; --finish: #a3b2c6; --finish-bg: #1a2029;
+  --accent: #6293ff; --accent-bg: #15213b; --ok: #4cc27a; --ok-bg: #10251a; --bad: #f07a6d; --bad-bg: #2d1513;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 18px 16px 40px; }
+@media (min-width: 720px) { .wrap { padding: 22px 28px 48px; } }
+.js .static, html:not(.js) .app { display: none; }
+.static p { margin: 14px 0; line-height: 1.45; overflow-wrap: anywhere; } .static h2 { font-size: 16px; margin: 26px 0 4px; }
+.dim { color: var(--muted); }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.brand svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+h1 { font-size: 24px; line-height: 1.25; margin: 10px 0 0; font-weight: 650; letter-spacing: -.015em; }
+h2 { font-size: 14px; margin: 26px 0 10px; color: var(--muted); font-weight: 650; }
+.lead { margin: 4px 0 0; color: var(--muted); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel); color: var(--ink); font: 600 13px var(--sans); cursor: pointer; }
+.btn:hover { background: var(--bg); }
+.btn.icon { width: 32px; padding: 0; }
+.btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+@media (pointer: coarse) { .btn { height: 40px; } .btn.icon { width: 40px; } }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.stat { padding: 10px 16px 11px; border-left: 1px solid var(--line); min-width: 0; }
+.stat:first-child { border-left: 0; }
+@media (max-width: 760px) { .stats { grid-template-columns: 1fr 1fr; } .stat:nth-child(3) { border-left: 0; } .stat:nth-child(n+3) { border-top: 1px solid var(--line); } }
+.sl { font-size: 12px; font-weight: 600; color: var(--muted); }
+.sv { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.35; overflow-wrap: anywhere; }
+.sv small { font-size: 13px; font-weight: 500; color: var(--muted); }
+.ss { font-size: 12.5px; color: var(--muted); }
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.card { display: flex; flex-direction: column; gap: 8px; text-align: left; width: 100%; padding: 14px 16px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; font: inherit; cursor: pointer; min-width: 0; }
+.card:hover { border-color: var(--line2); box-shadow: 0 2px 10px rgba(0, 0, 0, .06); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card h3 { margin: 0; font-size: 16px; font-weight: 650; overflow-wrap: anywhere; }
+.kind { font-size: 12.5px; color: var(--muted); }
+.card p { margin: 0; font-size: 13.5px; color: var(--muted); }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px; font: 600 12px var(--sans); background: var(--finish-bg); color: var(--muted); white-space: nowrap; flex: none; }
+.chip i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.st-active { background: var(--ok-bg); color: var(--ok); }
+.st-shadow { background: var(--accent-bg); color: var(--accent); }
+.st-shadow i { background: none; border: 1.5px solid currentColor; }
+.st-invalid { background: var(--bad-bg); color: var(--bad); }
+.st-example { background: var(--finish-bg); color: var(--compose); }
+.st-example i { border-radius: 1px; transform: rotate(45deg) scale(.85); }
+.strip { display: flex; flex-wrap: wrap; gap: 4px; }
+.fi { width: 13px; height: 13px; fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.decide { stroke: var(--decide); } .act { stroke: var(--act); } .compose { stroke: var(--compose); } .finish { stroke: var(--finish); }
+.nums { list-style: none; margin: 0; padding: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.nums li + li { margin-top: 1px; }
+.last { margin-top: auto; padding-top: 6px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.empty { padding: 18px; border: 1px dashed var(--line2); border-radius: 12px; color: var(--muted); }
+.viewer { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; background: var(--bg); }
+.bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.bar b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
+.foot { margin-top: 26px; font-size: 12.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap static"><!--HABITS_STATIC--></div>
+<div class="wrap app">
+  <div class="top">
+    <div class="brand"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 1.8 13.5 6.3 9 10.8 4.5 6.3Z"/><path d="M9 10.8v2.4M5 16.2h8"/></svg>Habits <span class="dim" style="font-weight:400">· gallery</span></div>
+    <button class="btn icon" id="theme" type="button"></button>
+  </div>
+  <h1>Habits</h1>
+  <p class="lead" id="lead"></p>
+  <div class="stats" id="stats"></div>
+  <div id="sections"></div>
+  <p class="foot" id="foot"></p>
+</div>
+<div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vname">
+  <div class="bar"><button class="btn" id="back" type="button">← All habits</button><b id="vname"></b></div>
+  <iframe id="frame" title="Habit diagram"></iframe>
+</div>
+<script>
+'use strict';
+const G = /*HABITS_DATA*/null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+// The ledger's states in the README's words (habits/view.py keeps the same map).
+const STATES = { active: 'Automatic', shadow: 'Learning', retired: 'Resting', live: 'Called by name', example: 'Example', invalid: 'Invalid' };
+const FAM = { ask: 'decide', check: 'decide', do: 'act', llm: 'act', use: 'compose', end: 'finish', wake: 'finish' };
+const ICON = { decide: 'M6 .9 11.1 6 6 11.1.9 6Z', act: 'M1.6 1.6h8.8v8.8H1.6Z', compose: 'M1 4h7v7H1ZM4 1h7v7', finish: 'M6 1.2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6Z' };
+const KINDS = { request: 'Request', watch: 'Scheduled' }; // no trigger: the line says "called by name"
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
+const pct = v => Math.round(v * 100) + '%';
+function dur(ms) {
+  if (ms == null) return '—';
+  if (ms < 1000) return ms + ' ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + ' s';
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60);
+  return h ? `${h} h ${m % 60} min` : `${m} min ${Math.round(ms % 60000 / 1000)} s`;
+}
+function tok(n) { n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+function trigger(t) {
+  if (t === 'message') return 'on request';
+  if (t && typeof t === 'object' && t.every) return 'every ' + t.every + (t.at ? ' at ' + t.at : '');
+  return t ? JSON.stringify(t) : 'called by name';  // a trigger it does not know, as written: such a habit never runs
+}
+function verb(n) { return Object.keys(FAM).find(k => n && typeof n === 'object' && k in n); }
+function numbers(d) {
+  const s = d.summary || {}, out = [];
+  if (d.kind === 'watch') out.push(`${plural(s.runs || 0, 'check')} · ${plural(s.woke || 0, 'wake')}`);
+  else if (d.kind === 'one-off') out.push(`Called by name, never compared · ${plural(s.runs || 0, 'run')}`); // always live
+  else if (s.agreement != null) out.push(`${pct(s.agreement)} agreement over ${plural(s.compared || 0, 'run')}`);
+  else out.push(`${s.compared || 0}/${s.promote_runs || 12} runs compared`);
+  if (s.shadow_ms && s.active_ms) out.push(`${dur(s.active_ms)} instead of ${dur(s.shadow_ms)} · ${Math.round(s.shadow_ms / s.active_ms)}× faster`);
+  if (s.shadow_tokens && s.active_tokens != null) out.push(`${tok(s.active_tokens)} model tokens instead of ${tok(s.shadow_tokens)}`);
+  return out;
+}
+function card(d, i) {
+  const example = d.origin === 'example', st = (d.issues || []).length ? 'invalid' : example ? 'example' : d.status || 'shadow';
+  const nodes = Object.values((d.habit || {}).nodes || {});
+  const strip = nodes.map(n => { const f = FAM[verb(n)]; return f ? `<svg class="fi ${f}" viewBox="0 0 12 12" aria-hidden="true"><path d="${ICON[f]}"/></svg>` : ''; }).join('');
+  const r = d.run, last = r ? `Last run ${dur(r.ms)} · ${r.status === 'end' ? 'done' : 'handed back'}`
+    : example ? `Ask Hermes to adapt it, or run it: habit_run {name: ${d.name}}` : 'No run yet';
+  return `<button class="card" type="button" data-i="${i}" aria-label="Open ${esc(d.name)}">
+    <div class="head"><h3>${esc(d.name)}</h3><span class="chip st-${esc(st)}"><i></i>${esc(STATES[st] || cap(st))}</span></div>
+    <div class="kind">${[KINDS[d.kind], trigger((d.habit || {}).trigger), plural(nodes.length, 'node')].filter(Boolean).map(esc).join(' · ')}</div>
+    ${d.description ? `<p>${esc(d.description)}</p>` : ''}
+    <div class="strip" aria-hidden="true">${strip}</div>
+    ${example ? '' : `<ul class="nums">${numbers(d).map(t => `<li>${esc(t)}</li>`).join('')}</ul>`}
+    <div class="last">${esc(last)}</div></button>`;
+}
+function render() {
+  const all = G.habits || [], mine = all.filter(d => d.origin !== 'example'), examples = all.filter(d => d.origin === 'example');
+  const count = st => mine.filter(d => (d.status || 'shadow') === st && !(d.issues || []).length).length;
+  $('lead').textContent = mine.length ? `${plural(mine.length, 'habit')} · ${count('active')} automatic · ${count('shadow')} learning · ${count('retired')} resting` + (count('live') ? ` · ${count('live')} called by name` : '')
+    : 'No habit of your own yet: ask Hermes to turn a task you repeat into one.';
+  let ms = 0, tokens = 0, handled = 0, checks = 0, woke = 0;
+  for (const d of mine) {
+    const s = d.summary || {}, saved = s.saved || {};
+    ms += saved.ms || 0; tokens += saved.tokens || 0;
+    if (d.kind === 'watch') { checks += s.runs || 0; woke += s.woke || 0; } else handled += saved.runs || 0;
+  }
+  const cell = (l, v, sub) => `<div class="stat"><div class="sl">${l}</div><div class="sv">${v}</div><div class="ss">${sub}</div></div>`;
+  $('stats').innerHTML = cell('Time saved', ms ? dur(ms) : '—', 'against the model alone') + cell('Model tokens saved', tokens ? tok(tokens) : '—', 'same comparison') +
+    cell('Requests done', handled, 'by automatic habits') + cell('Scheduled checks', `${checks} <small>· ${plural(woke, 'wake')}</small>`, 'with no model');
+  const section = (title, list, empty) => `<h2>${title}</h2>` + (list.length ? `<div class="grid">${list.map(d => card(d, all.indexOf(d))).join('')}</div>` : `<p class="empty">${empty}</p>`);
+  $('sections').innerHTML = section('Your habits', mine, 'Habits you save with habit_save show here.') + (examples.length ? section('Examples shipped with the plugin', examples, '') : '');
+  $('foot').textContent = `Generated ${G.generated || ''} by hermes habits view · each card opens its diagram`;
+  document.querySelectorAll('.card').forEach(b => { b.onclick = () => { location.hash = encodeURIComponent(all[+b.dataset.i].name); }; });
+}
+let opener = null;
+function route() {
+  const name = decodeURIComponent(location.hash.slice(1)), d = (G.habits || []).find(h => h.name === name);
+  if (!d) { if (!$('viewer').hidden) { $('viewer').hidden = true; $('frame').removeAttribute('srcdoc'); if (opener) opener.focus(); } return; }
+  opener = document.activeElement;
+  const data = JSON.stringify({ ...d, generated: G.generated }).replace(/</g, '\\u003c');
+  $('frame').srcdoc = G.template.replace('/*HABITS_DATA*/null', () => data);
+  $('vname').textContent = d.name;
+  $('viewer').hidden = false;
+  $('back').focus();
+}
+$('back').onclick = () => { history.length > 1 && location.hash ? history.back() : (location.hash = ''); };
+addEventListener('keydown', e => { if (e.key === 'Escape' && !$('viewer').hidden) $('back').click(); });
+addEventListener('hashchange', route);
+function themeButton() {
+  const b = $('theme'), dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  b.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme'); b.title = b.getAttribute('aria-label');
+  b.innerHTML = dark ? '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6 13 13M3 13l1.4-1.4M11.6 4.4 13 3"/></svg>'
+    : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7Z"/></svg>';
+}
+$('theme').onclick = () => {
+  const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('habits-theme', t); } catch (e) {}
+  themeButton();
+  if (!$('viewer').hidden) route(); // the open diagram takes the new theme too
+};
+render(); themeButton(); route();
+</script>
+</body>
+</html>

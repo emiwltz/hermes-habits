@@ -1,0 +1,22 @@
+# Every 5 minutes, read the latest Hermes release tag from the GitHub API, and wake only when it changes.
+# Only read steps (curl marked read: true), so it runs whole while learning too.
+# The tag alone is compared: the release JSON also carries reaction counts, which change without a release.
+spec: habits/0.1
+trigger: {every: 5m}
+start: read
+fallback: help
+limits: {seconds: 60, tools: 5}   # a watch's cap is 60 s and 20 tools; this one needs 5
+nodes:
+  read:
+    do: terminal
+    read: true
+    args: {command: "curl -sfL --max-time 10 https://api.github.com/repos/NousResearch/hermes-agent/releases/latest | grep -m1 '\"tag_name\"'"}
+    as: tag
+    next: found
+    error: skip                    # GitHub did not answer: try again at the next check, wake no one
+  found: {check: {empty: tag}, then: {yes: skip, no: news}}
+  news:  {check: {changed: tag}, then: {yes: tell, no: quiet}}
+  tell:  {wake: "A new Hermes release is out ({tag}): https://github.com/NousResearch/hermes-agent/releases/latest"}
+  quiet: {end: "No new Hermes release."}
+  skip:  {end: "GitHub did not answer with a release; next check in 5 minutes."}
+  help:  {wake: "The Hermes release watch stopped: something went wrong, the report says what."}

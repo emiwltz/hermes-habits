@@ -1,0 +1,76 @@
+# Is Hermes OK? Six read-only signals, one verdict, no model call: it answers even when the model is down.
+# Linux and macOS, in the default home or in a profile. One gateway serves every profile and writes its file in
+# ~/.hermes; a profile with a gateway of its own writes one in that home, so the gateway read takes both. The frozen
+# and disk reads look at ~/.hermes (the disk is the same disk): a profile's own heartbeat is not checked. `hermes logs`
+# reads the active home (HERMES_HOME). Every end says so in its last line.
+# A home folder whose path has a space is not supported (the frozen read splits it).
+# Every read prints only what is wrong (or a number), so the checks below are plain "empty?" questions.
+# A missing file is no error: no gateway file means no gateway runs here, no log means nothing failed.
+spec: habits/0.1
+trigger: message
+start: gateway
+fallback: help
+limits: {seconds: 30, tools: 8, questions: 0, llm: 0}
+nodes:
+  gateway:                       # a failed start, a degraded gateway, a messaging platform down; nothing when fine or absent
+    do: terminal                 # Hermes writes compact JSON (no space after the colon); a disconnected platform is a
+    read: true                   # normal stop. A startup_failed kept after `hermes gateway stop` still shows. The active
+                                 # home's file first (none, or ~/.hermes again, when HERMES_HOME is unset or the default)
+    args: {command: "grep -hoE '\"gateway_state\": *\"(startup_failed|degraded)\"|\"state\": *\"(fatal|retrying)\"' \"$HERMES_HOME/gateway_state.json\" ~/.hermes/gateway_state.json 2>/dev/null | sort -u || true"}
+    as: gateway
+    next: frozen
+  frozen:                        # says running, but no heartbeat for 3 min (Hermes re-stamps the file every 60 s)
+    do: terminal                 # /dev/null keeps grep off its input when find prints nothing
+    read: true
+    args: {command: "grep -lE '\"gateway_state\": *\"running\"' /dev/null $(find ~/.hermes -maxdepth 1 -name gateway_state.json -mmin +3 2>/dev/null) || true"}
+    as: frozen
+    next: model
+  model:                         # the last model call that failed for good, last 30 minutes, any session: after its
+    do: terminal                 # retries (a 5xx, a timeout) or at once (a client error: 401 key, 402 credits, 403);
+    read: true                   # retries, title and other auxiliary calls are logged otherwise and do not match
+    args: {command: "hermes logs agent --since 30m -n 5000 | grep -E 'Non-retryable client error|API call failed after [0-9]+ retries' | tail -n 1 | cut -c 1-300 || true"}
+    as: model_failure
+    next: internet
+  internet:                      # only a status code comes back, 000 when unreachable: no server text, so the run stays trusted
+    do: terminal                 # curl reaches the web: marked read: true so it also runs while learning
+    read: true
+    args: {command: "curl -s -I -m 5 -o /dev/null -w '%{''http_code}' https://github.com || true"}
+    as: internet
+    next: errors
+  errors:                        # the three most frequent ERROR lines of the last hour: date, session and numbers folded
+    do: terminal
+    read: true
+    args:
+      command: >-
+        hermes logs errors --since 1h --level ERROR -n 2000 | grep -E '^[0-9]{4}-' | cut -c 25-
+        | sed -E 's/^([A-Z]+) \[[^]]*\]/\1/; s/[0-9]+/N/g' | cut -c 1-100 | sort | uniq -c | sort -rn | head -n 3 || true
+    as: errors
+    next: disk
+  disk:                          # the one read that may fail: then disk is unset and the run hands back (help)
+    do: terminal
+    read: true
+    args: {command: "df -Pk ~/.hermes | tail -n 1 | grep -oE '[0-9]+%' | tr -d % || true"}
+    as: disk
+    next: gateway_ok
+  gateway_ok: {check: {empty: gateway}, then: {yes: frozen_ok, no: gateway_attention}}
+  frozen_ok:  {check: {empty: frozen}, then: {yes: model_ok, no: frozen_attention}}
+  model_ok:   {check: {empty: model_failure}, then: {yes: online, no: model_attention}}
+  online:     {check: {greater: [internet, 0]}, then: {yes: disk_full, no: internet_attention}}  # not a code: help
+  disk_full:  {check: {greater: [disk, 89]}, then: {yes: disk_attention, no: quiet}}
+  quiet:      {check: {empty: errors}, then: {yes: healthy, no: healthy_with_errors}}  # errors alone are no verdict
+  healthy:                       # an end: done, and Hermes trusts it
+    end: "Hermes looks healthy: gateway fine (or not running here), no model failure in the last 30 minutes, internet reachable, disk {disk}% used. No error in the last hour.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+  healthy_with_errors:
+    end: "Hermes looks healthy: gateway fine (or not running here), no model failure in the last 30 minutes, internet reachable, disk {disk}% used.\nMost frequent errors of the last hour:\n{errors}\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+  gateway_attention:             # an end per check: the verdict is the answer, and the model may be the broken part
+    end: "Hermes needs attention: the gateway reports {gateway}\nNothing was changed. Next: hermes gateway status.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+  frozen_attention:
+    end: "Hermes needs attention: the gateway file says running but was not updated for 3 minutes: {frozen}\nNothing was changed. Next: hermes gateway status.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+  model_attention:
+    end: "Hermes needs attention: a model call failed in the last 30 minutes: {model_failure}\nNothing was changed. Next: hermes model to switch models.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+  internet_attention:
+    end: "Hermes needs attention: github.com cannot be reached (HTTP {internet}).\nNothing was changed. Next: check the network.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+  disk_attention:
+    end: "Hermes needs attention: the disk of ~/.hermes is {disk}% used.\nNothing was changed. Next: df -h ~/.hermes.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+  help:
+    wake: "The health check stopped before the end (the report says where). Check by hand, read-only: hermes gateway status, hermes logs errors --since 1h, df -h ~/.hermes. Answer with a one-line verdict, then the failing part. Fix nothing without the user's yes."

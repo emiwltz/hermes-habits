@@ -1,0 +1,34 @@
+# Once a day, read the Hacker News front page and wake Hermes only when a story is close to your interests.
+# The fast model rates the 30 stories in one call, in about a second and with no model tokens; Hermes then
+# writes you a short digest of the close ones. Put your own interests in the rate question.
+spec: habits/0.1
+trigger: {every: 1d}
+start: read
+fallback: help
+limits: {seconds: 60, tools: 5}
+nodes:
+  read:                            # one line per story: "title":"…","url":"…" (Ask HN has no url)
+    do: terminal
+    read: true
+    args:
+      command: >-
+        curl -sfL --max-time 15 'https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=30&attributesToRetrieve=title,url&attributesToHighlight=none'
+        | grep -oE '"title":"([^"\\]|\\.)*"(,"url":"[^"]*")?'
+    as: stories
+    next: found
+    error: skip                    # Hacker News did not answer: try again tomorrow, wake no one
+  found: {check: {empty: stories}, then: {yes: skip, no: rate}}
+  rate:                            # each story is added under the question; an unsure one becomes a doubt
+    ask: "Is this Hacker News story about one of the user's interests: AI agents, local and open models, self-hosting, Raspberry Pi, developer tools?"
+    choice:
+      close: It is mainly about one of these interests
+      far: It is about something else
+    min_confidence: 0.5
+    each: stories
+    as: fit
+    next: any
+  any:   {check: {contains: [fit, close]}, then: {yes: tell, no: quiet}}
+  tell:  {wake: "Hacker News has stories close to the user's interests today. fit marks each story close or far: send the user the close ones as a short list, each with its title and link, and one line on why it matters to them.", with: [fit]}
+  quiet: {end: "Nothing on Hacker News close to your interests today."}
+  skip:  {end: "Hacker News did not answer; next check tomorrow."}
+  help:  {wake: "The Hacker News digest stopped: something went wrong, the report says what."}

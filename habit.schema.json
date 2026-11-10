@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/emiwltz/hermes-habits/blob/main/habit.schema.json",
+  "title": "habits/0.1 habit",
+  "description": "Structure of a habit file (assets/HABIT.yaml, or the scenario given to habit_run): top-level fields, node shapes, exits, modifiers, limits, trigger forms and name patterns. It does not check the graph itself: the validator (habits/graph.py, validate) remains the authority and also checks rule 1 (every node reachable from start), rule 2 (every exit leads to an existing node), rule 3 (no loop), rule 4 (fallback names a wake node), rule 6 (every choice or score option appears in then, keys compared as text), that every variable used is defined somewhere, that no template sits inside quotes in a terminal command, and the safety checks (no deletion, no free-code tool, read: true only reads, no llm value in a terminal command). Use depth and budgets spent by sub-habits are checked at run time. Other top-level keys are ignored by the validator, so they are allowed here. See SPEC.md.",
+  "type": "object",
+  "required": ["spec", "start", "fallback", "nodes"],
+  "properties": {
+    "spec": {"const": "habits/0.1"},
+    "trigger": {"$ref": "#/$defs/trigger"},
+    "inputs": {
+      "description": "Variables given by the caller (habit_run inputs, or the with of a use node).",
+      "type": "array",
+      "items": {"$ref": "#/$defs/variable", "not": {"$ref": "#/$defs/reserved"}}
+    },
+    "start": {"description": "The first node.", "$ref": "#/$defs/node_name"},
+    "fallback": {"description": "The wake node that ends every run that goes wrong.", "$ref": "#/$defs/node_name"},
+    "min_confidence": {"$ref": "#/$defs/confidence"},
+    "limits": {"$ref": "#/$defs/limits"},
+    "nodes": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 20,
+      "propertyNames": {"$ref": "#/$defs/node_name"},
+      "additionalProperties": {"$ref": "#/$defs/node"}
+    }
+  },
+  "allOf": [
+    {
+      "description": "A watch runs unattended: 60 seconds and 20 tool calls at most per check.",
+      "if": {"required": ["trigger"], "properties": {"trigger": {"type": "object", "required": ["every"]}}},
+      "then": {"properties": {"limits": {"properties": {"seconds": {"maximum": 60}, "tools": {"maximum": 20}}}}}
+    }
+  ],
+  "$defs": {
+    "node_name": {"type": "string", "pattern": "^[a-z0-9_-]{1,40}$"},
+    "variable": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+    "reserved": {"description": "Set by the runner; as and inputs must not use them.", "enum": ["item", "doubts", "trigger"]},
+    "path": {
+      "description": "A variable, optionally followed by fields or list indexes: files, page.title, rows.0.",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)*$"
+    },
+    "text": {"description": "Non-blank text; may hold {templates}.", "type": "string", "pattern": "\\S"},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "trigger": {
+      "description": "Absent or null: a one-off scenario or a sub-habit.",
+      "oneOf": [
+        {"type": "null"},
+        {"description": "Request: the user's message matches the habit.", "const": "message"},
+        {
+          "description": "Watch: every interval, a whole number of minutes, hours or days (5m, 2h, 1d); every: 1d may add a time of day, 24-hour and quoted (at: \"21:00\").",
+          "type": "object",
+          "required": ["every"],
+          "properties": {
+            "every": {"type": "string", "pattern": "^[1-9]\\d*[mhd]$"},
+            "at": {"type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"}
+          },
+          "if": {"required": ["at"]},
+          "then": {"properties": {"every": {"const": "1d"}}},
+          "additionalProperties": false
+        }
+      ]
+    },
+    "limits": {
+      "description": "Budgets per run. Defaults: 120 s, 200 steps, 100 tools, 300 questions, 5 llm calls (watch: 60 s, 20 tools).",
+      "type": "object",
+      "properties": {
+        "seconds": {"type": "integer", "minimum": 1, "maximum": 600},
+        "steps": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "tools": {"type": "integer", "minimum": 1, "maximum": 500},
+        "questions": {"type": "integer", "minimum": 0, "maximum": 2000, "description": "0: no question allowed."},
+        "llm": {"type": "integer", "minimum": 0, "maximum": 20, "description": "0: no llm call allowed."}
+      },
+      "additionalProperties": false
+    },
+    "option": {"description": "An answer; a whole number is read as its digits.", "type": ["string", "integer"]},
+    "choice": {
+      "oneOf": [
+        {"type": "array", "items": {"$ref": "#/$defs/option"}, "minItems": 2, "maxItems": 255},
+        {
+          "description": "Option -> description.",
+          "type": "object",
+          "minProperties": 2,
+          "maxProperties": 255,
+          "additionalProperties": {"type": ["string", "number"]}
+        }
+      ]
+    },
+    "score": {
+      "description": "Levels from lowest to highest. A mapping is accepted; its descriptions are not sent.",
+      "oneOf": [
+        {"type": "array", "items": {"$ref": "#/$defs/option"}, "minItems": 2, "maxItems": 10},
+        {"type": "object", "minProperties": 2, "maxProperties": 10, "additionalProperties": {"type": ["string", "number"]}}
+      ]
+    },
+    "as": {"description": "Store the node's result in this variable.", "$ref": "#/$defs/variable", "not": {"$ref": "#/$defs/reserved"}},
+    "each": {"description": "Repeat the node for each item of this list variable (a text is split into lines).", "$ref": "#/$defs/variable"},
+    "where": {
+      "description": "With each: keep the items whose value of the variable equals the value, compared as text.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/variable"},
+      "additionalProperties": {"type": ["string", "number", "boolean"]}
+    },
+    "with": {
+      "description": "Variables given to the node: state of an ask or llm, inputs of a use, values returned by end or wake.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/variable"}
+    },
+    "node": {
+      "description": "Exactly one verb: ask, check, do, llm, use, end or wake.",
+      "type": "object",
+      "oneOf": [
+        {"$ref": "#/$defs/ask"},
+        {"$ref": "#/$defs/check"},
+        {"$ref": "#/$defs/do"},
+        {"$ref": "#/$defs/llm"},
+        {"$ref": "#/$defs/use"},
+        {"$ref": "#/$defs/end"},
+        {"$ref": "#/$defs/wake"}
+      ]
+    },
+    "ask": {
+      "description": "A typed question to a decision model. Exactly one answer type. Without each: then (one exit per answer, plus optional unsure) or next. With each: next only. With pick: next, and an optional unsure exit.",
+      "type": "object",
+      "required": ["ask"],
+      "properties": {
+        "ask": {"$ref": "#/$defs/text"},
+        "yes_no": {"const": true},
+        "choice": {"$ref": "#/$defs/choice"},
+        "score": {"$ref": "#/$defs/score"},
+        "pick": {"description": "Choose ONE item of this list (or table) variable in one choice question whose options are the items, \"none\" last (254 items at most): as gets the item.", "$ref": "#/$defs/variable"},
+        "margin": {"description": "With pick: how far the top item's probability must stand over the second's (0.15 unless given).", "type": "number", "minimum": 0, "maximum": 1},
+        "unsure": {"description": "With pick: the node when no item is sure and clear (else the fallback).", "$ref": "#/$defs/node_name"},
+        "min_confidence": {"$ref": "#/$defs/confidence"},
+        "doubts": {"const": "drop", "description": "With each only: an item the decision model is unsure about is left out (shown in the report), not a doubt that hands the run back."},
+        "then": {"type": "object", "minProperties": 2, "additionalProperties": {"$ref": "#/$defs/node_name"}},
+        "next": {"$ref": "#/$defs/node_name"},
+        "as": {"$ref": "#/$defs/as"},
+        "each": {"$ref": "#/$defs/each"},
+        "where": {"$ref": "#/$defs/where"},
+        "with": {"$ref": "#/$defs/with"}
+      },
+      "additionalProperties": false,
+      "oneOf": [{"required": ["yes_no"]}, {"required": ["choice"]}, {"required": ["score"]}, {"required": ["pick"]}],
+      "allOf": [
+        {
+          "if": {"required": ["pick"]},
+          "then": {"required": ["next"], "not": {"anyOf": [{"required": ["then"]}, {"required": ["each"]}]}},
+          "else": {"not": {"anyOf": [{"required": ["margin"]}, {"required": ["unsure"]}]}}
+        },
+        {
+          "if": {"required": ["each"]},
+          "then": {"required": ["next"], "not": {"required": ["then"]}},
+          "else": {"oneOf": [{"required": ["then"]}, {"required": ["next"]}], "not": {"required": ["doubts"]}}
+        },
+        {
+          "if": {"required": ["yes_no"]},
+          "then": {
+            "properties": {
+              "then": {"required": ["yes", "no"], "propertyNames": {"enum": ["yes", "no", "unsure"]}}
+            }
+          }
+        }
+      ]
+    },
+    "check": {
+      "description": "A computed condition; no model is called. Both exits are required.",
+      "type": "object",
+      "required": ["check", "then"],
+      "properties": {
+        "check": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "properties": {
+            "empty": {"$ref": "#/$defs/path"},
+            "changed": {"$ref": "#/$defs/path"},
+            "equals": {"type": "array", "prefixItems": [{"$ref": "#/$defs/path"}, true], "minItems": 2, "maxItems": 2},
+            "contains": {"type": "array", "prefixItems": [{"$ref": "#/$defs/path"}, true], "minItems": 2, "maxItems": 2},
+            "greater": {"type": "array", "prefixItems": [{"$ref": "#/$defs/path"}, {"type": "number"}], "minItems": 2, "maxItems": 2}
+          },
+          "additionalProperties": false
+        },
+        "then": {
+          "type": "object",
+          "required": ["yes", "no"],
+          "additionalProperties": {"$ref": "#/$defs/node_name"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "do": {
+      "description": "Call a Hermes tool through the normal tool path. read: true only for a call that only reads.",
+      "type": "object",
+      "required": ["do", "next"],
+      "properties": {
+        "do": {"$ref": "#/$defs/text"},
+        "args": {"type": "object"},
+        "read": {"type": "boolean"},
+        "next": {"$ref": "#/$defs/node_name"},
+        "error": {"$ref": "#/$defs/node_name"},
+        "as": {"$ref": "#/$defs/as"},
+        "each": {"$ref": "#/$defs/each"},
+        "where": {"$ref": "#/$defs/where"}
+      },
+      "additionalProperties": false
+    },
+    "llm": {
+      "description": "One structured LLM call, with no tool. Without schema the value is one string.",
+      "type": "object",
+      "required": ["llm", "next"],
+      "properties": {
+        "llm": {"$ref": "#/$defs/text"},
+        "schema": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"enum": ["string", "number", "boolean", "list"]}
+        },
+        "next": {"$ref": "#/$defs/node_name"},
+        "error": {"$ref": "#/$defs/node_name"},
+        "as": {"$ref": "#/$defs/as"},
+        "each": {"$ref": "#/$defs/each"},
+        "where": {"$ref": "#/$defs/where"},
+        "with": {"$ref": "#/$defs/with"}
+      },
+      "additionalProperties": false
+    },
+    "use": {
+      "description": "Run another habit in the caller's mode and budgets; its end becomes the value, its wake takes the error exit.",
+      "type": "object",
+      "required": ["use", "next"],
+      "properties": {
+        "use": {"$ref": "#/$defs/text"},
+        "next": {"$ref": "#/$defs/node_name"},
+        "error": {"$ref": "#/$defs/node_name"},
+        "as": {"$ref": "#/$defs/as"},
+        "with": {"$ref": "#/$defs/with"}
+      },
+      "additionalProperties": false
+    },
+    "end": {
+      "description": "Finish with a report. Reached with doubts, it becomes a wake.",
+      "type": "object",
+      "required": ["end"],
+      "properties": {"end": {"$ref": "#/$defs/text"}, "with": {"$ref": "#/$defs/with"}},
+      "additionalProperties": false
+    },
+    "wake": {
+      "description": "Finish and wake the LLM with what was done and why.",
+      "type": "object",
+      "required": ["wake"],
+      "properties": {"wake": {"$ref": "#/$defs/text"}, "with": {"$ref": "#/$defs/with"}},
+      "additionalProperties": false
+    }
+  }
+}

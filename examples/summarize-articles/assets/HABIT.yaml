@@ -1,0 +1,31 @@
+# Summarize a few articles: habit_run {name: summarize-articles, inputs: {urls: ["https://…", "https://…"]}}.
+# The S1 sets aside error pages and login walls; one llm call summarizes the rest.
+spec: habits/0.1
+inputs: [urls]
+start: many
+fallback: help
+limits: {seconds: 300}
+nodes:
+  many: {check: {greater: [urls, 3]}, then: {yes: toomany, no: read}}   # greater on a list counts it
+  read:
+    do: web_extract
+    read: true
+    each: urls
+    args: {urls: ["{item}"], char_limit: 2000}
+    as: pages
+    next: article
+  article:                       # {pages.results.0.…} is the page of the current url
+    ask: "Is this page an article (not an error page or login wall)? Title: {pages.results.0.title}. Text: {pages.results.0.content}"
+    yes_no: true
+    each: urls
+    as: article
+    next: summarize
+  summarize:                     # with: article first, so the yes/no table is never cut by the 8,000-character limit
+    llm: "Summarize in three sentences each the pages whose url is marked yes in article; skip the others. If none is marked yes, say so."
+    with: [article, pages]
+    schema: {summary: string}
+    as: digest
+    next: done
+  done: {end: "{digest.summary}"}
+  toomany: {wake: "Give 3 URLs at most: more pages would not fit in what the summary can read."}
+  help: {wake: "I could not summarize these pages: something went wrong, the report says what."}

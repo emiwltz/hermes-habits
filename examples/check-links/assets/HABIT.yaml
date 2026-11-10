@@ -1,0 +1,41 @@
+# Check the links of a page: run by name, habit_run {name: check-links, inputs: {page: "https://…"}}.
+# No question for the decision model here: an HTTP status is a number, so awk decides.
+# A broken link is what the habit is for: it ends done with a table of each link, ok, blocked (the site refused a
+# script) or broken. Only real trouble (the page did not load, no link on it, the run stopped) hands back.
+spec: habits/0.1
+inputs: [page]
+start: links
+fallback: help
+limits: {seconds: 400}           # 30 links at 10 s each in the worst case
+nodes:
+  links:                         # curl reaches the web: a read only when it says read: true
+    do: terminal
+    read: true
+    args:
+      command: >-             # only the links a reader can click: <a href>, not <link> hints or other tags
+        curl -sL --max-time 20 {page}
+        | tr '\n\t' '  ' | grep -oiE '<a [^>]*href="?https?://[^" >]+' | sed -E 's/^.*[hH][rR][eE][fF]="?(https?:)/\1/' | sort -u | head -n 30
+      timeout: 30
+    as: links
+    next: found
+  found: {check: {empty: links}, then: {yes: nolinks, no: probe}}
+  probe:                         # one word per link: ok (2xx, 3xx, 416), blocked (the site refused a script) or broken
+    do: terminal                 # -r 0-0 asks for one byte: a big file answers at once instead of timing out
+    read: true                   # '%{''http_code}': the '' keeps {http_code} from being read as a variable
+    each: links
+    args:
+      command: >-
+        curl -sL -r 0-0 -o /dev/null -w '%{''http_code}' --max-time 10 {item}
+        | awk '{''print ($1 ~ /^[23]/ ? "ok" : $1 == 416 ? "ok" : $1 ~ /^40[135]$/ ? "blocked" : $1 == 429 ? "blocked" : $1 == 999 ? "blocked" : "broken")}'
+      timeout: 15
+    as: status
+    next: verdict
+    error: help                  # every probe failed to run: real trouble
+  verdict: {check: {contains: [status, broken]}, then: {yes: some, no: maybe}}
+  maybe:   {check: {contains: [status, blocked]}, then: {yes: careful, no: sure}}   # no broken link: did a site refuse?
+  sure:    {check: {empty: doubts}, then: {yes: fine, no: some}}   # a probe that could not run: not every link answered
+  fine:    {end: "Every absolute link of {page} answers (links with a full http(s) address, 30 at most):\n{status}", with: [status]}
+  careful: {end: "No broken link among the absolute links of {page} (links with a full http(s) address, 30 at most). Some sites refused an automated check (blocked: 401, 403, 405, 429 or 999 to a script, usually fine in a browser); each link:\n{status}", with: [status]}
+  some:    {end: "Some absolute links of {page} are broken (links with a full http(s) address, 30 at most). Each link was fetched once with curl (one byte, 10 s limit): ok = 2xx, 3xx or 416; blocked = 401, 403, 405, 429 or 999, the site refused a script and the link usually works in a browser; broken = any other code (404, 410, 5xx) or no answer in 10 s. The broken ones need no second check. Each link:\n{status}", with: [status]}
+  nolinks: {wake: "Found no http(s) link on {page}: the page did not load, has none, or builds its links with JavaScript. Try web_extract or a browser."}
+  help:    {wake: "The link check of {page} stopped before the end: something went wrong, the report says what."}

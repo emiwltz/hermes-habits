@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "pyyaml>=6.0,<7" pytest jsonschema
+      - run: pytest -q tests
+
+  # The catalog gate: the plugin must pass `hermes plugins validate` on the
+  # oldest Hermes it claims (requires_hermes), the latest release and main.
+  hermes:
+    name: hermes ${{ matrix.hermes }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - hermes: v0.22.5
+            install: --commit bf0203a794a07aac3ff764972ab9087baa4e4f4e
+          - hermes: stable
+            install: --channel stable
+          - hermes: main
+            install: --channel main
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Hermes
+        run: |
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
+            | bash -s -- --non-interactive --skip-browser --skip-computer-use ${{ matrix.install }}
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: hermes --version
+      - name: hermes plugins validate, and the install scanner says safe
+        run: |
+          hermes plugins validate "$GITHUB_WORKSPACE" --install-deps | tee validate.txt
+          grep -q "security scan — safe" validate.txt
+      - name: Clean install like a judge, no key
+        run: |
+          git -C "$GITHUB_WORKSPACE" config --global --add safe.directory "$GITHUB_WORKSPACE"
+          hermes plugins install "file://$GITHUB_WORKSPACE" --enable --yes-deps
+          hermes plugins list | grep -i habits
+          hermes habits list
+          for f in "$GITHUB_WORKSPACE"/examples/*/assets/HABIT.yaml; do hermes habits check "$f"; done
+          hermes habits tick watch-hermes-releases | tail -1 | grep -q '"wakeAgent": false'

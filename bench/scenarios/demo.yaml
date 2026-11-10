@@ -1,0 +1,71 @@
+# Demo cases on the example habits (examples/). Run them all:
+#   python3 bench/run.py bench/scenarios/demo.yaml --budget 0.05
+# {scratch} is the case's scratch folder and {repo} this repository; setup and verify also get them as $SCRATCH
+# and $REPO. A case never names a Downloads folder: the tidy case runs a copy of the example in its scratch folder.
+
+- id: tidy
+  task: tidy-folder
+  habit: "{repo}/examples/tidy-downloads/assets/HABIT.yaml"
+  scratch: /tmp/habits-bench/tidy
+  rewrite:                                  # the copy the bench runs: the real folders become scratch folders
+    "~/Downloads": "{scratch}/inbox"
+    "~/.Trash/": "{scratch}/trash/"
+  setup: >-
+    rm -rf "$SCRATCH/inbox" "$SCRATCH/trash" && mkdir -p "$SCRATCH/inbox" "$SCRATCH/trash" &&
+    touch "$SCRATCH/inbox/Setup-Figma-125.dmg" "$SCRATCH/inbox/beach photo.jpg"
+    "$SCRATCH/inbox/invoice.pdf" "$SCRATCH/inbox/Slack-4.41.dmg"
+  mode: dry                                 # the moves are planned, not done
+  repeat: 3
+  expect:
+    end:                                    # the expected result: each file planned into its folder
+      message_contains: "Files sorted by type."
+      planned_tools: [terminal]
+      planned:
+        - 'mv .*invoice\.pdf.* .*/inbox/document/$'
+        - 'mv .*beach photo\.jpg.* .*/inbox/image/$'
+        - 'mv .*Setup-Figma-125\.dmg.* .*/inbox/installer/$'
+        - 'mv .*Slack-4\.41\.dmg.* .*/inbox/installer/$'
+    wake: {}                                # a clean hand-back (files it was unsure of) is right too, not done
+    max_ms: 20000
+  verify: >-                                # after the baseline, which really moves the files: is each where it goes?
+    find "$SCRATCH/inbox" -path '*doc*/invoice.pdf' | grep -q . &&
+    find "$SCRATCH/inbox" -path '*im*/beach photo.jpg' | grep -q .
+  baseline:                                 # the same task, asked to Hermes with habits off
+    repeat: 1
+    prompt: >-
+      In the folder {scratch}/inbox, move each file into a subfolder by its type: installer, image, document,
+      archive or other (mkdir -p, then mv -n). Then move to {scratch}/trash/ the installers of applications
+      already in /Applications. Touch nothing else and delete nothing. Answer in one sentence.
+  create:                                   # Hermes asked to write the habit; it is moved to the Trash once measured
+    name: bench-tidy-demo
+    prompt: >-
+      Make this task a Habits habit that I will run by its name: in the folder {scratch}/inbox, move each file
+      into a subfolder by its type (installer, image, document, archive, other), then move to {scratch}/trash/
+      the installers of applications already in /Applications. Try it with habit_run, then save it with
+      habit_save under the name bench-tidy-demo, with no trigger. Delete nothing.
+
+- id: tidy-not-now                          # a negative case: the message names the task and does not ask for it
+  task: tidy-folder
+  habit: "{repo}/examples/tidy-downloads/assets/HABIT.yaml"
+  scratch: /tmp/habits-bench/tidy-not-now
+  rewrite: {"~/Downloads": "{scratch}/inbox", "~/.Trash/": "{scratch}/trash/"}
+  message: "Do not tidy {scratch}/inbox now, I will do it tomorrow."
+  expect:
+    none: {}                                 # no habit runs: the turn is the model's
+
+- id: release
+  task: watch-release
+  habit: watch-hermes-releases               # an example by name: read-only, so dry runs it whole
+  expect:                                    # new release or not: both are right; a failed check is not
+    end: {message_regex: "Hermes release"}
+    wake: {message_regex: "A new Hermes release"}
+    max_ms: 15000
+
+- id: links
+  task: check-links
+  habit: check-links
+  inputs: {page: "https://www.iana.org/help/example-domains"}   # example.com has no link left
+  scratch: /tmp/habits-bench/links      # live: its commands start here, and no write may leave it
+  mode: live                                 # its probe step is no read: dry would only plan it
+  expect:
+    end: {message_contains: "Every absolute link of https://www.iana.org/help/example-domains answers"}

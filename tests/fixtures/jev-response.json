@@ -1,0 +1,12 @@
+{
+  "model": "jev-1.14.0",
+  "answers": {
+    "kind": {"type": "choice", "choice": "installer", "confidence": 0.97,
+             "probabilities": {"installer": 0.98, "image": 0.01, "other": 0.01}},
+    "safe": {"type": "noul", "noul": 0.9},
+    "size": {"type": "score", "score": 1.15, "confidence": 0.81,
+             "legend": {"0": "tiny", "1": "small", "2": "large", "3": "huge"},
+             "probabilities": {"0": 0.02, "1": 0.81, "2": 0.17, "3": 0.0}}
+  },
+  "usage": {"input_tokens": 408, "output_tokens": 68}
+}

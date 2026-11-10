@@ -1,0 +1,39 @@
+# Sort ~/Downloads by file type, then move installers already in /Applications to the Trash (macOS).
+# The same graph as SPEC.md, section 10. mv -n never replaces a file that is already there.
+spec: habits/0.1
+trigger: message                # runs when the user's message asks for it, once the user has said yes
+start: list
+fallback: help                  # every run that goes wrong ends here
+min_confidence: 0.8
+nodes:
+  # Read-only steps: they also run while the habit is learning.
+  list: {do: terminal, read: true, args: {command: "ls -p ~/Downloads | grep -v /"}, as: files, next: apps}
+  apps: {do: terminal, read: true, args: {command: "ls /Applications"}, as: apps, next: classify}
+  classify:                     # one question per file, in one decision model call; kind becomes a table file -> answer
+    ask: "What type of file is this?"
+    choice: [installer, image, document, archive, other]   # "other" last: the decision model leans to the first option
+    each: files
+    as: kind
+    next: move
+  move:                         # a write, only planned while learning; {item} and {kind} are shell-quoted
+    do: terminal
+    each: files
+    args: {command: "mkdir -p ~/Downloads/{kind} && mv -n ~/Downloads/{item} ~/Downloads/{kind}/"}
+    next: installed
+  installed:                    # installers only, with the list of apps as shared state
+    ask: "Is this application already installed?"
+    yes_no: true
+    each: files
+    where: {kind: installer}
+    with: [apps]
+    as: installed
+    next: trash
+  trash:                        # never delete: the Trash is emptied by hand
+    do: terminal
+    each: files
+    where: {installed: yes}     # YAML 1.2: yes is text, the answer itself
+    args: {command: "mv -n ~/Downloads/installer/{item} ~/.Trash/"}
+    next: doubts
+  doubts: {check: {empty: doubts}, then: {yes: done, no: help}}
+  done:   {end: "Files sorted by type."}
+  help:   {wake: "I sorted what I could. Some files are left to decide: the report lists them."}

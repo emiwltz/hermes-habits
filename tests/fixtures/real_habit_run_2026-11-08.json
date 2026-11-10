@@ -1,0 +1,686 @@
+{
+ "source": "The graphs of the 30 habit_run calls Hermes made on the Pi on 2026-11-08, deduplicated, in order, the home folder written /home/user. 4 calls carried no graph (a name, or no argument); one calls list was cut before its closing ], its graph whole.",
+ "graphs": [
+  {
+   "spec": "habits/0.1",
+   "start": "list",
+   "fallback": "wake",
+   "nodes": {
+    "list": {
+     "do": {
+      "tool": "terminal",
+      "command": "find /home/user/Documents -maxdepth 1 -printf '%y %10s %p\\n' | sort -k3 | head -100"
+     },
+     "as": "listing",
+     "read": true,
+     "next": "done"
+    },
+    "done": {
+     "wake": "Contents of ~/Documents:\\n{listing}"
+    },
+    "wake": {
+     "wake": "Could not list ~/Documents."
+    }
+   }
+  },
+  {
+   "fallback": "wake",
+   "nodes": {
+    "done": {
+     "wake": "Contents:\\n{listing}"
+    },
+    "list": {
+     "as": "listing",
+     "do": "terminal",
+     "args": {
+      "command": "find /home/user/Documents -maxdepth 1 -printf '%y %10s %p\\n' | sort -k3 | head -100"
+     },
+     "next": "done",
+     "read": true
+    },
+    "wake": {
+     "wake": "Could not list ~/Documents."
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "list"
+  },
+  {
+   "fallback": "wake",
+   "nodes": {
+    "done": {
+     "wake": "Contents of ~/Documents:\n{listing}"
+    },
+    "list": {
+     "args": {
+      "command": "find /home/user/Documents -maxdepth 1 | head -200"
+     },
+     "as": "listing",
+     "do": "terminal",
+     "next": "done",
+     "read": true
+    },
+    "wake": {
+     "wake": "Could not list ~/Documents."
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "list"
+  },
+  {
+   "spec": "habits/0.1",
+   "start": "memo",
+   "fallback": "wake",
+   "nodes": {
+    "memo": {
+     "do": {
+      "command": "~/.recall/memo wake"
+     },
+     "as": "mem",
+     "read": true,
+     "next": "dl"
+    },
+    "dl": {
+     "do": {
+      "command": "ls -la ~/Downloads 2>&1 | head -60; ls -la ~/Desktop 2>&1 | head -20"
+     },
+     "as": "dl",
+     "read": true,
+     "next": "finish"
+    },
+    "finish": {
+     "end": "MEMO:\n{mem}\n\nDOWNLOADS:\n{dl}"
+    },
+    "wake": {
+     "wake": "Could not list the downloads."
+    }
+   }
+  },
+  {
+   "spec": "habits/0.1",
+   "start": "memo",
+   "fallback": "wake",
+   "nodes": {
+    "memo": {
+     "do": {
+      "command": "~/.recall/memo wake"
+     },
+     "as": "mem",
+     "read": true,
+     "next": "dl"
+    },
+    "dl": {
+     "do": {
+      "command": "ls -la ~/Downloads 2>&1 | head -60"
+     },
+     "as": "dl",
+     "read": true,
+     "next": "finish"
+    },
+    "finish": {
+     "end": "MEMO AND DOWNLOADS"
+    },
+    "wake": {
+     "wake": "Could not list the downloads."
+    }
+   }
+  },
+  {
+   "fallback": "wake",
+   "nodes": {
+    "finish": {
+     "end": "ok"
+    },
+    "dl": {
+     "as": "dl",
+     "do": "terminal",
+     "arguments": {
+      "command": "ls -la ~/Downloads 2>&1 | head -60"
+     },
+     "next": "finish",
+     "read": true
+    },
+    "wake": {
+     "wake": "no shell"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "dl"
+  },
+  {
+   "fallback": "wake",
+   "nodes": {
+    "dl": {
+     "as": "dl",
+     "do": "ls ~/Downloads | head -60",
+     "next": "finish",
+     "read": true
+    },
+    "finish": {
+     "end": "memo={mem} dl={dl}"
+    },
+    "memo": {
+     "as": "mem",
+     "do": "~/.recall/memo wake",
+     "next": "dl"
+    },
+    "wake": {
+     "wake": "no shell"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "memo"
+  },
+  {
+   "fallback": "wake",
+   "nodes": {
+    "dl": {
+     "as": "dl",
+     "do": "ls -la /home/user/Downloads",
+     "next": "finish"
+    },
+    "finish": {
+     "end": "memo={mem} dl={dl}"
+    },
+    "memo": {
+     "as": "mem",
+     "do": "~/.recall/memo wake",
+     "next": "dl"
+    },
+    "wake": {
+     "wake": "no shell"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "memo"
+  },
+  {
+   "spec": "habits/0.1",
+   "start": "probe",
+   "fallback": "w",
+   "nodes": {
+    "probe": {
+     "do": {
+      "tool": "terminal",
+      "args": {
+       "command": "ls -la ~/Downloads | head -50"
+      }
+     },
+     "read": true,
+     "as": "out",
+     "next": "e"
+    },
+    "e": {
+     "end": "done"
+    },
+    "w": {
+     "wake": "probe failed"
+    }
+   }
+  },
+  {
+   "fallback": "f",
+   "nodes": {
+    "e": {
+     "end": "ok"
+    },
+    "p": {
+     "as": "out",
+     "do": {
+      "args": {
+       "command": "ls -la /home/user/Downloads | head -50"
+      },
+      "tool": "terminal"
+     },
+     "next": "e",
+     "read": true
+    },
+    "f": {
+     "wake": "probe failed"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "p"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "e": {
+     "end": "hi"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "e"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "is it ok?",
+     "next": "e",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "do": {
+      "args": {
+       "command": "echo hi"
+      },
+      "tool": "terminal"
+     },
+     "next": "a",
+     "read": true
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "next": "e",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "do": {
+      "command": "echo hi",
+      "tool": "terminal"
+     },
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "next": "e",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "do": {
+      "args": {
+       "command": "echo hi"
+      },
+      "read": true,
+      "tool": "terminal"
+     },
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "c": {
+     "check": {
+      "empty": "item"
+     },
+     "next": "e",
+     "then": {
+      "no": "e",
+      "yes": "w"
+     }
+    },
+    "e": {
+     "end": "hi"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "c"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "next": "e",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "do": {
+      "terminal": {
+       "command": "echo hi"
+      }
+     },
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "next": "e",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "command": "echo hi"
+     },
+     "do": "terminal",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "command": "echo hi"
+     },
+     "do": "terminal",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "command": "echo hi"
+     },
+     "do": "shell",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "command": "echo hi"
+     },
+     "do": "bash",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "command": "echo hi"
+     },
+     "do": "run_terminal_cmd",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "command": "echo hi"
+     },
+     "do": "execute",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "path": "/home/user/Downloads"
+     },
+     "do": "filesystem",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "path": "/home/user/Downloads"
+     },
+     "do": "read_file",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "code": "print(1)"
+     },
+     "do": "python",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  },
+  {
+   "fallback": "w",
+   "nodes": {
+    "a": {
+     "ask": "ok?",
+     "then": {
+      "no": "w",
+      "yes": "e"
+     },
+     "yes_no": true
+    },
+    "e": {
+     "end": "hi"
+    },
+    "s": {
+     "args": {
+      "query": "downloads"
+     },
+     "do": "search_files",
+     "next": "a"
+    },
+    "w": {
+     "wake": "wake"
+    }
+   },
+   "spec": "habits/0.1",
+   "start": "s"
+  }
+ ]
+}

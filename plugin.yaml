@@ -1,0 +1,90 @@
+name: habits
+version: 0.1.0
+description: >-
+  Reflexes for Hermes: a habit is a skill with a fast path that does a known
+  task in about a second and always comes back done, or handed back with what
+  is left; it acts on its own only after practising beside Hermes and your yes,
+  except a read-only habit you asked for.
+author: Émilien Waltz
+license: MIT
+homepage: https://github.com/emiwltz/hermes-habits
+manifest_version: 2
+requires_hermes: ">=0.22.5"
+platforms: [linux, macos]
+optional_env:
+  - name: HABITS_OFF
+    description: "Set to a non-empty value to turn every hook of the plugin off (the tools stay), for example to measure Hermes without habits."
+    password: false
+provides_tools:
+  - habit_run
+  - habit_save
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - post_llm_call
+  - post_api_request
+  - on_session_finalize
+python_dependencies:
+  - "pyyaml>=6.0,<7"
+config_schema:
+  promote:
+    type: str
+    enum: [ask, auto]
+    default: ask
+    label: Acting on its own
+    description: "ask: a habit that practised well enough waits for your yes in /habits before it acts on its own. auto: the thresholds alone say yes."
+  language:
+    type: str
+    enum: [en, fr]
+    default: en
+    label: Language
+    description: The language of the plugin's own lines (/habits, hermes habits list, the news of a habit).
+  backend:
+    type: str
+    enum: [auto, jev, llm]
+    default: auto
+    label: Decision backend
+    description: The fast decision model that answers a habit's questions. auto asks Jev first when its key is set, then your Hermes model.
+  min_confidence:
+    type: float
+    default: 0.8
+    description: Below this confidence, a decision becomes a doubt and is handed back to Hermes. Also the confidence of "run it as it is" needed before a habit picked for a message runs.
+  trigger_confidence:
+    type: float
+    default: 0.7
+    description: Confidence needed to pick a habit for a message (the message door), before it is confirmed.
+  promote_runs:
+    type: int
+    default: 12
+    description: Practice runs compared with Hermes's own answer before a habit may act on its own.
+  promote_agreement:
+    type: float
+    default: 0.9
+    description: Share of those runs that must agree with Hermes before a habit may act on its own.
+  retire_window:
+    type: int
+    default: 20
+    description: Recent comparisons of a habit that acts on its own used to decide whether it rests.
+  retire_agreement:
+    type: float
+    default: 0.75
+    description: Below this agreement over that window, a habit that acts on its own goes to rest.
+  spot_check:
+    type: float
+    default: 0.1
+    description: Share of a habit's own answers that Hermes also does beside it, to keep measuring.
+  judge:
+    type: bool
+    default: true
+    description: Let your Hermes model match equivalent steps when they are not written the same way (practice runs only).
+  direct:
+    type: bool
+    default: true
+    label: Direct answer
+    description: When a habit that acts on its own does the whole request without reading the web, it answers you itself, with no model call (Hermes 0.22.6 and later).
+  typesafe_api_key:
+    type: secret
+    env: TYPESAFE_API_KEY
+    label: TypeSafe (Jev) API key
+    description: Optional. Fast decisions with Jev.

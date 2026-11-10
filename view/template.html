@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Habit</title>
+<script>
+// Theme before first paint: ?theme=, then the saved choice, then the system setting.
+(function () {
+  document.documentElement.className += ' js'; // without JavaScript, the plain summary shows instead
+  var t = null;
+  try { t = new URLSearchParams(location.search).get('theme') || localStorage.getItem('habits-theme'); } catch (e) {}
+  if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #fff; --canvas: #fafbfc; --dot: #dde2e8;
+  --ink: #141a22; --muted: #5c6774; --line: #e3e7ec; --line2: #cfd6dd; --edge: #98a2ae;
+  --decide: #a35a00; --decide-bg: #fdf4e6;
+  --act: #0a7a6a; --act-bg: #e8f5f2;
+  --compose: #6a46c9; --compose-bg: #f1edfc;
+  --finish: #46546a; --finish-bg: #eef1f5;
+  --accent: #2563eb; --accent-bg: #e9f0fe; --on: #fff;
+  --ok: #1a7f45; --ok-bg: #e7f5ec; --bad: #c0362c; --bad-bg: #fcebe9;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0e1116; --panel: #151a21; --canvas: #11151b; --dot: #222932;
+  --ink: #e5e9ef; --muted: #98a3b1; --line: #252c35; --line2: #343d48; --edge: #5f6a78;
+  --decide: #e3a54a; --decide-bg: #2a2010;
+  --act: #3fc2a6; --act-bg: #0f241f;
+  --compose: #a68ef2; --compose-bg: #1e1932;
+  --finish: #a3b2c6; --finish-bg: #1a2029;
+  --accent: #6293ff; --accent-bg: #15213b; --on: #0b0f15;
+  --ok: #4cc27a; --ok-bg: #10251a; --bad: #f07a6d; --bad-bg: #2d1513;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 18px 16px 40px; }
+@media (min-width: 720px) { .wrap { padding: 22px 28px 48px; } }
+.decide { --c: var(--decide); --cb: var(--decide-bg); }
+.act { --c: var(--act); --cb: var(--act-bg); }
+.compose { --c: var(--compose); --cb: var(--compose-bg); }
+.finish { --c: var(--finish); --cb: var(--finish-bg); }
+.none { --c: var(--muted); --cb: var(--canvas); }
+.dim { color: var(--muted); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+code { font: 12.5px var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; overflow-wrap: anywhere; }
+pre { font: 12px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+.fi { width: 12px; height: 12px; flex: none; fill: none; stroke: var(--c); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+
+/* header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.brand svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.titles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 10px; }
+h1 { font-size: 24px; line-height: 1.25; margin: 0 4px 0 0; font-weight: 650; letter-spacing: -.015em; overflow-wrap: anywhere; }
+.desc { margin: 4px 0 0; color: var(--muted); max-width: 75ch; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: 0; border-radius: 999px; font: 600 12.5px var(--sans); background: var(--finish-bg); color: var(--muted); white-space: nowrap; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+button.chip { cursor: pointer; }
+.st-active, .chip.ok { background: var(--ok-bg); color: var(--ok); }
+.st-shadow { background: var(--accent-bg); color: var(--accent); }
+.st-shadow i { background: none; border: 1.5px solid currentColor; }
+.st-retired i { opacity: .5; }
+.st-one-off { background: var(--compose-bg); color: var(--compose); }
+.st-one-off i { border-radius: 1px; transform: rotate(45deg) scale(.85); }
+.chip.no { background: var(--bad-bg); color: var(--bad); }
+.refused { margin: 12px 0 0; padding: 10px 14px; border-radius: 10px; background: var(--bad-bg); color: var(--bad); font-weight: 600; font-size: 14px; }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.stat { padding: 10px 16px 11px; border-left: 1px solid var(--line); min-width: 0; }
+.stat:first-child { border-left: 0; }
+@media (max-width: 760px) {
+  .stats { grid-template-columns: 1fr 1fr; }
+  .stat:nth-child(3) { border-left: 0; }
+  .stat:nth-child(n+3) { border-top: 1px solid var(--line); }
+}
+.sl { font-size: 12px; font-weight: 600; color: var(--muted); }
+.sv { font-size: 20px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; line-height: 1.35; overflow-wrap: anywhere; }
+.sv small { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+.ss { font-size: 12.5px; color: var(--muted); }
+.track { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin: 6px 0 3px; }
+.track i { display: block; height: 100%; background: var(--accent); transition: width .45s ease; }
+
+/* layout */
+.main { display: grid; gap: 16px; margin-top: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 980px) {
+  .main { grid-template-columns: minmax(0, 1.25fr) minmax(360px, 1fr); align-items: start; }
+  .side { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+}
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; background: var(--panel); border-radius: 12px 12px 0 0; }
+.tab { display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 10px; border: 0; background: none; color: var(--muted); font: 600 13.5px var(--sans); cursor: pointer; box-shadow: inset 0 -2px 0 transparent; }
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+.tab .ok { color: var(--ok); } .tab .no { color: var(--bad); }
+.pane { padding: 14px 16px 16px; }
+.chead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 13.5px; margin: 6px 0 0; }
+.btns { display: flex; gap: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel); color: var(--ink); font: 600 13px var(--sans); cursor: pointer; }
+.btn svg { width: 12px; height: 12px; fill: currentColor; }
+.btn:hover { background: var(--bg); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on); min-width: 92px; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.icon { width: 32px; padding: 0; justify-content: center; }
+.btn.icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+@media (pointer: coarse) { .btn { height: 40px; } .btn.icon { width: 40px; } }
+@media (max-width: 520px) {
+  .step { grid-template-columns: 3rem 12px minmax(0, 1fr) 3.8rem; grid-template-areas: "t i n m" ". . s s"; gap: 0 8px; }
+  .step .t { grid-area: t; } .step .fi { grid-area: i; } .step .sn { grid-area: n; } .step .ss { grid-area: s; } .step .ms { grid-area: m; }
+  .brand .dim { display: none; }
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* graph */
+.scroll { overflow-x: auto; background: var(--canvas); background-image: radial-gradient(var(--dot) 1px, transparent 1.2px); background-size: 18px 18px; }
+.gcard { overflow: hidden; }
+#graph { display: block; margin: 0 auto; height: auto; font-family: var(--sans); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.legend code { white-space: nowrap; }
+.legend b { color: var(--ink); font-weight: 600; }
+.legend .sw { width: 18px; height: 12px; fill: none; stroke: var(--finish); stroke-width: 1.3; }
+.node { cursor: pointer; outline: none; transition: opacity .3s; }
+.node .box { fill: var(--cb); stroke: var(--c); stroke-opacity: .55; stroke-width: 1.2; transition: stroke .25s, stroke-width .25s; }
+.node.none .box { stroke-dasharray: 4 3; stroke-opacity: 1; }
+.node .stack { fill: var(--panel); stroke: var(--c); stroke-opacity: .35; }
+.node .ico { fill: none; stroke: var(--c); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.node .kt { font-size: 10.5px; fill: var(--muted); }
+.node .kt .k { fill: var(--c); font-weight: 700; letter-spacing: .05em; }
+.node .tag { font-size: 9.5px; font-weight: 700; letter-spacing: .06em; fill: var(--muted); }
+.node.bad .tag { fill: var(--bad); }
+.node .nm { font: 600 13px var(--mono); fill: var(--ink); }
+.node .ring { fill: none; stroke: none; }
+.node .fbring { fill: none; stroke: var(--finish); stroke-dasharray: 4 3; stroke-opacity: .8; }
+.node.bad .box { stroke: var(--bad); stroke-opacity: 1; stroke-width: 2; }
+.node.on .box { stroke-opacity: 1; stroke-width: 1.6; }
+.node.now .box { stroke: var(--accent); stroke-width: 2; }
+.node.now .ring { stroke: var(--accent); stroke-opacity: .3; stroke-width: 4; }
+.node.sel .ring { stroke: var(--ink); stroke-opacity: 1; stroke-width: 2; }
+.node:focus-visible .ring { stroke: var(--accent); stroke-opacity: 1; stroke-width: 2; }
+.lit-run .node:not(.on) { opacity: .5; }
+.lit-run .edge:not(.lit), .lit-run .elab:not(.lit), .lit-run .stub:not(.lit):not(.ghost) { opacity: .45; }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; marker-end: url(#a); transition: stroke .25s, opacity .3s; }
+.edge.err { stroke-dasharray: 4 3; }
+.edge.lit { stroke: var(--accent); stroke-width: 2.2; marker-end: url(#al); }
+.edge.loop { stroke: var(--bad); stroke-dasharray: 5 4; marker-end: url(#ab); }
+#a path { fill: var(--edge); } #al path { fill: var(--accent); } #ab path { fill: var(--bad); }
+.elab { transition: opacity .3s; }
+.elab text { font-size: 11px; font-weight: 500; fill: var(--muted); text-anchor: middle; }
+.elab.err text, .elab.loop text { fill: var(--bad); }
+.elab.lit text { fill: var(--accent); font-weight: 700; }
+.elab rect { fill: var(--canvas); }
+.stub { transition: opacity .3s; }
+.stub path { fill: none; stroke: var(--edge); stroke-width: 1.3; stroke-dasharray: 3 2; }
+.stub rect { fill: var(--canvas); stroke: var(--line2); stroke-dasharray: 3 2; }
+.stub text { font: 500 10.5px var(--mono); fill: var(--muted); text-anchor: middle; }
+.stub.lit path, .stub.lit rect { stroke: var(--accent); stroke-dasharray: none; }
+.stub.lit rect { fill: var(--accent-bg); } .stub.lit text { fill: var(--accent); font-weight: 700; }
+.stub.ghost path, .stub.ghost rect { stroke: var(--bad); } .stub.ghost rect { fill: var(--bad-bg); } .stub.ghost text { fill: var(--bad); }
+.band { stroke: var(--line2); stroke-dasharray: 4 4; }
+.bandlab { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; fill: var(--muted); }
+.startdot { fill: var(--ink); }
+.startlab { font-size: 11px; fill: var(--muted); }
+.bdg rect { fill: var(--accent); }
+.bdg text { font: 600 10.5px var(--mono); fill: var(--on); text-anchor: middle; }
+.bdg.doubt rect { fill: var(--decide); }
+.bdg.bad rect { fill: var(--bad); }
+.empty { padding: 48px 16px; margin: 0; text-align: center; color: var(--muted); }
+
+/* run */
+.status { margin: 0; font-size: 14px; flex: 1 1 14rem; }
+.clock { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 12px; min-height: 18px; }
+.steps { list-style: none; margin: 8px 0 0; padding: 0; }
+.step { width: 100%; display: grid; grid-template-columns: 3.6rem 12px minmax(0, 7.5rem) minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 5px 8px; margin: 0 -8px; border: 0; border-radius: 7px; background: none; color: inherit; font: 13px var(--sans); text-align: left; cursor: pointer; transition: opacity .25s, background .25s; }
+.step:hover { background: var(--bg); }
+.step .t, .step .ms { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.step .sn { font: 600 12.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step .ss { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step.pending { opacity: .35; }
+.step.now { background: var(--accent-bg); }
+.step.fail .ss { color: var(--bad); }
+.doubts { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.doubts li { border-left: 3px solid var(--decide); background: var(--decide-bg); border-radius: 0 8px 8px 0; padding: 6px 10px; font-size: 13px; transition: opacity .25s; }
+.doubts li.pending { opacity: .35; }
+.doubts code { background: none; border: 0; padding: 0; font-weight: 600; }
+.counts { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+
+/* node panel */
+.nhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 12rem; min-width: 0; }
+.nhead .nm { font: 650 15px var(--mono); overflow-wrap: anywhere; }
+.kchip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--cb); color: var(--c); font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.about { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.quote { margin: 10px 0 0; padding: 7px 12px; border-left: 3px solid var(--c); background: var(--cb); border-radius: 0 8px 8px 0; font-size: 14px; overflow-wrap: anywhere; }
+h3 { font-size: 11.5px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 16px 0 0; }
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin: 8px 0 0; font-size: 13.5px; }
+dt { color: var(--muted); }
+dd { margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
+dd pre { width: 100%; }
+.go { border: 1px solid var(--line2); background: var(--panel); color: var(--ink); border-radius: 6px; font: 12.5px var(--mono); padding: 2px 8px; cursor: pointer; }
+.go:hover { background: var(--bg); }
+.go span { color: var(--muted); font-family: var(--sans); }
+.go.miss { border-style: dashed; border-color: var(--bad); color: var(--bad); cursor: default; }
+.sum { margin: 8px 0 0; font-size: 14px; }
+.err { margin: 8px 0 0; padding: 7px 10px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-size: 13px; }
+.tbl { max-height: 230px; overflow: auto; margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.tbl table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tbl th, .tbl td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl th { font-weight: 600; color: var(--muted); position: sticky; top: 0; background: var(--panel); }
+.tbl td:first-child { font-family: var(--mono); overflow-wrap: anywhere; }
+.tbl td:last-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tbl .low td { color: var(--decide); font-weight: 600; }
+.tbl .more td { color: var(--muted); font-family: var(--sans); }
+.bar { display: inline-block; width: 34px; height: 4px; border-radius: 2px; background: var(--line); margin-right: 6px; vertical-align: middle; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--act); }
+.low .bar i { background: var(--decide); }
+.pre { margin-top: 10px; }
+
+/* rules */
+.rules { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 3px; }
+.rules li { display: grid; grid-template-columns: 16px 1fr; gap: 2px 8px; font-size: 13.5px; }
+.rules .mk { font-weight: 700; text-align: center; }
+.rules .ok .mk { color: var(--ok); }
+.rules .no .mk { color: var(--bad); }
+.rules .skip { color: var(--muted); }
+.rules .no .rn { font-weight: 600; }
+.rules p { grid-column: 2; margin: 0 0 4px; font-size: 12.5px; color: var(--bad); overflow-wrap: anywhere; }
+.rsum { margin: 0; font-size: 13.5px; color: var(--ok); }
+.rsum.no { color: var(--bad); }
+.foot { margin-top: 20px; font-size: 12.5px; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+.js .static, html:not(.js) .app { display: none; }
+.static h2 { font-size: 16px; margin: 18px 0 4px; }
+.static ol, .static ul { padding-left: 20px; } .static li { margin: 2px 0; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div class="wrap static"><!--HABITS_STATIC--></div>
+<div class="wrap app">
+  <header>
+    <div class="top">
+      <div class="brand"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 1.8 13.5 6.3 9 10.8 4.5 6.3Z"/><path d="M9 10.8v2.4M5 16.2h8"/></svg>Habits <span class="dim" style="font-weight:400">· habit diagram</span></div>
+      <button class="btn icon" id="theme" type="button"></button>
+    </div>
+    <div class="titles"><h1 id="name"></h1><span id="badges" style="display:contents"></span></div>
+    <p class="desc" id="desc"></p>
+    <p class="refused" id="refused" hidden></p>
+    <div class="stats" id="stats"></div>
+  </header>
+  <main class="main">
+    <section class="card gcard" aria-label="Graph">
+      <div class="scroll" id="scroll"><svg id="graph" role="group" aria-label="Habit graph. Each node is a button."></svg></div>
+      <div class="legend" id="legend"></div>
+    </section>
+    <section class="card side" id="side" aria-label="Details">
+      <div class="tabs" id="tabs" role="tablist">
+        <button class="tab" id="t-run" role="tab" type="button" aria-controls="run">Run</button>
+        <button class="tab" id="t-node" role="tab" type="button" aria-controls="node">Node</button>
+        <button class="tab" id="t-rules" role="tab" type="button" aria-controls="rules"></button>
+      </div>
+      <div class="pane" id="run" role="tabpanel" aria-labelledby="t-run"></div>
+      <div class="pane" id="node" role="tabpanel" aria-labelledby="t-node" hidden></div>
+      <div class="pane" id="rules" role="tabpanel" aria-labelledby="t-rules" hidden></div>
+    </section>
+  </main>
+  <footer class="foot" id="foot"></footer>
+</div>
+<script>
+'use strict';
+const D = /*HABITS_DATA*/null;
+
+const $ = id => document.getElementById(id);
+const NS = 'http://www.w3.org/2000/svg';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const KINDS = ['ask', 'check', 'do', 'llm', 'use', 'end', 'wake'];
+const FAM = { ask: 'decide', check: 'decide', do: 'act', llm: 'act', use: 'compose', end: 'finish', wake: 'finish' };
+const ABOUT = {
+  ask: 'Asks the decision model a closed question. Under the confidence threshold, the item becomes a doubt.',
+  check: 'Computes a fixed condition. No model, so always the same answer.',
+  do: 'Calls a Hermes tool through the normal path, approvals included.',
+  llm: 'One bounded call to the Hermes model: no tools, a fixed output schema.',
+  use: 'Runs another habit; its end becomes this node\'s result.',
+  end: 'Stops the habit and returns its message.',
+  wake: 'Stops the habit and hands back to Hermes with its message.',
+};
+const RULES = ['No isolated node', 'No dead end', 'No loop', 'A fallback', 'One thing per node', 'No orphan answer', 'Small'];
+const DECIDERS = { jev: 'Jev', llm: 'Hermes model', fake: 'Fake model' };
+// The ledger's states and a run's outcomes in the README's words (habits/view.py keeps the same maps).
+const STATES = { active: 'Automatic', shadow: 'Learning', retired: 'Resting', live: 'Called by name' };
+const OUTCOMES = { end: 'done', wake: 'handed back' };
+// Flowchart shapes, 12×12: diamond = decide, square = act, two squares = compose, circle = finish, ? = no single verb.
+const ICON = { decide: 'M6 .9 11.1 6 6 11.1.9 6Z', act: 'M1.6 1.6h8.8v8.8H1.6Z', compose: 'M1 4h7v7H1ZM4 1h7v7', finish: 'M6 1.2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6Z', none: 'M3.9 4.2a2.1 2.1 0 1 1 3 1.9c-.6.3-.9.7-.9 1.4v.3M6 9.9v.2' };
+const ico = fam => `<svg class="fi ${fam}" viewBox="0 0 12 12" aria-hidden="true"><path d="${ICON[fam]}"/></svg>`;
+const code = v => `<code>${esc(typeof v === 'string' ? v : JSON.stringify(v))}</code>`;
+const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const short = (s, n) => (s = String(s)).length > n ? s.slice(0, n - 1) + '…' : s;
+const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function tok(n) { n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+function dur(ms) {
+  if (ms == null) return '—';
+  if (ms < 1000) return Math.round(ms) + ' ms';
+  const s = ms / 1000;
+  return (s < 10 ? +s.toFixed(1) : Math.round(s)) + ' s';
+}
+function mk(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function fit(t, max, whole = t) { // shorten an SVG text (or one of its spans) until the whole fits max px
+  let s = t.textContent;
+  while (whole.getComputedTextLength() > max && s.length > 2) { s = s.slice(0, -1); t.textContent = s + '…'; }
+  return s;
+}
+
+// ---- data -------------------------------------------------------------
+if (!D) { document.querySelector('.wrap').innerHTML = '<p class="empty">No habit data. This is the page template: <code>hermes habits view &lt;name&gt;</code> fills it.</p>'; throw new Error('no data'); }
+const H = D.habit || {}, N = H.nodes && typeof H.nodes === 'object' ? H.nodes : {}, ids = Object.keys(N), S = D.summary || {}, R = D.run || null;
+const steps = (R && R.steps) || [], doubts = (R && R.doubts) || [];
+const oneoff = D.kind === 'one-off' || D.status === 'one-off';
+const once = D.origin === 'one-off', example = D.origin === 'example'; // a graph drawn for one run; a shipped example
+const has = x => typeof x === 'string' && Object.hasOwn(N, x); // own keys only: a node named "constructor" is fine
+const nd = id => has(id) && N[id] && typeof N[id] === 'object' ? N[id] : {};
+const verbs = id => KINDS.filter(k => Object.hasOwn(nd(id), k));
+const kindOf = id => { const v = verbs(id); return v.length === 1 ? v[0] : null; }; // null: no verb, or several
+const famOf = id => FAM[kindOf(id)] || 'none';
+const kname = id => verbs(id).join(' + ') || 'no verb';
+const exits = n => [['next', n.next], ...Object.entries(n.then && typeof n.then === 'object' ? n.then : {}), ['error', n.error], ['unsure', n.unsure]].filter(x => x[1] != null);
+const threshold = n => n.min_confidence ?? H.min_confidence ?? 0.8;
+const issues = (D.issues || []).map(m => {
+  const r = /^rule (\d)/.exec(m), named = [...m.matchAll(/"([^"]+)"/g)].map(x => x[1]).find(has);
+  return { rule: r ? +r[1] : (/^safety/.test(m) ? 'safety' : 'format'), text: m.replace(/^[^:]*:\s*/, ''), node: named };
+});
+const bad = new Set(issues.map(i => i.node).filter(Boolean)), badFormat = issues.some(i => i.rule === 'format');
+const trigger = t => once ? 'run once' : !t ? 'called by name' : t === 'message' ? 'on message' : t.every ? 'every ' + t.every + (t.at ? ' at ' + t.at : '') : JSON.stringify(t);
+const backends = () => [...new Set(((R && R.backends) || []).flatMap(b => String(b).split(',')))].map(b => DECIDERS[b] || cap(b));
+// The path of the last run: every step, then the node where it stopped.
+const path = steps.map(s => s.node).concat(R && has(R.node) && !steps.some(s => s.node === R.node) ? [R.node] : []);
+// What start reaches (the fallback too: any error lands there); the rest is drawn apart.
+const reach = new Set();
+for (const q = has(H.start) ? [H.start, H.fallback] : []; q.length;) { const u = q.shift(); if (has(u) && !reach.has(u)) { reach.add(u); exits(nd(u)).forEach(x => q.push(x[1])); } }
+const lost = id => reach.size > 0 && !reach.has(id);
+
+// ---- layout: layers by longest path from start, dummies for long edges --
+const narrow = $('scroll').clientWidth < 480; // phones get narrower boxes so two fit side by side
+const W = Math.min(240, Math.max(narrow ? 150 : 184, 28 + 8 * Math.max(0, ...ids.map(i => i.length)))), BH = 44, VG = 30, TOP = 40, GAP = narrow ? 16 : 28, DW = 18, BAND = 36;
+const spread = (k, i, half) => k < 2 ? 0 : (i - (k - 1) / 2) * Math.min(26, 2 * half / (k - 1)); // port offsets along a box edge
+function layout() {
+  const E = [], P = {};
+  ids.forEach(u => {
+    const m = new Map(), o = P[u] = { id: u, w: W, up: [], down: [], ghosts: [], stub: [] };
+    exits(nd(u)).forEach(([k, v]) => {
+      const lab = k === 'next' ? '' : k;
+      if (!has(v)) o.ghosts.push({ lab, v: String(v) });
+      else if (lost(u) && !lost(v)) o.stub.includes(v) || o.stub.push(v); // leaves the unreachable band: a pill, not an edge
+      else m.set(v, [...(m.get(v) || []), lab]);
+    });
+    if (m.has(H.fallback) && u !== H.fallback) { // error and unsure to the fallback: a "→ help" pill, unless a real answer goes there too
+      const ls = m.get(H.fallback), real = ls.filter(l => l !== 'error' && l !== 'unsure');
+      if (!real.length) { m.delete(H.fallback); o.stub.push(H.fallback); }
+    }
+    m.forEach((ls, v) => E.push({ u, v, lab: ls.filter(Boolean).join(' · '), err: ls.every(l => l === 'error') }));
+  });
+  const out = u => E.filter(e => e.u === u), seen = {}, order = [];
+  const dfs = u => { seen[u] = 1; out(u).forEach(e => { if (seen[e.v] === 1) e.back = true; else if (!seen[e.v]) dfs(e.v); }); seen[u] = 2; order.unshift(u); };
+  [H.start, ...ids].forEach(u => { if (has(u) && !seen[u]) dfs(u); });
+  const L = {};
+  order.forEach(u => { L[u] = L[u] || 0; out(u).forEach(e => { if (!e.back) L[e.v] = Math.max(L[e.v] || 0, L[u] + 1); }); });
+  const fb = H.fallback, main = ids.filter(i => !lost(i)); // the fallback sits at the bottom, beside the ends
+  if (has(fb) && !out(fb).length) L[fb] = Math.max(1, ...main.map(i => L[i]));
+  const band = main.length < ids.length ? Math.max(0, ...main.map(i => L[i])) + 1 : null;
+  ids.forEach(i => { if (lost(i)) L[i] += band; });
+  const rows = [], put = o => ((rows[o.r] = rows[o.r] || []).push(o), o);
+  ids.forEach(id => { P[id].r = L[id]; put(P[id]); });
+  E.forEach(e => {
+    if (e.back) return;
+    let prev = P[e.u]; e.dum = [];
+    for (let r = L[e.u] + 1; r < L[e.v]; r++) { const d = put({ r, w: DW, up: [prev], down: [] }); prev.down.push(d); e.dum.push(d); prev = d; }
+    P[e.v].up.push(prev); prev.down.push(P[e.v]);
+  });
+  const mean = l => l.reduce((s, p) => s + p.x, 0) / l.length;
+  const place = (rw, want) => { // keep the order, push boxes apart, then recentre the row on what it wanted
+    rw.forEach((o, i) => { o.want = want(o); o.x = i ? Math.max(o.want, rw[i - 1].x + (rw[i - 1].w + o.w) / 2 + GAP) : o.want; });
+    const shift = rw.reduce((s, o) => s + o.want - o.x, 0) / rw.length;
+    rw.forEach(o => { o.x += shift; });
+  };
+  rows.forEach((rw, r) => { // top-down: order each row by the mean position of its parents
+    const right = r && rows[r - 1] ? Math.max(...rows[r - 1].map(o => o.x + o.w / 2)) : 0;
+    rw.forEach((o, i) => { o.i = o.id === H.start ? -1 : i; o.want = o.up.length ? mean(o.up) : r && r !== band ? right + GAP + W / 2 : 0; });
+    rw.sort((a, b) => a.want - b.want || a.i - b.i);
+    place(rw, o => o.want);
+  });
+  [1, 0, 1].forEach(up => (up ? rows.slice().reverse() : rows).forEach(rw => rw && // then centre parents over children, and back
+    place(rw, o => { const l = up ? o.down : o.up; return l.length ? mean(l) : o.x; })));
+  const all = rows.flat(), nBack = E.filter(e => e.back).length, left = 22 + (nBack ? 14 + 12 * nBack : 0);
+  const minX = Math.min(...all.map(o => o.x - o.w / 2)), maxX = Math.max(...all.map(o => o.x + o.w / 2));
+  all.forEach(o => { o.x += left - minX; });
+  // Rows where edges travel far sideways get a taller gap, so their curves and labels have room.
+  const gap = Array.from(rows, () => VG), Y = [];
+  E.forEach(e => { if (!e.back) [P[e.u], ...e.dum, P[e.v]].forEach((p, i, s) => { if (i && Math.abs(p.x - s[i - 1].x) > W * .75) gap[s[i - 1].r] = VG + 16; }); });
+  ids.forEach(id => { if (P[id].stub.length || P[id].ghosts.length) gap[P[id].r] = VG + 16; }); // and so do rows with exit pills
+  for (let r = 0; r < rows.length; r++) Y[r] = r ? Y[r - 1] + BH + gap[r - 1] + (r === band ? BAND : 0) : TOP;
+  all.forEach(o => { o.y = Y[o.r]; });
+  ids.forEach(id => { // ports: spread edges along the bottom (out) and top (in) of a box, in the order of where they go
+    const o = P[id], side = e => e.dum.length ? e.dum[0] : P[e.v], back = e => e.dum.length ? e.dum[e.dum.length - 1] : P[e.u];
+    const outs = [...E.filter(e => e.u === id && !e.back).sort((a, b) => side(a).x - side(b).x), ...o.ghosts], half = W / 2 - (o.stub.length ? 44 : 34);
+    outs.forEach((e, i) => { e.x0 = o.x + spread(outs.length, i, half); });
+    const ins = E.filter(e => e.v === id && !e.back).sort((a, b) => back(a).x - back(b).x);
+    ins.forEach((e, i) => { e.x1 = o.x + spread(ins.length, i, W / 2 - 34); });
+    o.inR = Math.max(0, ...ins.map(e => e.x1 - o.x)); o.outR = Math.max(0, ...outs.map(e => e.x0 - o.x));
+  });
+  return { E, P, band: band == null ? null : Y[band], width: left + maxX - minX + 26, height: Y[rows.length - 1] + BH + 26 };
+}
+const { E, P, band, width, height } = ids.length ? layout() : { E: [], P: {} };
+
+function poly(p, r = 8) { // polyline with rounded corners
+  let d = 'M' + p[0];
+  for (let i = 1; i < p.length - 1; i++) {
+    const [x, y] = p[i], f = q => { const dx = q[0] - x, dy = q[1] - y, l = Math.hypot(dx, dy) || 1, k = Math.min(r, l / 2) / l; return [x + dx * k, y + dy * k]; };
+    d += ` L${f(p[i - 1])} Q${x},${y} ${f(p[i + 1])}`;
+  }
+  return d + ` L${p[p.length - 1]}`;
+}
+function pill(parent, x, y, text, cls, start) { // a rounded label centred on (x, y), or starting at x
+  const g = mk('g', { class: cls }, parent), t = mk('text', { x: start ? x + 6 : x, y: y + 4 }, g, text);
+  if (start) t.style.textAnchor = 'start';
+  const b = t.getBBox();
+  g.insertBefore(mk('rect', { x: b.x - 6, y: y - 7, width: b.width + 12, height: 14, rx: 7 }), t);
+  return g;
+}
+function stub(o, x, text, cls) { // a short exit ending in a pill, instead of a long edge
+  const g = pill(sg, x - 7, o.y + BH + 14, text, 'stub ' + cls, true);
+  g.insertBefore(mk('path', { d: `M${x},${o.y + BH}V${o.y + BH + 7}` }), g.firstChild);
+  return g;
+}
+
+// ---- drawing ----------------------------------------------------------
+const svg = $('graph'), eg = mk('g', {}, svg), lg = mk('g', {}, svg), sg = mk('g', {}, svg), ng = mk('g', {}, svg), bg = mk('g', {}, svg);
+const fbStub = o => o.stub.length && stub(o, o.x + W / 2 - 20, '→ ' + o.stub.map(v => short(v, 12)).join(', '), o.stub.includes(H.fallback) ? 'fb' : '');
+function drawGraph() {
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  // Up to 1.25× when the screen has room for it all, down to 60% before the box scrolls.
+  svg.style.cssText = `width:100%;max-width:${Math.round(width * 1.25)}px;min-width:${Math.round(width * .6)}px;max-height:max(calc(100vh - 330px),${height}px)`;
+  const defs = mk('defs', {}, svg);
+  ['a', 'al', 'ab'].forEach(id => mk('path', { d: 'M0,0 L10,5 L0,10 Z' }, mk('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs)));
+  let k = 0;
+  E.forEach(e => {
+    const a = P[e.u], b = P[e.v];
+    let d, lp;
+    if (e.back) { // loops go round the left side, in the gaps between rows
+      const x = 22 + 12 * k++, ax = a.x - W / 2 + 18, bx = b.x - W / 2 + 18;
+      d = poly([[ax, a.y + BH], [ax, a.y + BH + 12], [x, a.y + BH + 12], [x, b.y - 12], [bx, b.y - 12], [bx, b.y - 2]]);
+      lp = [x + 2, (a.y + b.y + BH) / 2];
+    } else { // down through each dummy slot, so no box is crossed
+      const pts = [[e.x0, a.y + BH]];
+      e.dum.forEach(o => pts.push([o.x, o.y], [o.x, o.y + BH]));
+      pts.push([e.x1, b.y - 2]);
+      d = 'M' + pts[0];
+      for (let i = 1; i < pts.length; i++) {
+        const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], my = (y0 + y1) / 2;
+        d += x0 === x1 ? ` L${x1},${y1}` : ` C${x0},${my} ${x1},${my} ${x1},${y1}`;
+      }
+      const [[x0, y0], [x1, y1]] = pts, t = Math.abs(x1 - x0) < 30 || y1 - y0 < VG + 8 ? .5 : .65; // in tall gaps, labels sit near where each edge goes
+      lp = [x0 + (x1 - x0) * (3 * t * t - 2 * t ** 3), y0 * (1 - t) ** 3 + 1.5 * t * (1 - t) * (y0 + y1) + y1 * t ** 3];
+    }
+    e.el = mk('path', { d, class: 'edge' + (e.back ? ' loop' : '') + (e.err ? ' err' : '') }, eg);
+    if (e.lab || e.back) e.lg = pill(lg, lp[0], lp[1], short(e.back ? 'loop' : e.lab, 18), 'elab' + (e.back ? ' loop' : e.err ? ' err' : ''));
+  });
+  const s = P[H.start];
+  if (s) {
+    mk('circle', { cx: s.x, cy: s.y - 30, r: 4.5, class: 'startdot' }, svg);
+    mk('path', { d: `M${s.x},${s.y - 25} L${s.x},${s.y - 2}`, class: 'edge' }, eg);
+    mk('text', { x: s.x + 12, y: s.y - 26.5, class: 'startlab' }, svg, 'start · ' + trigger(H.trigger));
+  }
+  if (band != null) {
+    mk('path', { d: `M12,${band - 30}H${width - 12}`, class: 'band' }, svg);
+    mk('text', { x: 16, y: band - 13, class: 'bandlab' }, svg, 'NOT REACHABLE FROM START');
+  }
+  ids.forEach(id => {
+    const o = P[id], n = nd(id), k = kindOf(id), fam = famOf(id), fall = id === H.fallback;
+    const g = mk('g', { class: `node ${fam}` + (bad.has(id) ? ' bad' : ''), transform: `translate(${o.x - W / 2},${o.y})`, tabindex: 0, role: 'button', 'aria-label': `${kname(id)} node ${id}` + (fall ? ', fallback' : '') + (bad.has(id) ? ', has an issue' : '') }, ng);
+    if (n.each) mk('rect', { x: 4, y: 4, width: W, height: BH, rx: 8, class: 'stack' }, g);
+    if (fall) mk('rect', { x: -5, y: -5, width: W + 10, height: BH + 10, rx: 22, class: 'fbring' }, g);
+    mk('rect', { x: -4, y: -4, width: W + 8, height: BH + 8, rx: fam === 'finish' ? 21 : 11, class: 'ring' }, g);
+    mk('rect', { width: W, height: BH, rx: fam === 'finish' ? 17 : 7, class: 'box' }, g);
+    mk('path', { d: ICON[fam], transform: 'translate(13,9)', class: 'ico' }, g);
+    const tag = bad.has(id) ? 'ISSUE' : fall ? 'FALLBACK' : n.each ? 'each ' + n.each : '';
+    const tg = mk('text', { x: W - 12, y: 19, 'text-anchor': 'end', class: 'tag' }, g, tag);
+    if (n.each && !bad.has(id)) tg.style.cssText = 'font-weight:500;letter-spacing:0';
+    const kt = mk('text', { x: 31, y: 19, class: 'kt' }, g);
+    const ks = mk('tspan', { class: 'k' }, kt, kname(id).toUpperCase()), det = mk('tspan', {}, kt, k ? '  ' + detail(n, k) : '');
+    const room = W - 43 - (tag ? tg.getComputedTextLength() + 10 : 0);
+    if (fit(det, room, kt).trim().length < 4) det.textContent = ''; // too short to mean anything
+    fit(ks, room, kt);
+    fit(mk('text', { x: 13, y: 36, class: 'nm' }, g, id), W - 26);
+    g.addEventListener('click', () => select(id));
+    g.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(id); } });
+    o.g = g;
+    o.ghosts.forEach(x => stub(o, x.x0, (x.lab ? x.lab + ' → ' : '→ ') + short(x.v, 14) + '?', 'ghost'));
+    o.fb = fbStub(o);
+  });
+}
+function detail(n, k) {
+  if (k === 'ask') return n.yes_no ? 'yes / no' : n.choice ? 'choice' : n.score ? 'score' : n.pick ? 'pick' : '';
+  if (k === 'check') return n.check && typeof n.check === 'object' ? Object.keys(n.check)[0] || '' : '';
+  return k === 'do' || k === 'use' ? String(n[k]) : '';
+}
+function legend() {
+  const fams = [['decide', 'Decide', 'ask, check'], ['act', 'Act', 'do, llm'], ['compose', 'Compose', 'use'], ['finish', 'Finish', 'end, wake']];
+  $('legend').innerHTML = fams.map(([f, l, k]) => `<span>${ico(f)}<b>${l}</b> ${k}</span>`).join('') +
+    (has(H.fallback) ? `<span><svg class="sw" viewBox="0 0 18 12" aria-hidden="true"><rect x="1" y="1" width="16" height="10" rx="5" stroke-dasharray="3 2"/></svg><span>Fallback <code>${esc(H.fallback)}</code> gets every error and doubt, drawn as <code>→ ${esc(short(H.fallback, 12))}</code></span></span>` : '') +
+    (ids.some(i => nd(i).each) ? `<span><svg class="sw" viewBox="0 0 18 12" aria-hidden="true"><rect x="1" y="1" width="13" height="8" rx="2"/><path d="M16.5 3.5v7h-13"/></svg>Repeats for each item</span>` : '');
+}
+
+// ---- replay -----------------------------------------------------------
+let timer = null, at = -1, sel = null, extra = [];
+function count(s) { // items handled by an each step: the summary's leading number, else the answers kept and cut
+  if (!nd(s.node).each) return 0;
+  const m = /^(\d+) /.exec(s.summary || '');
+  return m ? +m[1] : (s.answers || []).length + (s.answers_cut || 0);
+}
+function said(j) { // what the run badge of path step j says
+  const s = steps[j], id = path[j], n = nd(id), k = kindOf(id);
+  if (!s) return R.status === 'wake' ? 'handed back' : 'done';
+  if (s.error) return 'failed · ' + dur(s.ms);
+  if (count(s)) return '×' + count(s) + (narrow ? '' : ' · ' + dur(s.ms));
+  const a = (s.answers || [])[0], th = n.then && typeof n.then === 'object' ? n.then : {}, via = Object.keys(th).find(x => th[x] === path[j + 1]);
+  if (k === 'ask' && a) return short(a[1], 14) + ' · ' + (+a[2]).toFixed(2);
+  return k === 'check' && via ? via : dur(s.ms);
+}
+function badge(text, cls, y, minLeft, right) { // a pill on a box border, right-aligned but clear of the arrowheads
+  const g = mk('g', { class: 'bdg ' + cls }, bg), t = mk('text', { y: y + 4 }, g, text), w = t.getComputedTextLength() + 12, x = Math.max(minLeft, right - w);
+  t.setAttribute('x', x + w / 2);
+  g.insertBefore(mk('rect', { x, y: y - 8, width: w, height: 16, rx: 8 }), t);
+}
+function drawIn(el) { // a newly lit edge draws itself from its source
+  if (calm || !el.getTotalLength) return;
+  const l = el.getTotalLength();
+  el.style.strokeDasharray = l; el.style.markerEnd = 'none';
+  el.animate([{ strokeDashoffset: l }, { strokeDashoffset: 0 }], { duration: 350, easing: 'ease-out' }).onfinish = () => { el.style.strokeDasharray = ''; el.style.markerEnd = ''; };
+}
+function show(i) { // the run as it stood after step i of the path (-1: nothing yet)
+  at = i;
+  const live = timer !== null;
+  bg.innerHTML = ''; extra.forEach(e => e.remove()); extra = [];
+  E.forEach(e => { e.el.classList.remove('lit'); if (e.lg) e.lg.classList.remove('lit'); });
+  ids.forEach(id => { P[id].g.classList.remove('on', 'now'); if (P[id].fb) P[id].fb.classList.remove('lit'); });
+  path.forEach((id, j) => {
+    const o = P[id], s = steps[j];
+    if (j > i || !o) return;
+    o.g.classList.add('on'); if (j === i && live) o.g.classList.add('now');
+    badge(said(j), s && s.error ? 'bad' : '', o.y, o.x + o.inR + 10, o.x + W / 2 - 12);
+    const nDoubts = doubts.filter(d => d.node === id).length;
+    if (nDoubts) badge(plural(nDoubts, 'doubt'), 'doubt', o.y + BH, o.x + o.outR + 10, o.x + W / 2 - (o.stub.length ? 28 : 12));
+    const a = P[path[j - 1]];
+    if (!j || !a) return;
+    const e = E.find(e => e.u === path[j - 1] && e.v === id);
+    if (e) { e.el.classList.add('lit'); if (e.lg) e.lg.classList.add('lit'); if (j === i && live) drawIn(e.el); }
+    else if (a.fb && a.stub.includes(id)) a.fb.classList.add('lit');
+    else extra.push(stub(a, a.x + W / 2 - 20, '→ ' + short(id, 12), 'lit')); // fell back where no exit was drawn
+  });
+  svg.classList.toggle('lit-run', i >= 0);
+  document.querySelectorAll('.step').forEach((b, j) => { b.classList.toggle('pending', j > i); b.classList.toggle('now', j === i && live); });
+  document.querySelectorAll('.doubts li').forEach(li => li.classList.toggle('pending', path.indexOf(li.dataset.node) > i));
+  if (!R || !$('clk')) return;
+  const t = i < 0 ? 0 : i < steps.length ? steps[i].t + steps[i].ms : R.ms;
+  $('clk').textContent = live ? dur(t) : '';
+  $('bar').style.width = (R.ms ? Math.min(100, 100 * t / R.ms) : 100) + '%';
+  if (live && i >= 0) {
+    $('say').textContent = `Step ${i + 1} of ${path.length}: ${path[i]}` + (steps[i] ? ', ' + dur(steps[i].ms) : '');
+    if (P[path[i]]) P[path[i]].g.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: calm ? 'auto' : 'smooth' });
+  }
+}
+function playButton() {
+  $('play').innerHTML = timer === null ? '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 1.5v9l8-4.5z"/></svg>Replay' : '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5h7v7h-7z"/></svg>Stop';
+}
+function stop(to) { clearTimeout(timer); timer = null; playButton(); show(to); }
+function replay() {
+  if (timer !== null) return stop(at);
+  let i = -1; timer = 0; playButton(); show(-1);
+  const tick = () => { i++; if (i < path.length) { show(i); timer = setTimeout(tick, 600); } else stop(i - 1); };
+  timer = setTimeout(tick, 350); // 600 ms a node: a 10-node run lasts about 6 s
+}
+function renderRun() {
+  const box = $('run');
+  if (!R) { box.innerHTML = '<p class="hint">No run yet. Once the habit has run, this tab replays its last run node by node.</p>'; return; }
+  const c = R.counts || {}, used = backends(), here = `<code>${esc(R.node)}</code>`;
+  const where = R.failed ? `Fell back to ${here}` : R.status === 'wake' && kindOf(R.node) === 'end' ? `Reached ${here} and handed back to Hermes` : R.status === 'wake' ? `Handed back to Hermes at ${here}` : `Done at ${here}`;
+  const reason = R.reason && !/doubts? left$/.test(R.reason) ? ` · <span class="dim">${esc(R.reason)}</span>` : '';
+  box.innerHTML = `<div class="chead"><p class="status">${where} in ${dur(R.ms)}${reason}${doubts.length ? ' · ' + plural(doubts.length, 'doubt') : ''}.</p>
+      <div class="btns"><button class="btn primary" id="play" type="button"></button><button class="btn" id="reset" type="button">Reset</button></div></div>
+    ${R.message ? `<p class="quote finish">${esc(R.message)}</p>` : ''}
+    ${(R.planned || []).length ? `<p class="hint">Dry run: ${plural(R.planned.length, 'write')} planned, not executed.</p>` : ''}
+    <div class="clock"><span id="clk"></span><span>${dur(R.ms)}</span></div><div class="track"><i id="bar"></i></div><p class="sr" id="say" aria-live="polite"></p>
+    <ol class="steps">${path.map((id, j) => {
+      const s = steps[j], sum = s ? s.summary : `${kname(id)} · ${R.message || ''}`;
+      return `<li><button class="step${s && s.error ? ' fail' : ''}" type="button" data-node="${esc(id)}" title="${esc(sum)}">
+        <span class="t">+${dur(s ? s.t : R.ms)}</span>${ico(famOf(id))}<span class="sn">${esc(id)}</span><span class="ss">${esc(sum)}</span><span class="ms">${s ? dur(s.ms) : ''}</span></button></li>`;
+    }).join('')}</ol>
+    ${doubts.length ? `<h3>${plural(doubts.length, 'doubt')} left for you</h3><ul class="doubts">${doubts.map(d => `<li data-node="${esc(d.node)}"><code>${esc(typeof d.item === 'string' ? d.item : JSON.stringify(d.item))}</code> <span class="dim">at ${esc(d.node)} · ${esc(d.reason)}</span></li>`).join('')}</ul>` : ''}
+    <p class="counts">Decided by ${used.length ? esc(used.join(' + ')) : 'rules only'} · ${plural(c.steps || 0, 'item step')} · ${plural(c.tools || 0, 'tool call')} · ${plural(c.questions || 0, 'decision question')} · ${plural(c.llm || 0, 'model call')}</p>`;
+  playButton();
+  $('play').onclick = replay;
+  $('reset').onclick = () => stop(-1);
+  box.querySelectorAll('.step').forEach(b => { b.onclick = () => select(b.dataset.node, true); });
+}
+
+// ---- tabs and node panel ----------------------------------------------
+const TABS = ['run', 'node', 'rules'];
+let tab = R ? 'run' : 'rules', back = tab;
+function open(t) {
+  tab = t;
+  if (t !== 'node') back = t;
+  TABS.forEach(p => { $(p).hidden = p !== t; $('t-' + p).setAttribute('aria-selected', p === t); $('t-' + p).tabIndex = p === t ? 0 : -1; });
+}
+TABS.forEach(p => { $('t-' + p).onclick = () => open(p); });
+$('tabs').onkeydown = ev => { // arrow keys move between tabs
+  const d = { ArrowRight: 1, ArrowLeft: -1 }[ev.key];
+  if (d) { open(TABS[(TABS.indexOf(tab) + d + 3) % 3]); $('t-' + tab).focus(); }
+};
+function select(id, keep, quiet) {
+  sel = sel === id && !keep ? null : id;
+  ids.forEach(i => P[i] && P[i].g.classList.toggle('sel', i === sel));
+  renderNode(); open(sel ? 'node' : back);
+  if (sel && !quiet && innerWidth < 980) $('side').scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
+}
+function renderNode() {
+  const box = $('node');
+  if (!sel) { box.className = 'pane'; box.innerHTML = '<p class="hint">Select a node in the graph, or a step of the run, to see what it does and how it ran.</p>'; return; }
+  const n = nd(sel), k = kindOf(sel), fam = famOf(sel), j = path.indexOf(sel), s = steps[j], vs = verbs(sel);
+  let what = '', mods = '';
+  if (k === 'ask') {
+    const opts = n.yes_no ? ['yes', 'no'] : Array.isArray(n.choice || n.score) ? (n.choice || n.score) : Object.keys(n.choice || n.score || {});
+    what = `<p class="quote">${esc(n.ask)}</p><dl>${n.pick ? row('picks', code(n.pick) + ` <span class="dim">one item, margin ${esc(String(n.margin ?? 0.15))}</span>`) : row('answers', opts.map(code).join(n.score ? ' → ' : ' '))}${row('threshold', code(String(threshold(n))) + (n.min_confidence == null ? ' <span class="dim">habit default</span>' : ''))}</dl>`;
+  } else if (k === 'check') {
+    what = `<dl>${row('condition', Object.entries(n.check || {}).map(([op, v]) => code(op + ': ' + (Array.isArray(v) ? v.join(', ') : v))).join(' '))}</dl>`;
+  } else if (k === 'do') {
+    const { command, ...rest } = n.args || {};
+    what = `<dl>${row('tool', code(n.do) + (n.read ? ' <span class="dim">read only</span>' : ''))}${command ? row('command', `<pre>${esc(command)}</pre>`) : ''}${Object.keys(rest).length ? row('args', `<pre>${esc(JSON.stringify(rest, null, 2))}</pre>`) : ''}</dl>`;
+  } else if (k === 'llm') {
+    what = `<p class="quote">${esc(n.llm)}</p>` + (n.schema ? `<dl>${row('schema', Object.entries(n.schema).map(([f, t]) => code(f + ': ' + t)).join(' '))}</dl>` : '');
+  } else if (k === 'use') what = `<dl>${row('habit', code(n.use))}</dl>`;
+  else if (k) what = `<p class="quote">${esc(n[k])}</p>`;
+  else what = `<pre class="pre">${esc(JSON.stringify(n, null, 2))}</pre>`;
+  if (n.as) mods += row('as', code(n.as) + ' <span class="dim">stores the result</span>');
+  if (n.each) mods += row('each', code(n.each) + ' <span class="dim">once per item</span>');
+  if (n.where) mods += row('where', Object.entries(n.where).map(([a, b]) => code(`${a} = ${b}`)).join(' '));
+  if (n.with) mods += row('with', [].concat(n.with).map(code).join(' '));
+  const ex = exits(n);
+  const links = ex.map(([a, v]) => has(v) ? `<button class="go" type="button" data-node="${esc(v)}"><span>${esc(a)} →</span> ${esc(v)}</button>` : `<span class="go miss"><span>${esc(a)} →</span> ${esc(v)} · missing</span>`).join('') +
+    (fam !== 'finish' && has(H.fallback) ? ` <span class="dim">errors and doubts → ${esc(H.fallback)}</span>` : '');
+  let last;
+  if (!R) last = '<p class="hint">No run yet.</p>';
+  else if (s) {
+    const thr = threshold(n), ans = (s.answers || []).slice().sort((x, y) => (x[2] >= thr) - (y[2] >= thr)); // doubts first
+    last = `<p class="sum">${esc(s.summary)}</p><dl>${row('started', '+' + dur(s.t))}${row('took', dur(s.ms))}${s.backend ? row('decided by', esc(String(s.backend).split(',').map(b => DECIDERS[b] || cap(b)).join(' + '))) : ''}</dl>` +
+      (ans.length ? `<div class="tbl"><table><thead><tr><th>${ans[0][0] == null ? '' : 'item'}</th><th>answer</th><th>confidence</th></tr></thead><tbody>${ans.map(([it, a, c]) =>
+        `<tr${c < thr ? ' class="low"' : ''}><td>${esc(it ?? '—')}</td><td>${esc(a)}${c < thr ? ' · doubt' : ''}</td><td><span class="bar"><i style="width:${Math.round(c * 100)}%"></i></span>${(+c).toFixed(2)}</td></tr>`).join('')}${s.answers_cut ? `<tr class="more"><td colspan="3">+${s.answers_cut} more not kept in the trace</td></tr>` : ''}</tbody></table></div>` : '') +
+      (s.out ? `<pre class="pre">${esc(s.out)}</pre>` : '') + (s.error ? `<p class="err">${esc(s.error)}</p>` : '');
+  } else if (j >= 0) last = `<p class="sum">The run stopped here: <b>${esc(OUTCOMES[R.status] || R.status)}</b>${R.reason ? ' · ' + esc(R.reason) : ''}.</p>`;
+  else last = `<p class="hint">Not reached in the last run.</p>`;
+  const planned = ((R && R.planned) || []).filter(p => p.node === sel);
+  if (planned.length) last += `<p class="hint">Planned, not executed:</p><pre class="pre">${esc(planned.map(p => p.tool + ' ' + JSON.stringify(p.args)).join('\n'))}</pre>`;
+  const about = k ? ABOUT[k] : vs.length ? `Does ${vs.join(' and ')} at once, but a node does exactly one thing: split it.` : 'Has no verb: give it exactly one of ask, check, do, llm, use, end or wake.';
+  box.className = 'pane ' + fam;
+  box.innerHTML = `<div class="chead"><div class="nhead"><span class="kchip">${ico(fam)}${esc(kname(sel))}</span><span class="nm">${esc(sel)}</span>${sel === H.start ? '<span class="chip">start</span>' : ''}${sel === H.fallback ? '<span class="chip">fallback</span>' : ''}${lost(sel) ? '<span class="chip">not reachable</span>' : ''}</div>
+    <button class="btn" type="button" id="close">Close</button></div>
+    <p class="about">${about}</p>${issues.filter(i => i.node === sel).map(i => `<p class="err">${esc(i.text)}</p>`).join('')}${what}${mods ? `<dl>${mods}</dl>` : ''}
+    ${ex.length || fam !== 'finish' ? `<h3>Exits</h3><dl><dt class="sr">exits</dt><dd>${links}</dd></dl>` : ''}
+    <h3>Last run</h3>${last}`;
+  $('close').onclick = () => select(sel);
+  box.querySelectorAll('button.go').forEach(b => { b.onclick = () => select(b.dataset.node, true); });
+}
+
+// ---- header and rules -------------------------------------------------
+const failed = new Set(issues.map(i => i.rule)), nRules = [...failed].filter(r => typeof r === 'number').length;
+const rulesText = () => !issues.length ? '✓ 7 rules' : '✕ ' + [nRules ? plural(nRules, 'rule') : '', failed.has('safety') ? 'safety' : '', badFormat ? 'format' : ''].filter(Boolean).join(' · ');
+function renderHead() {
+  document.title = (D.name || 'Habit') + ' · Habits';
+  $('name').textContent = D.name || 'Unnamed habit';
+  $('desc').textContent = D.description || (once ? 'A graph Hermes drew for one run.' : '');
+  $('foot').textContent = `Generated ${D.generated || ''} by hermes habits view · format ${H.spec || 'habits/0.1'}`;
+  const st = oneoff || example ? 'one-off' : D.status || 'shadow', kinds = { request: 'Request', watch: 'Scheduled' };
+  $('badges').innerHTML = `<span class="chip st-${esc(st)}"><i></i>${esc(example ? 'Example · called by name' : st === 'one-off' ? (once ? 'Run once' : 'Called by name') : STATES[st] || cap(st))}</span>` + (oneoff || example ? '' : `<span class="chip">${esc(kinds[D.kind] || D.kind || '')} · ${esc(trigger(H.trigger))}</span>`) +
+    `<button class="chip ${issues.length ? 'no' : 'ok'}" type="button" id="rchip" title="Show the rules">${rulesText()}</button>`;
+  $('rchip').onclick = () => { open('rules'); if (innerWidth < 980) $('side').scrollIntoView({ block: 'start' }); };
+  if (issues.length) { $('refused').hidden = false; $('refused').textContent = `Refused: ${plural(issues.length, 'issue')} to fix before this habit can run.`; }
+  const cell = (label, value, sub) => `<div class="stat"><div class="sl">${label}</div><div class="sv">${value}</div><div class="ss">${sub}</div></div>`;
+  const c = (R && R.counts) || {}, used = backends(), pct = v => Math.round(v * 100) + '%', need = S.promote_runs || 12;
+  const decided = cell('Last run decided by', !R ? '—' : used.length ? esc(used.join(' + ')) : 'Rules only', R ? `${plural(c.questions || 0, 'decision question')} · ${plural(c.llm || 0, 'model call')}` : 'no run yet');
+  if (oneoff || example) { // no history to compare (an example never learns): show what this run did
+    const items = Math.max(0, ...steps.map(count)), num = v => R && v != null ? v : '—';
+    $('stats').innerHTML = cell(items ? 'Items' : 'Steps', R ? items || steps.length : '—', R ? 'handled in ' + dur(R.ms) : 'no run yet') +
+      cell('Tool calls', num(c.tools), R ? plural(c.steps || 0, 'item step') : '') + cell('Decision questions', num(c.questions), R ? used.length ? 'answered by ' + esc(used.join(' + ')) : 'none needed' : '') +
+      cell('Model calls', num(c.llm), R ? (R.status === 'wake' ? 'then handed back to Hermes' : 'then done') : '');
+    return;
+  }
+  const agree = S.agreement == null ? cell('Agreement', '—', 'not compared yet')
+    : cell('Agreement', `${pct(S.agreement)} <small>over ${plural(S.compared || 0, 'run')}</small>`, st === 'shadow'
+      ? `<div class="track" role="progressbar" aria-label="Promotion" aria-valuemin="0" aria-valuemax="${need}" aria-valuenow="${Math.min(need, S.compared || 0)}"><i style="width:${Math.min(100, 100 * (S.compared || 0) / need)}%"></i></div>${Math.min(need, S.compared || 0)}/${need} runs toward promotion, needs ${pct(S.promote_agreement || .9)}`
+      : 'same result as Hermes');
+  const gain = D.kind === 'watch' ? cell('Checks', `${S.runs ?? 0} <small>checks · ${plural(S.woke || 0, 'wake')}</small>`, esc(trigger(H.trigger)))
+    : S.shadow_ms && S.active_ms ? cell('Measured gain', `${dur(S.active_ms)} <small>instead of ${dur(S.shadow_ms)}</small>`, `median turn · ${Math.round(S.shadow_ms / S.active_ms)}× faster` +
+      (S.shadow_tokens && S.active_tokens != null ? ` · ${tok(S.active_tokens)} model tokens instead of ${tok(S.shadow_tokens)}` : ''))
+    : cell('Measured gain', '—', st === 'active' ? 'not enough timed runs yet' : 'measured once it runs automatically');
+  const runs = S.runs != null && D.kind !== 'watch' ? ` · ${plural(S.runs, 'run')} in all` : '';
+  $('stats').innerHTML = agree + gain + cell('Last run', R ? dur(R.ms) : '—', R ? (R.status === 'end' ? 'done' : 'handed back') + runs : 'no run yet') + decided;
+}
+function renderRules() {
+  const line = (rule, name, num) => {
+    const list = issues.filter(i => i.rule === rule), skip = badFormat && rule !== 'format'; // a bad format stops validation early
+    return `<li class="${skip ? 'skip' : list.length ? 'no' : 'ok'}"><span class="mk" aria-hidden="true">${skip ? '–' : list.length ? '✕' : '✓'}</span><span class="rn">${num ? num + '. ' : ''}${name}<span class="sr">${skip ? ': not checked' : list.length ? ': broken' : ': passes'}</span></span>${list.map(i => `<p>${esc(i.text)}</p>`).join('')}</li>`;
+  };
+  $('t-rules').innerHTML = `Rules <span class="${issues.length ? 'no' : 'ok'}">${issues.length ? '✕ ' + failed.size : '✓'}</span>`;
+  $('rules').innerHTML = `<p class="rsum${issues.length ? ' no' : ''}">${badFormat ? 'The format is invalid, so the rules were not checked.' : issues.length ? `${plural(failed.size, 'check')} failed: this habit cannot run.` : 'All 7 rules and the safety checks pass.'}</p>
+    <ol class="rules">${RULES.map((r, i) => line(i + 1, r, i + 1)).join('')}${line('safety', 'Safety: no deletion, read-only reads, no model-written value in a command')}${badFormat ? line('format', 'Format') : ''}</ol>`;
+}
+function themeButton() {
+  const b = $('theme'), dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  b.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme'); b.title = b.getAttribute('aria-label');
+  b.innerHTML = dark ? '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6 13 13M3 13l1.4-1.4M11.6 4.4 13 3"/></svg>'
+    : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7Z"/></svg>';
+}
+$('theme').onclick = () => {
+  const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('habits-theme', t); } catch (e) {}
+  themeButton();
+};
+
+renderHead(); renderRun(); renderNode(); renderRules(); themeButton(); open(tab);
+if (ids.length) {
+  drawGraph(); legend();
+  show(path.length - 1); // open on the finished run; Replay plays it again
+  const s = P[H.start], box = $('scroll'); // centre the start in view when the graph scrolls
+  if (s && box.scrollWidth > box.clientWidth) { const r = s.g.getBoundingClientRect(), b = box.getBoundingClientRect(); box.scrollLeft += r.left + r.width / 2 - b.left - b.width / 2; }
+} else { $('scroll').innerHTML = '<p class="empty">No nodes to draw.</p>'; $('legend').hidden = true; }
+const q = new URLSearchParams(location.search);
+if (has(q.get('node'))) select(q.get('node'), true, true);
+if (q.has('tab') && TABS.includes(q.get('tab'))) open(q.get('tab'));
+if (q.has('replay') && R) replay();
+</script>
+</body>
+</html>
