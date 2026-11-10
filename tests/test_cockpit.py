@@ -879,7 +879,7 @@ def test_the_manifest_pitches_reflexes_and_its_settings_say_what_the_code_does()
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())
     pitch = manifest["description"]
     assert pitch.startswith("Reflexes for Hermes") and len(pitch) <= 300 and pitch.count(". ") <= 1
-    for words in ("skill with a fast path", "about a second", "done", "handed back", "your yes"):
+    for words in ("two levels", "a habit acts", "about a second", "done", "handed back", "your yes"):
         assert words in pitch, words
     said = " ".join([pitch] + [v.get("description", "") for v in manifest["config_schema"].values()]).lower()
     for gone in ("designs its own", "learn", "propos", "notice", "promoted or retired"):

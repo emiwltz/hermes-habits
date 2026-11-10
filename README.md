@@ -3,9 +3,10 @@
 If tools are the model's limbs, habits are its reflexes.
 Hermes thinks it through once; after that, it's a reflex.
 
-A habit is a skill with a fast path: a small graph of tool calls, typed questions and checks that runs without
-the model. Hermes passes it the baton, in the middle of a task too, and it always comes back: done, or handed
-back with what is left. With a prompt or a skill, the model redoes every step; with a reflex, it reads one reply.
+Habits splits an agent's work into two levels that hand work to each other. Hermes thinks: slow, general, costly.
+A habit acts: fast, narrow, nearly free, a small fixed graph that runs without the model. A habit can step in
+before the model thinks, in the middle of a task or while Hermes sleeps, and it always comes back: done, or
+handed back with what is left.
 
 Ask Hermes "Is Hermes OK?". Alone, it answers in about **40 s**. As an automatic reflex, the same check takes
 about **2.5 s**, with **no model call**, and it still answers when the model is the broken part.
@@ -87,7 +88,7 @@ Eight task families from one user's Hermes sessions, replayed as plain asks, tra
 These waves ran before v0.1, with 1 or 2 baseline runs per task (the health check above: 6). The misses
 were trigger misses (Hermes answered instead) and two runs over a 30 s limit: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-## Why not a prompt, a skill, a cron job or a recorded routine
+## What changes on every repeat
 
 | Instead of | On every repeat | With a reflex |
 | --- | --- | --- |

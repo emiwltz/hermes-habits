@@ -1,10 +1,10 @@
 name: habits
 version: 0.1.0
 description: >-
-  Reflexes for Hermes: a habit is a skill with a fast path that does a known
-  task in about a second and always comes back done, or handed back with what
-  is left; it acts on its own only after practising beside Hermes and your yes,
-  except a read-only habit you asked for.
+  Reflexes for Hermes: two levels that hand work to each other, Hermes thinks
+  and a habit acts, a small fixed graph that does a known task in about a
+  second and always comes back done, or handed back with what is left. It acts
+  alone after practising and your yes, except a read-only habit you asked for.
 author: Émilien Waltz
 license: MIT
 homepage: https://github.com/emiwltz/hermes-habits
