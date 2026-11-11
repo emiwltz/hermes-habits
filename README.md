@@ -288,10 +288,10 @@ Seven settings and the Jev key. Change one with `hermes config set plugins.entri
 - **The build of 11 November** (commit fe9579c) was measured in one trial of 75 real turns
   ([BENCHMARKS](docs/BENCHMARKS.md)); the fixes made after it were tried in the simulated days (229 turns, build aad995e), what came after that build by tests only. The
   start on a loaded skill worked 2 of 2 on a real Hermes. A real MCP server: not tried.
-- **Private imports.** Seven, each with a fallback (SAFETY.md, section 10); `hermes plugins validate` warns of them.
+- **Private imports.** Six, each with a fallback (SAFETY.md, section 10); `hermes plugins validate` warns of them.
 - **Platforms.** Measured on a Mac, plus one watch and two trials on a Raspberry Pi (Hermes 0.22.5, Linux arm64:
   the install, the shipped reflexes and the dream on a real history work at commit e2292b8, and the whole suite passed there
-  at the last code commit of 11 November, 446d3bf: 4,937 passed, 1 skipped). Other Linux is covered by tests only.
+  at the last code commit, ab58950: 4,962 passed, 1 skipped). Other Linux is covered by tests only.
 
 ## Roadmap
 

@@ -49,7 +49,7 @@
         {"type": "null"},
         {"description": "Request: the user's message matches the habit.", "const": "message"},
         {
-          "description": "Watch: every interval, a whole number of minutes, hours or days (5m, 2h, 1d); every: 1d may add a time of day, 24-hour and quoted (at: \"21:00\").",
+          "description": "Watch: every interval, a whole number of minutes, hours or days (5m, 2h, 1d), 5 minutes at the least; every: 1d may add a time of day, 24-hour and quoted (at: \"21:00\").",
           "type": "object",
           "required": ["every"],
           "properties": {

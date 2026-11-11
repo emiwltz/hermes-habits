@@ -320,7 +320,6 @@ class Trigger:
             if not free:
                 return None
             result = self.run(chosen, chosen.graph, dry=mode != "active", trigger=text, max_seconds=left)
-        self.used(chosen, background=True)
         files = attachments(chosen.graph, result)  # what its end may send, checked; any other MEDIA: line goes
         try:
             run_id = self.ledger.record(chosen.name, chosen.version, "request", mode, result, session=session,

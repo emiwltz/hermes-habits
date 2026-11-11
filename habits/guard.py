@@ -106,8 +106,17 @@ QUOTES = re.compile(r"[\"'\\]")
 LEDGER = re.compile(r"habits\.db\b", re.I)
 # The plugin's settings, which Hermes reads on every call: promote: auto or a promote_runs of 1 would let a habit
 # Hermes made act with no yes. `hermes config get|show` only read them.
-CONFIG = re.compile(r"hermes.*?\bconfig\b[\s'\",]+(?:-{1,2}(?=\w)[\w-]*[\s'\",]+)*(?:set|unset|edit|migrate)\b",
-                    re.S | re.I)
+# Read as: the word hermes, then anywhere after it `config set|unset|edit|migrate`. It was one pattern,
+# hermes.*?\bconfig\b…, which rescanned the rest of the line from every "hermes": quadratic on a long line that names
+# hermes many times. The same question in one pass: the first "hermes", then one search of what follows. No length
+# bound between the two words: padding would step over one.
+CONFIG_FROM = re.compile(r"hermes", re.I)
+CONFIG_SETS = re.compile(r"\bconfig\b[\s'\",]+(?:-{1,2}(?=\w)[\w-]*[\s'\",]+)*(?:set|unset|edit|migrate)\b", re.I)
+
+
+def _sets_config(text: str) -> bool:
+    first = CONFIG_FROM.search(text)
+    return first is not None and CONFIG_SETS.search(text, first.end()) is not None
 # Hermes's way to a plugin's slash command, which records the yes as the user's: a process the model starts can
 # take it (a script the model wrote once did), as can /habits and a state word given to hermes as a query.
 COMMAND = re.compile(r"\b(?:bind_asker|invoke_plugin_command|get_plugin_command_handler|plugin_command_dispatch"
@@ -1179,7 +1188,7 @@ def changes_state(tool: str, args: dict, home=None) -> str | None:
         if STATE.search(text) or STATE.search(plain):
             return OWN
         runs = tool == "execute_code" or not reads(text)
-        if runs and "habits" in plain.lower() and CONFIG.search(plain):
+        if runs and "habits" in plain.lower() and _sets_config(plain):
             return OWN_SETTINGS
         if runs and ("habits" in plain.lower() and COMMAND.search(plain) or SLASH.search(plain)):
             return OWN

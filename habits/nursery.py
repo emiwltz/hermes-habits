@@ -720,8 +720,6 @@ class Dream:
                 self.ledger.record(habit.name, habit.version, "skill", "adhoc", run, session=session or None)
             except Exception as exc:  # the steps ran: the reply still goes to the model
                 logger.warning("habits: could not record the skill start of %s: %s", habit.name, exc)
-            if not dry:
-                self.used(habit, background=True)
             parsed["habits"] = SKILL_START.format(
                 name=habit.name, state="a test run, it is learning" if dry else "automatic",
                 outcome="done" if run.status == "end" else "handed back", message=self._skill_message(run, dry))

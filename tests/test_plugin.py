@@ -44,6 +44,11 @@ class FakeCtx:
     def register_skill(self, name, path, description="", frontmatter=None):
         self.skills[name] = Path(path)
 
+    cron_run = None  # the scheduled run this code executes inside, as Hermes's ctx.current_cron_execution() says
+
+    def current_cron_execution(self):
+        return self.cron_run
+
     def get_config(self, key, default=None):
         if key == "dream" and key not in self.config:
             return "manual"  # no test starts a real background dream by accident; the daily rule's tests say "daily"
@@ -245,13 +250,13 @@ def test_a_dry_run_by_name_is_never_recorded_scored_or_remembered(setup, monkeyp
     with_habit(tmp_path, monkeypatch, "regard", WATCHED)
     habits.ledger.adopt("regard", catalog.find("regard").version, "asked")
     live = json.loads(habits.tool_run({"name": "regard"}))  # the first run sets the reference
-    assert live["status"] == "end" and used == ["regard"]
+    assert live["status"] == "end" and used == []
     runs, memory, trace = habits.ledger.runs("regard", 50), habits.ledger.memory("regard"), habits.ledger.last_trace("regard")
     ctx.dispatch_tool = lambda name, args: json.dumps({"output": "Other.app", "exit_code": 0})  # it changed
     dry = json.loads(habits.tool_run({"name": "regard", "dry": True}))
     assert dry["status"] == "wake" and dry["dry"] is True and "run_id" not in dry
     assert habits.ledger.runs("regard", 50) == runs and habits.ledger.memory("regard") == memory
-    assert habits.ledger.last_trace("regard") == trace and used == ["regard"]  # no curator count either
+    assert habits.ledger.last_trace("regard") == trace and used == []  # no skill usage written, live or dry
     assert dry["next"].startswith("Dry run, handed back (")
 
 
@@ -1369,7 +1374,7 @@ def test_a_designed_wake_asks_for_no_repair(setup, monkeypatch):
     context = habits.on_pre_llm_call(session_id="f", user_message="sort my downloads")["context"]
     assert "propose a repair" in context
     assert "propose a repair" in json.loads(habits.tool_run({"name": "sort-downloads-by-type"}))["repair"]
-    assert "propose a repair" in watch.WATCH_PROMPT and "only once the user agrees" in watch.WATCH_PROMPT
+    assert "propose a repair" in watch.WATCH_PROMPT and "once the user agrees" in watch.WATCH_PROMPT
 
 
 def test_an_unknown_name_lists_only_the_reflexes_the_prompt_says_to_call(setup):
@@ -1762,14 +1767,104 @@ def test_any_other_new_habit_starts_in_shadow(setup, monkeypatch, tmp_path):
     assert len(asked) == 1  # only the read-only request habit was worth the question
 
 
-def curator(monkeypatch, fail=False):
+# ---- a watch and Hermes's rule on scheduled runs (the catalog review of 11 November) ------------------------------------
+
+APPS_WATCH = APPS.replace("trigger: message", "trigger: {every: 1h}").replace("end:", "wake:")
+CRON_RUN = types.SimpleNamespace(job_id="j1", job_name="habits-apps-watch", execution_id="e1", source="builtin")
+
+
+def hermes_config(monkeypatch, config):
+    """A fake hermes_cli.config whose load_config_readonly gives config (an exception is raised)."""
+    def load_config_readonly():
+        if isinstance(config, Exception):
+            raise config
+        return config
+    module = types.ModuleType("hermes_cli.config")
+    module.load_config_readonly = load_config_readonly
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+
+
+def cron_calls(ctx):
+    return [args["action"] for name, args in ctx.calls if name == "cronjob_manage"]
+
+
+def test_a_watch_saved_from_a_chat_gets_its_cron_job(setup, monkeypatch, tmp_path):
+    ctx, habits = setup
+    with_habit(tmp_path, monkeypatch, "apps-watch", APPS_WATCH, "Watch the apps")
+    assert save_apps(habits, "c", APPS_WATCH, "apps-watch")["status"] == "saved"
+    assert cron_calls(ctx) == ["list", "create"] and (tmp_path / "scripts" / "habits-apps-watch.sh").exists()
+
+
+@pytest.mark.parametrize("config", [None, {}, {"cron": {}}, {"cron": {"allow_agent_scheduling": False}},
+                                    {"cron": {"allow_agent_scheduling": "true"}}, {"cron": None}, OSError("no file")])
+def test_a_watch_is_not_saved_from_inside_a_scheduled_run(setup, monkeypatch, tmp_path, config):
+    # A cron-spawned agent has no cron tools unless cron.allow_agent_scheduling is true; the plugin's own call of
+    # cronjob_manage went around that, and the watch's wake prompt invited the repair in that very run.
+    ctx, habits = setup
+    with_habit(tmp_path, monkeypatch, "apps-watch", APPS_WATCH, "Watch the apps")
+    hermes_config(monkeypatch, config)
+    ctx.cron_run = CRON_RUN
+    reply = save_apps(habits, "c", APPS_WATCH, "apps-watch")
+    assert reply["status"] == "refused" and reply["issues"] == [watch.CRON_SAVE] and "from a chat" in reply["issues"][0]
+    assert reply["next"] == watch.CRON_SAVE_NEXT and "again" in reply["next"]
+    assert ctx.calls == []  # no skill written, no cron job listed, created, updated or removed
+    assert not (tmp_path / "scripts").exists()
+
+
+def test_a_scheduled_run_may_save_a_watch_once_the_user_allowed_agents_to_schedule(setup, monkeypatch, tmp_path):
+    ctx, habits = setup
+    with_habit(tmp_path, monkeypatch, "apps-watch", APPS_WATCH, "Watch the apps")
+    hermes_config(monkeypatch, {"cron": {"allow_agent_scheduling": True}})
+    ctx.cron_run = CRON_RUN
+    assert save_apps(habits, "c", APPS_WATCH, "apps-watch")["status"] == "saved"
+    assert cron_calls(ctx) == ["list", "create"]
+
+
+def test_a_scheduled_run_still_saves_what_needs_no_cron_job(setup, monkeypatch, tmp_path):
+    ctx, habits = setup
+    with_habit(tmp_path, monkeypatch, "apps-status", APPS, "List the apps installed in /Applications")
+    ctx.cron_run = CRON_RUN
+    assert save_apps(habits, "c")["status"] == "saved" and cron_calls(ctx) == []
+
+
+def test_the_cron_job_itself_is_never_made_or_changed_inside_a_scheduled_run(setup, tmp_path):
+    # schedule() is the one place that calls cronjob_manage create, update and remove: it refuses by itself
+    ctx, habits = setup
+    ctx.cron_run = CRON_RUN
+    reply = habits.schedule(catalog.Habit("watch", "Veille", tmp_path / "x", {"trigger": {"every": "5m"}}))
+    assert reply == {"error": watch.CRON_SAVE} and ctx.calls == [] and not (tmp_path / "scripts").exists()
+
+
+def test_when_hermes_cannot_say_whether_it_is_a_scheduled_run_no_cron_job_is_made(setup, monkeypatch, tmp_path):
+    ctx, habits = setup
+    with_habit(tmp_path, monkeypatch, "apps-watch", APPS_WATCH, "Watch the apps")
+    monkeypatch.setattr(ctx, "current_cron_execution", lambda: 1 / 0)
+    reply = save_apps(habits, "c", APPS_WATCH, "apps-watch")
+    assert reply["status"] == "refused" and reply["issues"] == [watch.CRON_UNKNOWN] and ctx.calls == []
+
+
+def test_the_wake_prompt_of_a_watch_no_longer_invites_a_save_in_the_scheduled_run():
+    assert "habit_save" not in watch.WATCH_PROMPT and "Do not save it in this run" in watch.WATCH_PROMPT
+    assert "from a chat" in watch.WATCH_PROMPT and "propose a repair to the user" in watch.WATCH_PROMPT
+
+
+@pytest.mark.parametrize("every, fine", [("1m", False), ("4m", False), ("5m", True), ("30m", True), ("1h", True),
+                                         ("1d", True)])
+def test_a_watch_checks_every_five_minutes_at_the_least(every, fine):
+    habit = graph.load(APPS_WATCH.replace("every: 1h", f"every: {every}"))
+    issues = [str(i) for i in graph.validate(habit)]
+    assert (issues == []) is fine
+    if not fine:
+        assert any(f"every: {every} is too often" in i and "5m at the least" in i for i in issues)
+
+
+def curator(monkeypatch):
     """A fake tools.skill_usage: the skill names bump_use was called with."""
     used = []
 
     def bump_use(name, *, task_id=None, session_id=None):
         used.append(name)
-        if fail:
-            raise OSError("usage file locked")
     module = type(sys)("tools.skill_usage")
     module.bump_use = bump_use
     monkeypatch.setitem(sys.modules, "tools", type(sys)("tools"))
@@ -1777,38 +1872,29 @@ def curator(monkeypatch, fail=False):
     return used
 
 
-def test_every_run_of_a_saved_habit_counts_as_a_use_for_the_curator(setup, monkeypatch, tmp_path):
-    # Seen in the audit (edge F9): only a skill the model loads counts as used, so a habit the plugin runs every day
-    # could be archived by Hermes's curator after 30 days.
+def test_no_run_of_a_habit_writes_hermess_skill_usage_record(setup, monkeypatch, tmp_path):
+    # Hermes's review of the plugin (11 November): a plugin may read skill state, not write it. The curator learns
+    # which skills are habits from the plugin's prompt section, and the user may pin one (hermes curator pin <name>).
     ctx, habits = setup
     used = curator(monkeypatch)
-    habits.on_pre_llm_call(session_id="s", user_message="Sort my downloads")  # shadow
+    habits.on_pre_llm_call(session_id="s", user_message="Sort my downloads")  # learning: a test run beside the model
     habits.on_post_llm_call(session_id="s")
-    habits.tool_run({"name": "sort-downloads-by-type"})
-    habits.tool_run({"scenario": DEMO})  # a scenario passed inline is no skill
+    habits.tool_run({"name": "sort-downloads-by-type"})  # called by name
     habits.tool_run({"name": "check-links", "inputs": {"page": "https://example.com"}})  # an example
-    assert used == ["sort-downloads-by-type", "sort-downloads-by-type"]
-    reply, _ = confirming(("changed", 0.9))
-    monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([deciders.Fake(reply)]))
-    habits.on_pre_llm_call(session_id="n", user_message="do not sort my downloads")  # nothing ran
-    assert len(used) == 2
-    monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([deciders.Fake(answer)]))
     promote(ctx, habits, monkeypatch)
-    used.clear()
-    assert habits.on_pre_llm_call(session_id="a", user_message="Sort my downloads")  # active
-    assert used == ["sort-downloads-by-type"]
+    assert habits.on_pre_llm_call(session_id="a", user_message="Sort my downloads")  # automatic
     with_habit(tmp_path, monkeypatch, "watch", "spec: habits/0.1\ntrigger: {every: 5m}\nstart: look\nfallback: tell\n"
                "nodes:\n  look: {do: terminal, read: true, args: {command: ls /Applications}, next: quiet}\n"
                "  quiet: {end: Nothing.}\n  tell: {wake: Quelque chose.}\n")
-    assert habits.tick("watch") == [watch.GATE_SILENT] and used[-1] == "watch"
+    assert habits.tick("watch") == [watch.GATE_SILENT]  # a scheduled check
+    time.sleep(0.05)  # the old call ran in a background thread
+    assert used == []
 
 
-def test_a_curator_that_fails_never_stops_a_run(setup, monkeypatch):
-    ctx, habits = setup
-    used = curator(monkeypatch, fail=True)
-    assert "is learning on this request" in habits.on_pre_llm_call(session_id="s", user_message="Sort my downloads")["context"]
-    assert json.loads(habits.tool_run({"name": "sort-downloads-by-type"}))["status"] == "end"
-    assert len(used) == 2
+def test_the_plugins_code_never_names_the_private_usage_writer():
+    for path in sorted((Path(__file__).resolve().parent.parent / "habits").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        assert "bump_use" not in text and "skill_usage" not in text, path.name
 
 
 def test_a_changed_helper_script_sends_an_active_habit_back_to_shadow(setup, monkeypatch):

@@ -276,10 +276,11 @@ A description should name its target and its way: "Sort ~/Downloads by file type
 
 ### Schedule
 
-`every` is a whole number then `m`, `h` or `d` (Hermes cron counts in minutes). `at` goes with `every: 1d` only,
+`every` is a whole number then `m`, `h` or `d` (Hermes cron counts in minutes), `5m` at the least. `at` goes with `every: 1d` only,
 quoted and 24-hour: `{every: 1d, at: "21:00"}` is the cron job `0 21 * * *`. Saving a watch writes a small shell
 file in the `scripts` folder of the Hermes home and a cron job `habits-<name>`. It does this when `habit_save` writes the files, before
-your yes. A learning watch writes nothing: when it would hand back or write, Hermes is woken with the report and does
+your yes. Inside a scheduled run (a turn a cron job started) `habit_save` refuses a watch and says to save it from a
+chat, unless you set Hermes's `cron.allow_agent_scheduling: true`: Hermes keeps scheduled runs from scheduling jobs. A learning watch writes nothing: when it would hand back or write, Hermes is woken with the report and does
 the task itself, unattended (a paid model turn each time). A watch that checks more often than every 6 hours holds
 a hand back caused by a failed read until the 3rd such check in a row. A daily watch wakes at once.
 `hermes habits cleanup` removes every cron job and every file of `scripts` whose name starts with `habits-`.

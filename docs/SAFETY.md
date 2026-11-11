@@ -117,19 +117,20 @@ Under `$HERMES_HOME/plugin-data/habits/`, unencrypted: `habits.db` (runs with a 
 
 To read the ledger yourself, open it plainly: `sqlite3 ~/.hermes/plugin-data/habits/habits.db "select habit, status from habits"` (a `select` changes nothing; another Hermes home has it under its own `plugin-data/habits/`). It is kept in SQLite's WAL mode, so `sqlite3 -readonly` and `?mode=ro` answer "unable to open database file" whenever no Hermes process has it open; `sqlite3 "file:<its full path>?immutable=1"` opens it read-only then, and can miss the latest writes while Hermes runs.
 
-Elsewhere: a habit is a skill folder in your skills folder, written by `habit_save` or by your yes on a card. Saving a schedule habit writes `$HERMES_HOME/scripts/habits-<name>.sh` and a cron job `habits-<name>`, at once, before any yes. While it learns, each check that would hand back wakes the model, a paid turn. `HABITS_OFF` turns every hook off except the guard.
+Elsewhere: a habit is a skill folder in your skills folder, written by `habit_save` or by your yes on a card. Saving a schedule habit writes `$HERMES_HOME/scripts/habits-<name>.sh` and a cron job `habits-<name>`, at once, before any yes; its interval is 5 minutes at the least. Inside a scheduled run (a turn a cron job started) a schedule habit is not saved and no cron job is created or updated, unless you set Hermes's `cron.allow_agent_scheduling: true`: the plugin asks Hermes (`ctx.current_cron_execution()`) and answers "save it from a chat". While it learns, each check that would hand back wakes the model, a paid turn. `HABITS_OFF` turns every hook off except the guard.
 
 ## 10. Private imports of Hermes
 
-All are lazy and wrapped. `hermes plugins validate` lists seven private ones:
+All are lazy and wrapped. `hermes plugins validate` lists six private ones:
 
 | Import | Without it |
 | --- | --- |
 | `tools.approval._presence`, `_unattended_contexts` | the plugin refuses flagged and deleting commands, as `strict` |
 | `hermes_cli.plugins.get_pre_tool_call_directive` | other plugins' guards are not asked (logged once); if it fails when asked, the step is refused |
 | `tools.approval_detection.detect_dangerous_command`, `tools.approval.detect_dangerous_command` | a built-in pattern (`rm`, `chmod`, `kill`, `sudo`, a pipe into a shell) |
-| `tools.skill_usage.bump_use` | the curator may archive an idle habit |
 | `agent.file_safety.get_read_block_error` | the plugin's own path checks |
+
+The plugin writes nothing in Hermes's skill usage record. Hermes's curator archives a skill nobody loaded for 30 days, and a habit runs without loading its skill: in a curator session the plugin's prompt section names your habits as skills to leave alone, and `hermes curator pin <name>` pins one for good.
 
 Other Hermes modules the plugin imports lazily, not flagged by the validator:
 
@@ -140,6 +141,7 @@ Other Hermes modules the plugin imports lazily, not flagged by the validator:
 | `tools.registry` | no list of known tools and no tool schemas, so a reflex's steps are checked less closely |
 | `plugins.plugin_storage.plugin_data_dir` | the plugin cannot find its data folder (not tried further) |
 | `agent.secret_scope.get_secret` | no key, so no call to TypeSafe |
+| `hermes_cli.config.load_config_readonly` | `cron.allow_agent_scheduling` reads as not set: a schedule habit is never saved from a scheduled run |
 | `gateway.platforms.base` | a file to send is found by the plugin's own reading alone |
 | `model_tools`, `agent.turn_context` (looked up in `sys.modules`) | `model_tools` missing: the session's tool list is empty; `agent.turn_context`: not tried |
 

@@ -522,23 +522,6 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit, Dream, Practice):
                 logger.warning("habits: could not keep the memory of %s: %s", habit.name, exc)
         return result
 
-    def used(self, habit: catalog.Habit, background: bool = False):
-        """Tell Hermes's curator a saved habit ran: it archives a skill nobody loaded for 30 days, and the plugin
-        runs a habit without loading its skill. A private Hermes API, best-effort: it never fails a run."""
-        if habit.origin != "skill":
-            return  # an example is not one of the user's skills
-
-        def bump():
-            try:
-                from tools.skill_usage import bump_use
-                bump_use(habit.name)
-            except Exception as exc:  # an older Hermes, a locked or broken usage file
-                logger.debug("habits: the curator did not count the use of %s: %s", habit.name, exc)
-        if background:  # the hook's time is the user's: the usage file's lock and Hermes's own hooks wait elsewhere
-            threading.Thread(target=contextvars.copy_context().run, args=(bump,), daemon=True).start()
-        else:
-            bump()
-
     def summary(self, habit: catalog.Habit) -> dict:
         """The ledger's numbers for a habit. An invalid graph on disk never runs, so it never starts a new
         version: it shows the last valid version's."""

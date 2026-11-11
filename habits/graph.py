@@ -49,6 +49,7 @@ NODE_NAME = re.compile(r"^[a-z0-9_-]{1,40}$")
 VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 VAR_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$")
 EVERY = re.compile(r"^[1-9]\d*[mhd]$")  # Hermes cron counts in minutes
+EVERY_MINUTES = 5  # the shortest interval of a watch: each check starts a process and may wake a paid turn
 AT = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")  # a time of day for a watch in days: its cron job gets "M H * * *"
 TEMPLATE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_]+)*\}")
 # Quoted spans as a shell reads them, left to right: an escape, a double-quoted span, a single-quoted span.
@@ -504,6 +505,8 @@ def _check_header(habit, add):
             every = trigger["every"]
             if not isinstance(every, str) or not EVERY.match(every):
                 add("format", "", 'every takes a whole number of minutes, hours or days: 5m, 2h or 1d')
+            elif every[-1] == "m" and int(every[:-1]) < EVERY_MINUTES:
+                add("format", "", f"every: {every} is too often: a watch checks every {EVERY_MINUTES}m at the least")
             elif "at" in trigger and every != "1d":
                 # Hermes cron has no "every N days at": */N days of the month starts again on the 1st (7d: the 29th,
                 # then the 1st).

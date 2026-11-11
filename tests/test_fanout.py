@@ -165,7 +165,7 @@ def test_each_entry_is_recorded_paged_and_counted_as_a_single_call(setup, monkey
     with_habit(tmp_path, monkeypatch, "scan", yaml.safe_dump(small()))
     habits.ledger.adopt("scan", catalog.find("scan").version, "asked")
     run(habits, habits=[{"name": "scan"}, {"name": "sort-downloads-by-type"}, {"scenario": echo("a")}])
-    assert used == ["scan", "sort-downloads-by-type"]
+    assert used == []  # no run writes Hermes's skill usage record
     assert len(habits.ledger.runs("scan")) == len(habits.ledger.runs("sort-downloads-by-type")) == 1
     pages = habits.home() / "pages"
     assert (pages / "scan.html").exists() and (pages / "sort-downloads-by-type.html").exists()

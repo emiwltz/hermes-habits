@@ -4,6 +4,8 @@ that it cannot read is refused; a call that shows nothing of that world passes u
 and so does the same thing hidden where no text shows it: the guard blocks every attempt it can read."""
 
 import os
+import random
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -298,6 +300,49 @@ def test_other_settings_and_reads_pass(g):
     for command in ("hermes config set model.default foo", "hermes config show", "hermes config get plugins",
                     "cat ~/.hermes/config.yaml", "hermes config path"):
         passes(g, *terminal(command))
+
+
+# The pattern the guard used until the catalog review of 11 November: right, but quadratic (see the next tests).
+OLD_CONFIG = re.compile(r"hermes.*?\bconfig\b[\s'\",]+(?:-{1,2}(?=\w)[\w-]*[\s'\",]+)*(?:set|unset|edit|migrate)\b",
+                        re.S | re.I)
+PIECES = ["hermes", "Hermes", "HERMES", "config", "Config", "configs", "xconfig", "set", "unset", "edit", "migrate",
+          "settle", "get", "show", "habits", "-p", "--profile", "x", "--", "-", "'", '"', ",", " ", "  ", "\n", "\t",
+          ";", "|", "&&", "=", ".", "/", "a" * 30, " " * 250, "ſ", "İ"]
+
+
+def test_the_one_pass_reading_of_config_writes_answers_as_the_old_pattern_did():
+    rng = random.Random(20261111)
+    gaps = [" ", "  ", "\n", "'", '"', ", ", " " * 250]
+    flags = ["", "", "-p ", "--profile ", "--json  ", "-q -v ", "- ", "x "]
+
+    def soup(pieces, most):
+        return "".join(rng.choice(pieces) for _ in range(rng.randint(0, most)))
+    seen = {True: 0, False: 0}
+    for i in range(20_000):
+        if i % 2:  # anything, in any order
+            text = soup(PIECES, 14)
+        else:  # near the shape that matters: hermes … config, a gap, flags, a verb; each part sometimes off
+            text = (soup(PIECES, 3) + rng.choice(["hermes", "hermes", "HERMES", "herme", ""]) + soup(PIECES, 3)
+                    + rng.choice([" config", " config", "\nConfig", "xconfig", " configs"])
+                    + rng.choice(gaps + [""]) + rng.choice(flags)
+                    + rng.choice(["set", "unset", "edit", "migrate", "get", "settle"]) + soup(PIECES, 2))
+        want = OLD_CONFIG.search(text) is not None
+        assert guard._sets_config(text) is want, text
+        seen[want] += 1
+    assert seen[True] > 1_000 and seen[False] > 1_000  # both answers were really compared
+
+
+def test_the_reading_of_config_writes_takes_one_pass_on_a_long_line_that_names_hermes_many_times():
+    # 112,000 characters took the old pattern 5 s on a laptop: it rescanned the line from every "hermes"
+    text = "echo " + "hermes " * 16_000 + " habits"
+    began = time.perf_counter()
+    assert guard._sets_config(text) is False
+    assert time.perf_counter() - began < 0.5
+
+
+@pytest.mark.parametrize("padding", [" " * 500, " --accept-hooks" * 40 + " ", " \\\n" * 120, " -p " + "a" * 400 + " "])
+def test_no_padding_between_hermes_and_config_hides_a_settings_change(g, padding):
+    blocked(g, *terminal(f"hermes{padding}config set plugins.entries.habits.settings.learning auto"))
     passes(g, "write_file", {"path": "/tmp/project/config.yaml", "content": "a: 1"})
     passes(g, "write_file", {"path": str(Path.home() / "project" / "config.yaml"), "content": "a: 1"})
 

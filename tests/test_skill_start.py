@@ -323,23 +323,19 @@ def test_no_reentry_even_in_another_session_while_it_runs(world, monkeypatch):
     assert inner == [None] and commands(ctx) == ["df -h ~"]
 
 
-def test_bump_use_does_not_retrigger(world, monkeypatch):
+def test_a_skill_start_does_not_write_hermess_skill_usage_record(world, monkeypatch):
     ctx, habits = world
     make(habits, "automatic")
     fired = []
-
-    def bump(name):  # Hermes's bump_use emits a lifecycle event; a loaded skill would load again from it
-        fired.append(name)
-        fired.append(load(habits, session="s1"))
     import sys
     import types
     module = types.ModuleType("tools.skill_usage")
-    module.bump_use = bump
+    module.bump_use = fired.append
     monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
     monkeypatch.setitem(sys.modules, "tools.skill_usage", module)
     assert load(habits) is not None
     time.sleep(0.05)
-    assert fired == ["glance", None]
+    assert fired == []
     assert commands(ctx) == ["df -h ~"]
 
 

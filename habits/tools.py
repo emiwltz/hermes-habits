@@ -1022,13 +1022,11 @@ class Tools:
                             trigger=call.trigger, max_seconds=max_seconds, keep=not call.dry, turn=True)  # the model called it
 
     def _settle(self, call: Call, result: runner.Result) -> dict:
-        """After the run: the curator's count, the ledger, the page, and the reply."""
+        """After the run: the ledger, the page, and the reply."""
         habit, name, scenario, notes = call.habit, call.name, call.scenario, call.notes
         unconfirmed = call.unconfirmed
         if call.dry:
             return self._settle_dry(call, result)
-        if habit:
-            self.used(habit)
         note = None
         try:
             run_id = self.ledger.record(name, habit.version if habit else "one-off",
@@ -1087,7 +1085,7 @@ class Tools:
         return {"done": done, "results": slots, "summary": " · ".join(said_), "next": FAN_DONE if done else FAN_HANDED}
 
     def _settle_dry(self, call: Call, result: runner.Result) -> dict:
-        """A test: no curator count, no ledger row (never scored, never a habit page's last run), a page of its own
+        """A test: no ledger row (never scored, never a habit page's last run), a page of its own
         that the next test of the same name replaces, and no file to send: the files are listed in planned."""
         self.side_page(f"_dry-{call.name}", call.name, call.scenario, result, "dry run", call.habit)
         files = [] if call.unconfirmed else attachments(call.scenario, result)
@@ -1115,7 +1113,7 @@ class Tools:
     def cli_run(self, target: str, pairs=(), live: bool = False, as_json: bool = False, within=None,
                 message=None, memory=None) -> int:
         """`hermes habits run`: a saved habit or a reflex.yml file, here, with Hermes's tools and no model turn (its
-        questions go to the decision chain). Dry unless live. A measurement: nothing reaches the ledger, the curator,
+        questions go to the decision chain). Dry unless live. A measurement: nothing reaches the ledger,
         the habit's page or the memory of check: changed, so it never promotes or retires anything. Without --json
         it writes the replay of that run, _run-<name>.html beside the habit pages, and prints its path last.
 
@@ -1358,6 +1356,11 @@ class Tools:
              origin: str = "asked") -> dict:
         """Keep a checked graph as a skill, SKILL.md then assets/reflex.yml, through skill_manage (habit_save's:
         origin asked; the dream's yes saves with origin learned, by the same path)."""
+        if catalog.kind_of(scenario) == "watch":  # its cron job would be created or updated: not from a cron run
+            refusal = self.cron_refusal()
+            if refusal:  # before any write: no skill, no script, no job
+                from .watch import CRON_SAVE_NEXT
+                return _refused([refusal], notes, next=CRON_SAVE_NEXT)
         existing = catalog.find(name)
         if existing is not None and existing.origin == "example":
             existing = None

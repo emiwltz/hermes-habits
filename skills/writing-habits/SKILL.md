@@ -34,7 +34,7 @@ non-zero on an input it skips, and never writes into `assets/`: a changed file t
 
 Every saved habit can be called by name. A habit with `inputs` is only called (never give it a trigger).
 `trigger: message` also starts it from a matching message (as `{trigger}`, no inputs); `trigger: {every: 5m}`
-checks on a schedule (`{every: 1d, at: "21:00"}`); `trigger: skill` starts it when its skill is loaded (no inputs, no
+checks on a schedule (`{every: 1d, at: "21:00"}`; `5m` at the least; never saved from a scheduled run); `trigger: skill` starts it when its skill is loaded (no inputs, no
 `ask` or `llm` step): a test while every step reads, for real after the user's yes.
 A request habit that only reads is judged against your reply.
 

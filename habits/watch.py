@@ -30,15 +30,52 @@ WATCH_PROMPT = (
     "A Habits watch woke you. The script output above says what the watch found and what is left to do. "
     "Do what is left, or tell the user in two sentences at most what changed. If the watch stopped because of "
     "its own steps (a page that moved, a case it does not know), propose a repair to the user: what is wrong and "
-    "what you would change in its reflex.yml. Save it with habit_save under the same name only once the user agrees."
+    "what you would change in its reflex.yml. Do not save it in this run: a watch is saved from a chat, once the "
+    "user agrees."
 )
+# Hermes keeps the cron tools from an agent a cron job started (cron.allow_agent_scheduling, false by default), so
+# that scheduled runs do not schedule more runs. The plugin's own call of cronjob_manage would go around that.
+CRON_SAVE = ("A watch is not saved from inside a scheduled run: Hermes does not let a run a cron job started "
+             "schedule jobs (cron.allow_agent_scheduling is not true). Save it from a chat.")
+CRON_UNKNOWN = ("Habits could not ask Hermes whether this is a scheduled run, so it creates no cron job. Save the "
+                "watch from a chat, on Hermes 0.22.5 or later.")
+CRON_SAVE_NEXT = ("Do not call habit_save again in this run. Tell the user what is wrong and what you would change in "
+                  "the reflex; the watch is saved from a chat.")
+
+
+def agents_may_schedule() -> bool:
+    """Whether the user set cron.allow_agent_scheduling: true in Hermes's config. Anything else, or a config that
+    cannot be read, is no."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cron = (load_config_readonly() or {}).get("cron") or {}
+        return cron.get("allow_agent_scheduling") is True
+    except Exception as exc:
+        logger.debug("habits: could not read cron.allow_agent_scheduling: %s", exc)
+        return False
 
 
 class Watch:
     """The watches of Habits: their cron jobs and scripts, and each check."""
 
+    def cron_refusal(self) -> str | None:
+        """Why a watch's cron job is not created or updated now, or None when it may be: inside a Hermes cron run
+        (ctx.current_cron_execution(), on the published plugin API) it is refused unless the user allowed agents to
+        schedule. When Hermes cannot say, nothing is scheduled."""
+        try:
+            run = self.ctx.current_cron_execution()
+        except Exception as exc:
+            logger.warning("habits: could not ask Hermes whether this is a cron run: %s", exc)
+            return CRON_UNKNOWN
+        if run is None or agents_may_schedule():
+            return None
+        return CRON_SAVE
+
     def schedule(self, habit: catalog.Habit) -> dict:
         """Create (or keep) the Hermes cron job whose script runs `hermes habits tick <name>`."""
+        refusal = self.cron_refusal()
+        if refusal:  # before the script is written: a refused save leaves nothing behind
+            return {"error": refusal}
         hermes_home = self.home().parent.parent
         scripts = hermes_home / "scripts"
         scripts.mkdir(parents=True, exist_ok=True)
@@ -106,7 +143,6 @@ class Watch:
                 return ["habits: the previous check is still running", GATE_SILENT]
             result = self.run(habit, habit.graph, dry=not active,
                               trigger=f"watch check {time.strftime('%Y-%m-%d %H:%M')}")
-        self.used(habit)
         # Only a read waits: a write or a message that failed is news, and the next check may not try it again.
         nodes = habit.graph["nodes"]
         failed = result.step_failed and runner._reads(nodes[result.steps[-1]["node"]])
