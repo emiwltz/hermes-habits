@@ -1,6 +1,6 @@
-"""Shadow comparison: did the LLM do what the habit planned?
+"""The comparison while learning: did the LLM do what the habit planned?
 
-A habit in shadow runs dry when it triggers: its writes are only planned.
+A habit that is learning runs dry when it starts: its writes are only planned.
 The LLM then does the task its usual way, and its tool calls are recorded.
 After the turn, each planned write is looked for among the LLM's writes:
 first by normalized arguments, then, for what is left, by one judge call.

@@ -587,7 +587,7 @@ def right(run: dict) -> bool:
 
 def doubt_texts(doubted) -> list[str]:
     """Each doubt a run left, as a pattern reads it: its node, then its item."""
-    return [f"{d.get('node')} {_plain(_text(d.get('item')))}" for d in doubted or [] if isinstance(d, dict)]
+    return [f"{d.get('step') or d.get('node')} {_plain(_text(d.get('item')))}" for d in doubted or [] if isinstance(d, dict)]
 
 
 def near(trigger, name: str, expect) -> list[str]:

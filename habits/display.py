@@ -7,31 +7,74 @@ attach a file.
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import logging
 import re
 import shutil
+import textwrap
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import catalog, graph, view
-from .texts import TEXTS, say
+from .texts import TEXTS, period, say
 
 if TYPE_CHECKING:  # the class these methods are mixed into
     from .plugin import Habits
 
 logger = logging.getLogger(__name__)
 
-HELP = say("help", "en")
-CLI_VERBS = {"list", "show", "check", "run", "tick", "retire", "reset", "cleanup"}
+
+# The --json boundary (decision 0.34): the words of the contract leave here, by one mapping. Internal names stay in
+# the ledger, view.py and the pages. What a person or a habit wrote (values, inputs, arguments) is never touched.
+STATE_WORDS = {"shadow": "learning", "active": "automatic", "retired": "resting", "live": "called"}
+KEY_WORDS = {"node": "step", "practising": "practicing"}  # the ledger keeps its own spelling of that state
+KEY_PREFIXES = (("shadow_", "learning_"), ("active_", "automatic_"))
+STATE_KEYS = ("state", "status_of", "habit_state")  # keys that hold a habit's state (a run's status is end or wake)
+OPAQUE_KEYS = {"values", "inputs", "args", "memory", "llm_ms", "untrusted"}
+
+
+def public(obj, key=None):
+    """A copy of what leaves as JSON, in the contract's words: states learning, automatic, resting, called; run mode
+    test or live; keys learning_* and automatic_* for shadow_* and active_*; step for node; practicing for practising."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            name = KEY_WORDS.get(k, k) if isinstance(k, str) else k
+            for old, new in KEY_PREFIXES:
+                if isinstance(k, str) and k.startswith(old):
+                    name = new + k[len(old):]
+            out[name] = v if k in OPAQUE_KEYS else public(v, k)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [public(v, key) for v in obj]
+    if key == "mode" and obj == "dry":
+        return "test"
+    if key in STATE_KEYS and isinstance(obj, str):
+        return STATE_WORDS.get(obj, obj)
+    return obj
+
+
+def _days(text: str) -> int:
+    """--days N: 1 to 60."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number of days") from None
+    if not 1 <= value <= 60:
+        raise argparse.ArgumentTypeError("days must be from 1 to 60")
+    return value
+
+CLI_VERBS = {"list", "show", "check", "run", "dream", "tick", "retire", "rest", "reset", "cleanup"}  # retire: the old name of rest
 # A chat line printed in a terminal: its /habits commands said as `hermes habits` ones (faux is no terminal verb: its
 # nearest is undo, which takes the yes back).
-TERMINAL = ((r"/habits (?:reprends|resume)\b", "hermes habits resume"), (r"/habits (?:faux|wrong)\b", "hermes habits undo"),
-            (r"/habits (?:essai|try)\b", "hermes habits reset"), (r"/habits (?:oui|yes)\b", "hermes habits promote"),
-            (r"/habits (?:repos|rest)\b", "hermes habits retire"), (r"/habits (?:annule|undo)\b", "hermes habits undo"),
-            (r"/habits (pause|view)\b", r"hermes habits \1"), (r"/habits (?=lists them|les liste)", "hermes habits list "),
+TERMINAL = ((r"/habits (?:reprends|resume)(?![\w-])", "hermes habits resume"), (r"/habits (?:faux|wrong)(?![\w-])", "hermes habits undo"),
+            (r"/habits (?:rêve|reve|dream)(?![\w-])", "hermes habits dream"), (r"/habits (?:essai|try)(?![\w-])", "hermes habits reset"), (r"/habits (?:oui|yes)(?![\w-])", "hermes habits yes"),
+            (r"/habits (?:repos|rest)(?![\w-])", "hermes habits rest"), (r"/habits (?:annule|undo)(?![\w-])", "hermes habits undo"),
+            (r"/habits (pause|view)(?![\w-])", r"hermes habits \1"), (r"/habits voir(?![\w-])", "hermes habits view"),
+            (r"/habits (?:help|aide)(?![\w-])", "hermes habits --help"), (r"/habits (?=lists them|les liste)", "hermes habits list "),
             (r"/habits (?=[<a-z0-9])", "hermes habits show "),
             (r"/habits\b", "hermes habits list"))
 
@@ -164,8 +207,14 @@ class Display:
         state = "byname" if habit.origin == "example" else state_of(habit, summary)  # an example runs by name only
         lines = [self.line(habit, summary, state) + moved
                  + (say("example", lang) if habit.origin == "example" else ""),
-                 habit.description, say("info", lang, trigger=_trigger(habit.graph.get("trigger"), lang),
-                                        version=habit.version)]
+                 habit.description, say("info", lang, version=habit.version, trigger=_trigger(
+                     None if habit.origin == "example" else habit.graph.get("trigger"), lang))]  # an example never starts alone
+        if habit.kind == "request" and state == "active" and self.setting("spot_check") > 0:
+            # a message habit after the yes: the model checks its first runs behind it, which is why they stay slow
+            from .trigger import CLOSE_CHECKS
+            agreed = min(CLOSE_CHECKS, self.ledger.agreed(habit.name, habit.version))
+            lines.append(say("detail_checking", lang, agreed=agreed, needed=CLOSE_CHECKS) if agreed < CLOSE_CHECKS
+                         else say("detail_alone", lang, every=max(1, round(1 / self.setting("spot_check")))))
         if habit.kind == "watch":
             lines.append(say("detail_checks", lang, checks=count("checks", summary["runs"], lang),
                              wakes=count("wakes", summary["woke"], lang)))
@@ -174,8 +223,8 @@ class Display:
             extra.append(say("detail_gain", lang, fast=seconds(summary["active_ms"], lang),
                              slow=seconds(summary["shadow_ms"], lang)))
         if summary.get("shadow_tokens") and summary.get("active_tokens") is not None:
-            extra.append(say("detail_tokens", lang, active=tokens(summary["active_tokens"]),
-                             shadow=tokens(summary["shadow_tokens"])))
+            extra.append(say("detail_tokens", lang, active=view._tokens(summary["active_tokens"]),
+                             shadow=view._tokens(summary["shadow_tokens"])))
         lines += [" · ".join(extra)] if extra else []
         if habit.issues:
             lines += [say("detail_invalid", lang)] + [f"  {i}" for i in habit.issues]
@@ -185,16 +234,18 @@ class Display:
             agree += say("run_judge", lang, why=_no_media(run["verdict"])[:100]) if run.get("verdict") else ""
             turn = say("run_turn", lang, took=seconds(run["turn_ms"], lang)) if run["turn_ms"] else ""
             mode = say(f"run_{run['mode']}", lang) if f"run_{run['mode']}" in TEXTS["en"] else run["mode"]
+            if run.get("kind") == "skill" and run["mode"] == "adhoc":  # no one called it by name: its skill was loaded
+                mode = say("run_skill", lang)
             status = say(f"status_{run['status']}", lang) if f"status_{run['status']}" in TEXTS["en"] else run["status"]
             lines.append(f"  {when} · {mode} · {status} · {seconds(run['ms'], lang)}{turn}{agree}"
                          + (f" · {_no_media(run['reason'])}" if run["reason"] else ""))  # it holds tool output
         page = self.home() / "pages" / f"{habit.name}.html"
-        if messaging(platform):
-            lines.append(say("page_chat", lang, name=habit.name))
+        if messaging(platform) or not page.exists():  # a path that holds no file is no help: say how to write it
+            lines.append(say("page_chat" if messaging(platform) else "page_none", lang, name=habit.name))
         else:
             lines.append(say("page", lang, path=str(page) if platform is None else f"`{page}`"))
         if platform is None:  # a terminal reader can open the file; in a chat the page is a command
-            lines += [say("file", lang, path=str(habit.path)), say("steps", lang)] + steps(habit.graph)
+            lines += [say("file", lang, path=str(habit.path)), say("steps", lang)] + steps(habit.graph, True, lang)
         return "\n".join(line for line in lines if line)
 
     def command(self, raw_args: str = "", platform: str = "", session_id: str = "", **_) -> str:
@@ -209,9 +260,9 @@ class Display:
             if words and words[0].lower() in VERBS:
                 return self.verb(VERBS[words[0].lower()], words[1] if len(words) > 1 else "", str(session_id or ""),
                                  words[0])
-            if words[:1] == ["help"] or (words and words[0] in CLI_VERBS and catalog.find(words[0]) is None):
+            if words[:1] in (["help"], ["aide"]) or (words and words[0] in CLI_VERBS and catalog.find(words[0]) is None):
                 return say("help", self.lang())
-            if words[:1] == ["view"]:
+            if words[:1] in (["view"], ["voir"]):
                 path, said = self.view(words[1] if len(words) > 1 else "")
                 if path is None:
                     return said
@@ -219,33 +270,43 @@ class Display:
                     return f"{say('view_open', self.lang(), said=said)}\nMEDIA:{path}"
                 return say("view_at", self.lang(), said=said, uri=path.as_uri())
             if not words:
-                return self.cockpit()
+                return self.cockpit(str(session_id or ""))
             return self.detail(words[0], str(platform or "")) + self.asks(words[0])
         except Exception as exc:
             logger.warning("habits: /habits failed: %s", exc)
             return say("error", self.lang(), kind=type(exc).__name__, exc=exc)
 
     def cli_setup(self, parser):
-        sub = parser.add_subparsers(dest="habits_command")
-        sub.add_parser("list", help="List habits with their status and scores")
-        sub.add_parser("view", help="Open the gallery of your habits, or the diagram of one").add_argument(
+        sub = parser.add_subparsers(dest="habits_command", metavar="<command>")  # no brace list: the old words stay out of sight
+        sub.add_parser("list", help="List your habits: learning, automatic or resting, with their numbers")
+        sub.add_parser("view", help="Open the gallery of your habits, or the diagram of one reflex").add_argument(
             "name", nargs="?", default="")
-        show = sub.add_parser("show", help="Details and recent runs")
+        show = sub.add_parser("show", help="One habit: its numbers and recent runs")
         show.add_argument("name")
         show.add_argument("--json", action="store_true", help="where its file is, as a run finds it, and what it uses")
-        sub.add_parser("promote", help="Let a habit act on its own: your yes, as /habits yes").add_argument("name")
+        sub.add_parser("yes", help="Say yes: let a habit act on its own (/habits yes)").add_argument("name")
+        sub.add_parser("promote").add_argument("name")  # the old word for yes: accepted, not listed
         sub.add_parser("pause", help="Pause the habits: none starts from a message or a schedule (a call by name "
                        "still runs)")
         sub.add_parser("resume", help="Start the habits again after a pause")
-        sub.add_parser("undo", help="Undo your last status change of the last 24 h").add_argument(
+        sub.add_parser("undo", help="Undo your last change of the last 24 h").add_argument(
             "name", nargs="?", default="")
+        sub.add_parser("rest", help="Put a habit to rest (a scheduled one loses its cron job)").add_argument("name")
+        sub.add_parser("retire").add_argument("name")  # the old word for rest: accepted, not listed
         for verb, text in (("tick", "Run a scheduled habit once, as its schedule does (used by cron)"),
-                           ("retire", "Put a habit to rest by hand (a scheduled one loses its cron job)"),
-                           ("reset", "Send a habit back to learning with fresh scores (one called by name: back "
+                           ("reset", "Send a habit back to learning with fresh numbers (one called by name: back "
                                      "to called by name)")):
             sub.add_parser(verb, help=text).add_argument("name")
-        sub.add_parser("check", help="Validate a reflex.yml file").add_argument("file")
-        run = sub.add_parser("run", help="Run a habit here without the model, dry unless --live; nothing is "
+        dream = sub.add_parser("dream", help="The dream, now: re-read Hermes's history and show what comes back; it never says "
+                               "yes to anything")
+        dream.add_argument("--json", action="store_true", help="print one JSON object")
+        dream.add_argument("--days", type=_days, default=None, metavar="N",
+                           help="how many days of history to read, 1 to 60 (default 60)")
+        dream.add_argument("--home", metavar="FOLDER", default=None,
+                           help="read the history of another Hermes home (its state.db, read only); drafts and "
+                                "proposals stay in this one")
+        sub.add_parser("check", help="Check a reflex.yml file").add_argument("file")
+        run = sub.add_parser("run", help="Run a reflex here without the model, as a test unless --live; nothing is "
                              "recorded; prints the path of the replay page of that run")
         run.add_argument("target", help="a habit's name, or a path to a reflex.yml file")
         run.add_argument("--input", action="append", default=[], metavar="NAME=VALUE",
@@ -255,10 +316,10 @@ class Display:
         run.add_argument("--within", metavar="DIR", default=None,
                          help="start its commands in DIR; with --live, refuse any write outside DIR")
         run.add_argument("--message", metavar="TEXT", default=None,
-                         help="a user message: a request habit runs only if its trigger would take it")
+                         help="a user message: the reflex runs only if a message like it would start it")
         run.add_argument("--memory", metavar="FILE", default=None,
                          help="a JSON file that keeps what check: changed compares with, from one run to the next")
-        sub.add_parser("cleanup", help="Remove the cron job and script of every scheduled habit (run it before removing the plugin)")
+        sub.add_parser("cleanup", help="Remove the cron job and file of every scheduled habit (run it before removing the plugin)")
 
     def cli_handle(self, args) -> int:
         verb = getattr(args, "habits_command", None) or "list"
@@ -272,19 +333,33 @@ class Display:
                 if getattr(args, "json", False):
                     return self.cli_show(args.name)
                 if catalog.find(args.name) is None:
+                    # a draft is no habit yet: show what the dream saw, the reflex it would become and the words to type
+                    shown = self.draft_detail(args.name)
+                    if shown:
+                        print(terminal(shown))
+                        return 0
                     print(say("unknown_cli", self.lang(), name=args.name))
                     return 1
                 print(terminal(self.detail(args.name) + self.asks(args.name)))
+            elif verb == "dream":
+                return self.cli_dream(getattr(args, "days", None), getattr(args, "json", False), getattr(args, "home", None))
             elif verb == "check":
-                return _check_file(args.file)
+                return _check_file(args.file, self.allowances(), self.lang())
             elif verb == "view":
                 return self.cli_view(args.name)
             elif verb == "run":
+                why = self.strict_refusal(args.target)
+                if why:
+                    print(json.dumps(public({"status": "refused", "message": why}), ensure_ascii=False) if args.json
+                          else say("run_refused", self.lang(), why=why))
+                    return 1
+                if self.cli_run_draft(args):
+                    return self._draft_run_code
                 return self.cli_run(args.target, args.input, args.live, args.json, getattr(args, "within", None),
                                     getattr(args, "message", None), getattr(args, "memory", None))
             elif verb == "tick":
                 return self.cli_tick(args.name)
-            elif verb == "promote":  # the user's yes in a terminal: on record as the terminal's
+            elif verb in ("yes", "promote"):  # the user's yes in a terminal: on record as the terminal's
                 moved, said = self.yes(args.name, by="cli")
                 print(terminal(said))
                 return 0 if moved else 1
@@ -296,24 +371,84 @@ class Display:
                 return 0 if row else 1
             elif verb == "cleanup":
                 _load_tools()
-                print(f"removed: {self.unschedule_all() or 'nothing'}")
-            elif verb in ("retire", "reset"):
+                print(self.removed(self.unschedule_all()))
+            elif verb in ("rest", "retire", "reset"):
+                verb = "rest" if verb == "retire" else verb
                 habit = catalog.find(args.name)
                 if habit is None or habit.origin == "example":
-                    print(say("unknown_cli" if habit is None else "example_byname", self.lang(), name=args.name))
+                    print(terminal(self.draft_note(args.name) or say(
+                        "unknown_cli" if habit is None else "example_byname", self.lang(), name=args.name)))
                     return 1
-                status = "retired" if verb == "retire" else "shadow"
+                status = "retired" if verb == "rest" else "shadow"
                 self.ledger.set_status(habit.name, self.version(habit), status, f"by hand ({verb})", by="cli")
-                if verb == "retire" and habit.kind == "watch":
+                if verb == "rest" and habit.kind == "watch":
                     _load_tools()
-                    removed = self.unschedule(habit.name)
-                    print(f"removed: {removed or 'nothing'}")
+                    print(self.removed(self.unschedule(habit.name)))
                 shown = _status(habit, {"status": status})
                 print(f"{habit.name}: {say('state_byname' if shown == 'live' else f'state_{shown}', self.lang())}")
             return 0
         except Exception as exc:
             print(say("error", self.lang(), kind=type(exc).__name__, exc=exc))
             return 1
+
+    def removed(self, what) -> str:
+        """The line after a cron job or a file was removed: what it was, or nothing."""
+        lang = self.lang()
+        return say("removed", lang, what=what or say("removed_nothing", lang))
+
+    def cli_dream(self, days: int | None = None, as_json: bool = False, home: str | None = None) -> int:
+        """`hermes habits dream`: a dream now, whatever the daily rule says. It reads, spots and sets drafts
+        practicing; it never says yes to anything. Nothing wrong with an empty or unreadable history: exit 0."""
+        if home and not Path(home).expanduser().is_dir():
+            print(say("dream_home_missing", self.lang(), home=home))
+            return 1
+        summary = self.dream_now(manual=True, days=days, home=home)
+        if as_json:
+            print(json.dumps(public(summary), ensure_ascii=False))
+        else:
+            print(terminal(self.dream_text(summary, days)))
+        return 0
+
+    def strict_refusal(self, target: str) -> str:
+        """With permissions strict, a test run says what `check` says of a deleting reflex: refused, before the run (a
+        test run plans what a real one would do). "" when nothing is refused or the switch is not strict."""
+        if self.setting("permissions") != "strict":
+            return ""
+        try:
+            if "/" in str(target) or str(target).endswith((".yaml", ".yml")):
+                from .tools import graph_source, loaded
+                scenario = loaded(graph_source({"file": target}))[0]
+            else:
+                habit = catalog.find(target)
+                scenario = habit.graph if habit is not None else None
+            if not isinstance(scenario, dict):
+                return ""
+            return "; ".join(str(i) for i in graph.validate(scenario, **self.allowances())[:2])
+        except Exception:  # the run itself says what is wrong with such a file
+            return ""
+
+    def cli_run_draft(self, args) -> bool:
+        """`hermes habits run <draft>`: the draft's reflex as a test run, as a saved reflex's would be (a read runs, the
+        rest is planned, nothing is written). True when the target is a draft: the exit code is then in
+        self._draft_run_code."""
+        target = str(args.target)
+        if "/" in target or target.endswith((".yaml", ".yml")) or catalog.find(target) is not None:
+            return False
+        row = self.draft_row(target)
+        if row is None or not isinstance(row.get("graph"), (dict, str)):
+            return False
+        import tempfile
+        from . import yaml12
+        scenario = row["graph"] if isinstance(row["graph"], dict) else json.loads(row["graph"])
+        for node in (scenario.get("nodes") or {}).values():  # a draft is not proven: a call to the web is only planned
+            if isinstance(node, dict) and node.get("do") in ("web_search", "web_extract"):
+                node["read"] = False
+        with tempfile.TemporaryDirectory(prefix="habits-draft-") as folder:
+            path = Path(folder) / f"{target}.yml"
+            path.write_text(yaml12.dump(scenario), encoding="utf-8")
+            self._draft_run_code = self.cli_run(str(path), args.input, False, args.json, getattr(args, "within", None),
+                                               getattr(args, "message", None), getattr(args, "memory", None))
+        return True
 
     def cli_show(self, name: str) -> int:
         """`hermes habits show <name> --json`: the file a run of that name reads, and the habits it uses (the bench
@@ -325,8 +460,8 @@ class Display:
             return 1
         nodes = habit.graph.get("nodes") if isinstance(habit.graph.get("nodes"), dict) else {}
         uses = sorted({n["use"] for n in nodes.values() if isinstance(n, dict) and isinstance(n.get("use"), str)})
-        print(json.dumps({"habit": habit.name, "path": str(habit.path), "kind": habit.kind, "origin": habit.origin,
-                          "version": habit.version, "valid": habit.valid, "issues": habit.issues, "uses": uses},
+        print(json.dumps(public({"habit": habit.name, "path": str(habit.path), "kind": habit.kind, "origin": habit.origin,
+                                 "version": habit.version, "valid": habit.valid, "issues": habit.issues, "uses": uses}),
                          ensure_ascii=False))
         return 0
 
@@ -351,21 +486,61 @@ def _plain(text) -> str:
     return "".join(c if c.isprintable() else " " for c in str(text))
 
 
+def _cut(text: str, size: int = STEP_TEXT) -> str:
+    """A text of at most `size` characters, or a little more when its first word is longer: it is cut after a whole word
+    (a path is one word) and a cut always ends with …; a text that fits is given as it is."""
+    text = text.strip()
+    if len(text) <= size:
+        return text
+    space = text.rfind(" ", 1, size)
+    if space < 1:  # the first word is longer than the room: it stays whole
+        space = text.find(" ")
+        if space < 0:
+            return text
+    return text[:space].rstrip() + "…"
+
+
 def _short(text) -> str:
-    return " ".join(_plain(text).split())[:STEP_TEXT]
+    return _cut(" ".join(_plain(text).split()))
 
 
-def _step_words(node: dict) -> str:
-    """One step in a few words: its verb, then what it does, then where it leads."""
+WIDTH = 100  # a full step wraps at this width, between words
+
+
+def _wrapped(line: str) -> str:
+    """A long line broken between words (a path or a long option stays whole), the next lines indented under it."""
+    return textwrap.fill(line, width=WIDTH, subsequent_indent="        ", break_long_words=False,
+                         break_on_hyphens=False)
+
+
+def _full(text) -> str:
+    return " ".join(_plain(text).split())
+
+
+def _step_words(node: dict, full: bool = False, lang: str = "en") -> str:
+    """One step in a few words: its verb, then what it does, then where it leads. `full`: nothing is cut (the whole
+    command, the whole call with its arguments, the whole question and message) and the folder is said."""
     from .cockpit import _step
     kind = graph.kind_of(node)
     if kind == "do":
-        command = _step(node) if node.get("do") == "terminal" else ""
-        words = f"do {node['do']}" + (f" {command[:STEP_TEXT].rstrip()}" if command else "")
+        args = node.get("args") if isinstance(node.get("args"), dict) else {}
+        if full and node["do"] == "terminal":
+            words = f"do terminal {_full(args.get('command', ''))}"
+            notes = ([say("shown_in", lang, where=_full(args["workdir"]))]
+                     if isinstance(args.get("workdir"), str) and args["workdir"].strip() else [])
+            notes += [say("shown_timeout", lang, n=args["timeout"])] if isinstance(args.get("timeout"), (int, float)) \
+                and not isinstance(args.get("timeout"), bool) else []
+            notes += [say("shown_background", lang)] if args.get("background") is True else []
+            words += f"   ({', '.join(notes)})" if notes else ""
+        elif full:
+            words = f"do {node['do']}" + (" " + _full(json.dumps(args, ensure_ascii=False, default=str)) if args else "")
+        else:
+            command = _step(node) if node.get("do") == "terminal" else ""
+            words = f"do {node['do']}" + (f" {_cut(command.strip())}" if command else "")
     elif kind == "use":
         words = f"use {node['use']}"
     elif kind == "ask":
-        words = f'ask "{_short(node["ask"])}"'
+        words = f'ask "{_full(node["ask"]) if full else _short(node["ask"])}"'
     elif kind == "check":
         test = node["check"]
         if isinstance(test, dict) and test:
@@ -375,7 +550,7 @@ def _step_words(node: dict) -> str:
         else:
             words = "check"
     elif kind in ("end", "wake"):
-        words = f'{kind} "{_short(node[kind])}"'
+        words = f'{kind} "{_full(node[kind]) if full else _short(node[kind])}"'
     else:
         words = kind or "?"  # an llm step is told by its verb alone
     then = node.get("then")
@@ -384,9 +559,10 @@ def _step_words(node: dict) -> str:
     return f"{words} → {node['next']}" if isinstance(node.get("next"), str) else words
 
 
-def steps(graph_: dict) -> list[str]:
+def steps(graph_: dict, full: bool = False, lang: str = "en") -> list[str]:
     """One line per node, in the order a reader follows from the start (breadth first), then the nodes nothing leads
-    to (a fallback): "  <name>: <what it does> → <where it goes>"."""
+    to (a fallback): "  <name>: <what it does> → <where it goes>". `full` (what `show` prints): every step whole, a
+    long one wrapped between words; otherwise a step is cut at 60 characters, always ending with …."""
     nodes = graph_.get("nodes") if isinstance(graph_.get("nodes"), dict) else {}
     order, queue = [], [graph_.get("start")]
     while queue:
@@ -395,8 +571,9 @@ def steps(graph_: dict) -> list[str]:
             order.append(name)
             queue += graph.exits(nodes[name]) if isinstance(nodes[name], dict) else []
     order += [name for name in nodes if name not in order]
-    return [_plain(f"  {name}: {_step_words(nodes[name])}" if isinstance(nodes[name], dict) else f"  {name}: ?")
-            for name in order]
+    out = [_plain(f"  {name}: {_step_words(nodes[name], full, lang)}" if isinstance(nodes[name], dict) else f"  {name}: ?")
+           for name in order]
+    return [_wrapped(line) for line in out] if full else out
 
 
 def _trigger(trigger, lang: str = "en") -> str:
@@ -405,15 +582,17 @@ def _trigger(trigger, lang: str = "en") -> str:
         return say("trigger_name", lang)
     if trigger == "message":
         return say("trigger_request", lang)
+    if trigger == "skill":
+        return say("trigger_skill", lang)
     if isinstance(trigger, dict) and isinstance(trigger.get("every"), str):
-        return say("trigger_every", lang, every=trigger["every"]) + (
+        return say("trigger_every", lang, period=period(trigger["every"], lang)) + (
             say("trigger_at", lang, at=trigger["at"]) if isinstance(trigger.get("at"), str) else "")
     return json.dumps(trigger, ensure_ascii=False, default=str)  # an invalid trigger, as written
 
 
 def _status(habit: catalog.Habit, summary: dict) -> str:
     """What a habit is now: a one-off has no shadow phase, it runs live by name until it is retired."""
-    if habit.kind == "one-off" and summary.get("status") != "retired":
+    if habit.kind == "one-off" and summary.get("status") != "retired" and not graph.starts_on_skill(habit.graph):
         return "live"
     return summary.get("status", "shadow")
 
@@ -427,30 +606,24 @@ def _why(summary: dict) -> str:
     return ""
 
 
-def tokens(n) -> str:
-    """12345 -> 12.3k, 0 -> 0."""
-    n = int(n or 0)
-    return f"{n / 1_000_000:.1f}M" if n >= 1_000_000 else f"{n / 1000:.1f}k" if n >= 1000 else str(n)
-
-
-def _check_file(path: str) -> int:
-    """`hermes habits check <file>`: what habit_run and habit_save would say of the graph, without running it: the
+def _check_file(path: str, allow: dict | None = None, lang: str = "en") -> int:
+    """`hermes habits check <file>`: what habit_run and habit_save would say of the reflex, without running it: the
     same file checks, the same fixes of the usual slips (said, so the file can be written so), the same rules,
     Hermes's tool names and their arguments."""
     from .tools import graph_source, loaded, problems_of
     try:
         habit, notes = loaded(graph_source({"file": path}))
     except ValueError as exc:
-        print(f"format: {exc}")
+        print(say("check_format", lang, why=exc))
         return 1
     _load_tools()
     for note in notes:
-        print(f"normalized: {note}")
-    issues = problems_of(habit)
+        print(say("check_normalized", lang, note=note))
+    issues = problems_of(habit, allow=allow)
     for issue in issues:
         print(issue)
     if not issues:
-        print("valid: the graph follows every rule.")
+        print(say("check_valid", lang))
     return 1 if issues else 0
 
 

@@ -21,15 +21,15 @@ logger = logging.getLogger(__name__)
 
 GATE_SILENT = json.dumps({"wakeAgent": False})
 GATE_WAKE = json.dumps({"wakeAgent": True})
-WATCH_JUDGE_SHADOW = 0.1  # share of silent shadow checks the LLM judges
-WATCH_JUDGE_ACTIVE = 0.05  # share of silent active checks the LLM judges
+WATCH_JUDGE_SHADOW = 0.1  # share of silent checks the LLM judges while the habit is learning
+WATCH_JUDGE_ACTIVE = 0.05  # share of silent checks the LLM judges once it is automatic
 FAILED_CHECKS = 3  # checks in a row a failed read must wake before the model hears of it: a flaky read wakes no one
 HOLD_MINUTES = 360  # only a watch that checks more often holds them: 3 silent days is too long for a daily one
 
 WATCH_PROMPT = (
     "A Habits watch woke you. The script output above says what the watch found and what is left to do. "
     "Do what is left, or tell the user in two sentences at most what changed. If the watch stopped because of "
-    "its own graph (a page that moved, a case it does not know), propose a repair to the user: what is wrong and "
+    "its own steps (a page that moved, a case it does not know), propose a repair to the user: what is wrong and "
     "what you would change in its reflex.yml. Save it with habit_save under the same name only once the user agrees."
 )
 
@@ -46,7 +46,7 @@ class Watch:
         binary = shutil.which("hermes") or str(Path.home() / ".local" / "bin" / "hermes")
         script.write_text(
             f"#!/bin/bash\n# Written by the Habits plugin for the watch \"{habit.name}\". "
-            f"Remove with: hermes habits retire {habit.name}\n"
+            f"Remove with: hermes habits rest {habit.name}\n"
             "# A failure (or the plugin removed) prints a silent gate and exits 0: it never wakes the model.\n"
             f"out=$({shlex.quote(binary)} habits tick {shlex.quote(habit.name)} 2>/dev/null) "
             "|| out='{\"wakeAgent\": false}'\n"
@@ -163,7 +163,7 @@ class Watch:
                     else f'failed {FAILED_CHECKS} checks in a row, at its step "{step}"')
             lines.insert(0, f'Habits watch "{habit.name}" {head}: the earlier ones woke no one, and {then}.')
         lines = told + lines
-        lines += ["", f"Its graph: {habit.path}"]  # cron gives the skill's text, not its folder
+        lines += ["", f"Its reflex: {habit.path}"]  # cron gives the skill's text, not its folder
         # A cron job saved before repairs were proposed still says "repair it": every wake says otherwise.
         lines.append("Do not call habit_save for this watch before the user agrees to the change.")
         if not active:

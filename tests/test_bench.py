@@ -1290,7 +1290,7 @@ WATCH_CREATE = [CHECKED, said("terminal", {"command": f"hermes habits run {D5} -
     said("habit_save", {"name": "probe-empty", "scenario": {}},
          {"status": "refused", "issues": ['format: spec must be "habits/0.1".']}),
     said("habit_save", {"name": "probe-onekey", "scenario": {"spec": "habits/0.1"}},
-         {"status": "refused", "issues": ["format: nodes must be a non-empty mapping of named nodes."]})]
+         {"status": "refused", "issues": ["format: nodes must be a non-empty mapping of named steps."]})]
 
 
 def test_first_try_is_the_first_graph_the_plugin_judged_and_save_tries_count_what_never_landed():
@@ -1685,7 +1685,7 @@ def test_a_run_that_read_the_web_is_read_back_whole(setup, monkeypatch, tmp_path
     code, out, _ = plugin_tests.cli_run(habits, capsys, str(tmp_path / "news" / "reflex.yml"))
     back = bench.last_json("notice\n" + json.dumps(out, ensure_ascii=False))
     assert "untrusted" in out and "untrusted" not in back
-    assert back["doubted"][0]["item"] == plugin_tests.INJECTED and back["asks"][0]["node"] == "judge"
+    assert back["doubted"][0]["item"] == plugin_tests.INJECTED and back["asks"][0]["step"] == "judge"
     assert back["message"].startswith("Nouvelles") or back["status"] == "wake"
     assert bench.last_json(json.dumps(OUT)) == OUT  # a run that read nothing outside is as it was
 

@@ -1,0 +1,17 @@
+# How full is the disk? One read, no model call: run it by name, habit_run {name: disk-space}.
+# Started by a call only (no trigger). The read only prints a table, so the run needs no question.
+spec: habits/0.1
+start: disk
+fallback: help
+limits: {seconds: 15, tools: 1, questions: 0, llm: 0}
+nodes:
+  disk:                          # df prints sizes of the home disk; nothing is changed
+    do: terminal
+    read: true
+    args: {command: "df -h ~ || true"}
+    as: disk
+    next: done
+  done:
+    end: "Disk space of the home folder:\n{disk}"
+  help:
+    wake: "The disk check stopped before the end (the report says where). Run df -h ~ by hand and answer with the free space."

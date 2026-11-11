@@ -22,9 +22,8 @@ def test_the_footers_in_french_and_english():
 
 
 def test_the_footer_names_the_decision_model_that_answered():
-    assert texts.calls(0, "en", clef=True) == "0 model calls (+ Clef)"
-    assert texts.calls(0, "fr", clef=True) == "0 appel au modèle (+ Clef)"
-    assert texts.calls(0, "en", jev=True, clef=True) == "0 model calls (+ Jev, Clef)"
+    assert texts.calls(0, "en", jev=True) == "0 model calls (+ Jev)"
+    assert texts.calls(0, "fr", jev=True) == "0 appel au modèle (+ Jev)"
     assert texts.calls(1, "en") == "1 model call"
 
 

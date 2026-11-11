@@ -1,10 +1,10 @@
 name: habits
 version: 0.1.0
 description: >-
-  Reflexes for Hermes: two levels handing work to each other, Hermes thinks
-  and a habit acts, a small fixed graph that does a known task in about a
-  second and always comes back done, or handed back with what is left. It acts
-  alone after practising and your yes, except a read-only habit you asked for.
+  Reflexes for Hermes: the tool calls and small decisions Hermes repeats,
+  grouped into small files of steps that Hermes runs as written, with no model
+  turn between the steps. A reflex ends done, or handed back with what is left,
+  and acts alone only after your yes.
 author: Émilien Waltz
 license: MIT
 homepage: https://github.com/emiwltz/hermes-habits
@@ -13,7 +13,7 @@ requires_hermes: ">=0.22.5"
 platforms: [linux, macos]
 optional_env:
   - name: HABITS_OFF
-    description: "Set to a non-empty value to turn every hook of the plugin off (the tools stay), for example to measure Hermes without habits."
+    description: "Set to a non-empty value to turn every hook except the guard off (the tools stay), for example to measure Hermes without habits."
     password: false
 provides_tools:
   - habit_run
@@ -25,82 +25,54 @@ provides_hooks:
   - post_llm_call
   - post_api_request
   - on_session_finalize
+  - transform_tool_result
 python_dependencies:
   - "pyyaml>=6.0,<7"
 config_schema:
-  promote:
+  learning:
     type: str
-    enum: [ask, auto]
-    default: ask
-    label: Acting on its own
-    description: "ask: a habit that practised well enough waits for your yes in /habits before it acts on its own. auto: the thresholds alone say yes."
+    enum: ["off", suggest, practice, auto]
+    default: suggest
+    label: Learning
+    description: "off: nothing is spotted or practiced (habits already automatic keep acting). suggest (the default): the dream shows what comes back and nothing is run until you say try. practice: up to 3 reflexes practice on their own beside Hermes and wait for your yes. auto: every reflex the dream made becomes automatic as soon as it is ready, with no question and one line of news (one step or several, reading or acting), except a reflex with a deleting command or a command Hermes would ask approval for, which always waits for your yes."
+  caution:
+    type: str
+    enum: [relaxed, normal, strict]
+    default: normal
+    label: Caution
+    description: "How much proof a habit needs before it is ready and before it rests: relaxed asks for fewer matching runs, strict for more."
+  dream:
+    type: str
+    enum: [daily, manual]
+    default: daily
+    label: The dream
+    description: "daily: the dream re-reads what Hermes did after a reply, once a day at most. manual: only when you run it. Any other word is read as manual."
+  decision_model:
+    type: str
+    enum: [auto, jev, hermes]
+    default: auto
+    label: Decision model
+    description: "The small model that answers a habit's questions. auto asks Jev when its key is set, else your Hermes model. jev asks Jev first, then your Hermes model. hermes asks your Hermes model only; no question goes to Jev."
+  permissions:
+    type: str
+    enum: [hermes, strict]
+    default: hermes
+    label: Permissions
+    description: "hermes: a habit you said yes to may run, inside a Hermes turn, the commands Hermes's own approval rules allow (they ask you, or refuse). strict: the plugin refuses every sensitive or deleting command beforehand. Any other word is read as strict."
+  model_text:
+    type: str
+    enum: [quoted, never]
+    default: quoted
+    label: Model text in commands
+    description: "quoted: text written by a model may enter a command as one quoted piece, never as code. never: it never enters a command. Any other word is read as never."
   language:
     type: str
     enum: [en, fr]
     default: en
     label: Language
     description: The language of the plugin's own lines (/habits, hermes habits list, the news of a habit).
-  backend:
-    type: str
-    enum: [auto, jev, clef, llm]
-    default: auto
-    label: Decision backend
-    description: The fast decision model that answers a habit's questions. auto asks Jev when its key is set, else Clef when its token and account are set, then your Hermes model. A name asks that one first.
-  clef_model:
-    type: str
-    enum: [clef-flash, clef]
-    default: clef-flash
-    label: Clef model
-    description: Which Clef model answers when Clef is used. clef-flash is the fast one.
-  min_confidence:
-    type: float
-    default: 0.8
-    description: Below this confidence, a decision becomes a doubt and is handed back to Hermes. Also the confidence of "run it as it is" needed before a habit picked for a message runs.
-  trigger_confidence:
-    type: float
-    default: 0.7
-    description: Confidence needed to pick a habit for a message (the message door), before it is confirmed.
-  promote_runs:
-    type: int
-    default: 12
-    description: Practice runs compared with Hermes's own answer before a habit may act on its own.
-  promote_agreement:
-    type: float
-    default: 0.9
-    description: Share of those runs that must agree with Hermes before a habit may act on its own.
-  retire_window:
-    type: int
-    default: 20
-    description: Recent comparisons of a habit that acts on its own used to decide whether it rests.
-  retire_agreement:
-    type: float
-    default: 0.75
-    description: Below this agreement over that window, a habit that acts on its own goes to rest.
-  spot_check:
-    type: float
-    default: 0.1
-    description: Share of a habit's own answers that Hermes also does beside it, to keep measuring.
-  judge:
-    type: bool
-    default: true
-    description: Let your Hermes model match equivalent steps when they are not written the same way (practice runs only).
-  direct:
-    type: bool
-    default: true
-    label: Direct answer
-    description: When a habit that acts on its own does the whole request without reading the web, it answers you itself, with no model call (Hermes 0.22.6 and later).
   typesafe_api_key:
     type: secret
     env: TYPESAFE_API_KEY
-    label: TypeSafe (Jev) API key
+    label: Jev key
     description: Optional. Fast decisions with Jev.
-  cloudflare_api_token:
-    type: secret
-    env: CLOUDFLARE_API_TOKEN
-    label: Cloudflare API token
-    description: Optional. Fast decisions with Clef on Cloudflare Workers AI.
-  cloudflare_account_id:
-    type: secret
-    env: CLOUDFLARE_ACCOUNT_ID
-    label: Cloudflare account ID
-    description: Optional. Fast decisions with Clef on Cloudflare Workers AI.

@@ -22,9 +22,14 @@ READS = [
     "test -f ~/x && cat ~/x", "[ -d ~/x ] && echo yes || echo no", "hostname -s", "uname -a", "file ~/x",
     "grep x f |\n  wc -l", "stat -f %m ~/x", "ls '$(touch x)'",
     "printf '%s\n' {item}", 'grep -c "end$" f', "echo $",
+    "[ 3 -gt 2 ] && echo big", "test -n 'a b' -a -e ~/x",
 ]
 
 WRITES = [
+    # bash's test reads a subscript as arithmetic and runs a substitution in it; /dev/tcp opens a connection
+    "test -v 'a[$(touch MARK)]'", "[ -v 'a[$(touch MARK)]' ]", "[ -R x ]", "[ 'a[$(touch x)]' -eq 1 ]",
+    "[ '`touch x`' -lt 1 ]", "test \"$n\" -eq 1", "[ $(id) -gt 1 ]",
+    "cat < /dev/tcp/127.0.0.1/9", "cat < /dev/udp/127.0.0.1/9", "cat </dev/tcp/h/80", "cat < $f",
     # options and arguments that make a reader write
     "sort -o out f", "sort --out=x f", "sort -no x f", "uniq in out", "uniq - out", "tee f",
     "sed -i 's/a/b/' f", "sed -i '' 's/a/b/' f", "sed 's/a/b/w out' f", "sed 's/a/b/e' f", "sed -n 'w out' f",
@@ -93,16 +98,55 @@ def test_uses_finds_a_command_s_verb(command, found):
     assert shell.uses(command, "hc", "read") is found
 
 
-# git reads only where no repository config can name a program: a planted .git ran one for each of these
-# (diff.external, a textconv driver, core.fsmonitor, gpg through log.showSignature).
+# A developer's most common gestures are reads: git status, log, diff, show, blame, describe, ls-files and shortlog,
+# each with the options that only choose what to print. (Until 11 November they were writes, because a repository's
+# own .git/config can name a program they run; a reflex could then never mark them read: true and the dream could
+# never run them beside Hermes. Such a program runs the same when Hermes types the line itself.)
 @pytest.mark.parametrize("command", [
-    "git diff", "git --no-pager diff --stat", "git status --short", "git log --oneline -3", "git log -p -1",
-    "git show", "git blame f.txt", "git ls-files", "git describe --dirty", "git shortlog -s",
-    "git -C ~/vault log --since='1 day ago' --name-only", "ssh server 'git -C ~/x status'",
+    "git status", "git status --short", "git status -sb", "git status --porcelain=v2 --branch", "git status -uno src",
+    "git -C ~/proj status", "git --no-pager -C {dir} status --short", "git --no-optional-locks status",
+    "git log", "git log --oneline -3", "git log -p -1", "git log -n 5 --stat", "git log --oneline --graph --all -20",
+    "git -C ~/vault log --since='1 day ago' --name-only", "git log --pretty=format:'%h %an %s' --no-merges main..HEAD",
+    "git log --author=bob -5 -- src/app.py", "git log -S needle --oneline", "git log -L 10,20:src/app.py",
+    "git diff", "git --no-pager diff --stat", "git diff --cached --name-only", "git diff HEAD~1 -- src",
+    "git diff -U5 --no-ext-diff main...HEAD", "git diff --stat=120 --diff-filter=AM", "git diff -w --word-diff",
+    "git show", "git show --stat HEAD~2", "git show HEAD:README.md", "git show --name-only --format=%s -3",
+    "git rev-parse --abbrev-ref HEAD", "git describe --tags --always --dirty", "git describe --abbrev=0",
+    "git ls-files", "git ls-files -co --exclude-standard", "git ls-files -- '*.py' | wc -l",
+    "git blame f.txt", "git blame -L 10,20 -w src/app.py", "git shortlog -sn", "git shortlog -s --since=1.week HEAD",
+    "git branch --show-current", "ssh -o BatchMode=yes server 'git -C ~/x status --short'",
+    "git log --oneline -5 | head -3", "git status --short | wc -l", "git diff -- --output=x",
 ])
-def test_git_that_can_run_a_repository_s_own_programs_is_a_write(command):
+def test_git_that_only_looks_is_a_read(command):
+    assert shell.reads_only(command), shell.why(command)
+
+
+# Anything else stays a write: a setting given on the line (an alias is one), a file to write, a pager, a program the
+# line asks git to run, an option the list does not hold, and every sub-command that changes the repository.
+@pytest.mark.parametrize("command", [
+    "git -c alias.status='!touch x' status", "git -c alias.log=!sh log", "git -c core.pager='sh -c x' log",
+    "git -c core.fsmonitor=/tmp/x status", "git -c diff.external=/tmp/x diff", "git -c color.ui=never status",
+    "git -c core.quotepath=off log", "git log -c core.pager=x",
+    "git diff --output=FILE", "git diff --output FILE", "git diff --outp=FILE", "git log --output=x -1",
+    "git show --output=x", "git log -p --out=x",
+    "git --paginate log", "git -p status", "git -P log", "git --paginate diff", "git --exec-path=/tmp/x status",
+    "git --git-dir=/tmp/x status", "git --work-tree=/tmp status", "git --config-env=core.pager=X log",
+    "git diff --ext-diff", "git log -p --ext-diff", "git show --ext-diff", "git diff --ext", "git diff --textconv",
+    "git show --textconv HEAD:f", "git log --show-signature", "git log --format=%G?", "git log --pretty='%h %GS'",
+    "git show --format={fmt}", "git log --format {fmt}", "git diff -O orderfile", "git diff -Oorder", "git diff --no-index a b",
+    "git log --stdin", "git blame --contents x f", "git status --unknown-option", "git log -pO", "git diff $X",
+    "git status $(touch x)", "git log --since $X", "git stash list", "git stash", "git checkout .", "git reset --hard",
+    "git clean -n", "git fetch", "git pull", "git add -A", "git gc", "git grep -O x", "git difftool", "git log; git commit -m x",
+    "GIT_EXTERNAL_DIFF=x git diff", "GIT_PAGER=x git log", "git status > f", "git", "git -C", "git -C ~/x",
+    "git ls-files --unknown", "git describe --exec=x", "git shortlog --format=%G?", "git status -sbO",
+])
+def test_git_beyond_a_look_is_a_write(command):
     assert not shell.reads_only(command)
-    assert "own .git/config" in shell.why(command)
+
+
+def test_the_reason_a_git_line_is_a_write_names_what_reads():
+    said = shell.why("git log --output=x")
+    assert "status" in said and "log" in said and "--output" in said and "-c" in said
 
 
 # A reader written as its path in a standard bin folder is that reader: ssh's PATH on the Mac lacks ~/.local/bin.
@@ -271,7 +315,8 @@ def test_the_templates_an_ssh_remote_shell_reads_again(command, remote):
 # on "control characters": the reader saw its own template mark inside the $( ). A template there is one quoted word,
 # the same as outside it; a write inside it is still a write.
 @pytest.mark.parametrize("command, reads", [
-    ("test $(date +%s) -lt $(jq -r '.status_ms/1000|floor+1200' ~/hc/get-{item}.json) && echo recent || echo old", True),
+    ("test $(date +%s) -lt $(jq -r '.status_ms/1000|floor+1200' ~/hc/get-{item}.json) && echo recent || echo old", False),  # test -lt reads its operands as arithmetic
+        ("test $(date +%s) = $(jq -r .t ~/hc/get-{item}.json) && echo same", True),
     ("cat $(ls ~/notes/{item})", True), ("echo `jq -r .cwd ~/hc/get-{item}.json`", False),
     ("ls $(cp ~/a ~/{item})", False), ("echo $({item})", False), ("echo $(awk {item} f)", False),
     ("echo $(ls \x01)", False),  # the reader's own mark, written in the line itself: still refused

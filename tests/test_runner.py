@@ -499,7 +499,7 @@ def test_llm_answer_of_the_wrong_type_takes_the_error_exit():
     assert go(habit, env(llm=lambda i, t, s: {"count": "many"})).node == "manual"
 
 
-# Section 6 and 14: a value written by an llm node never enters a terminal command.
+# Section 6 and 14: a value written by an llm step never enters a terminal command.
 def test_llm_value_is_refused_in_a_terminal_command_at_runtime():
     habit = small(
         look={"llm": "Pick a folder name.", "schema": {"folder": "string"}, "as": "pick", "next": "make"},
@@ -597,7 +597,7 @@ def test_a_sub_habits_llm_doubts_never_enter_a_callers_command_through_the_error
     environment = env(tool, answer=lambda q, s: ("yes", 0.6), habits={"scan": sub}.__getitem__,
                       llm=lambda i, t, s: {"files": ["$(touch /tmp/x) notes.md"]})
     result = go(habit, environment)
-    assert commands(tool) == [] and result.status == "wake" and "written by an llm node" in result.reason
+    assert commands(tool) == [] and result.status == "wake" and "written by an llm step" in result.reason
 
 
 def test_a_sub_habit_over_budget_still_hands_back_its_doubts():
@@ -1118,6 +1118,21 @@ def test_a_read_pipe_whose_first_command_fails_fails(tmp_path, command):
     assert result.node == "broken" and "failed in the pipe" in look["error"], look
 
 
+# Round 1 (notes-wake): a reflex that acts and ends on a pipe said "done" when the first program failed ("No such
+# file or directory", then tail). A step that acts fails like a read does, unless its author wrote "|| true".
+@pytest.mark.parametrize("command, reached", [
+    ("cat ./missing.md | tee ./out.txt", "broken"), ("ls ./missing | tail -n 1 > ./out.txt", "broken"),
+    ("cat ./missing.md | tee ./out.txt || true", "done"), ("cat ./notes/a.md | tee ./out.txt", "done"),
+    ("grep zzz ./notes/a.md | tee ./out.txt", "done"),
+])
+def test_a_pipe_that_acts_fails_when_a_program_before_the_last_fails(tmp_path, command, reached):
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "a.md").write_text("x\n")
+    step = {"do": "terminal", "args": {"command": command}, "error": "broken", "next": "done"}
+    result = go(small(look=step, done={"end": "Done."}, broken={"end": "Broken."}), env(bash(tmp_path)))
+    assert result.node == reached, (command, result.steps)
+
+
 # What still gives a value: grep's 1 is no match (wc counts 0), head may stop its writer early (SIGPIPE), and
 # the last command keeps its own rule (grep -c prints 0 and exits 1).
 @pytest.mark.parametrize("command, value", [
@@ -1135,17 +1150,17 @@ def test_a_read_pipe_that_works_gives_its_output_alone(tmp_path, command, value)
     assert tool.calls[0][1]["command"] == command + runner.PIPE_LINE  # the habit's own line, the status line after it
 
 
-# The status line only follows a read that is one pipe: a list keeps the shell's own status (its last command),
-# a write runs as written, and a tool that prints no status line (an older terminal, a fake) is read as before.
-def test_only_a_read_pipe_gets_the_status_line(tmp_path):
+# The status line follows a read or a step that acts when the line is one pipe: a list keeps the shell's own status
+# (its last command), and a tool that prints no status line (an older terminal, a fake) is read as before.
+def test_only_a_pipe_gets_the_status_line(tmp_path):
     (tmp_path / "notes").mkdir()
     tool = bash(tmp_path)
     result = piped("ls ./missing; ls ./notes", tool)
     assert [args["command"] for _, args in tool.calls] == ["ls ./missing; ls ./notes"] and result.node == "done"
-    tool = bash(tmp_path)
+    tool = bash(tmp_path)  # changed in round 1: a pipe that acts gets the status line too (it ran as written before)
     write = {"do": "terminal", "args": {"command": "ls ./notes | tee ./list.txt"}, "next": "done"}
     go(small(look=write), env(tool))
-    assert [args["command"] for _, args in tool.calls] == ["ls ./notes | tee ./list.txt"]
+    assert [args["command"] for _, args in tool.calls] == ["ls ./notes | tee ./list.txt" + runner.PIPE_LINE]
     tool = toolbox(lambda name, args: json.dumps({"output": "a.md", "exit_code": 0}))
     assert piped("ls ./notes | head -n 1", tool).values["found"] == "a.md"
 
@@ -1603,7 +1618,7 @@ def test_an_item_picked_from_an_llm_list_never_enters_a_command():
     environment = env(decider=deciders.Chain([deciders.Fake(lambda q, s: ("1", 0.95, {"1": 0.95}))]),
                       llm=lambda instructions, text, schema: {"files": ["a; rm -rf ~"]})
     result = go(habit, environment, checked=False)
-    assert result.status == "wake" and "written by an llm node" in result.reason
+    assert result.status == "wake" and "written by an llm step" in result.reason
 
 
 # A table an each built over an llm's list has that llm's text for keys, so the item a pick
@@ -1623,7 +1638,7 @@ def test_an_item_picked_from_a_table_over_an_llm_list_never_enters_a_command(tab
     environment = env(listing(), decider=chain, dry=True,
                       llm=lambda i, t, s: {"files": ["/Users/alex/Documents/private/scan-passport.pdf"]})
     result = go(habit, environment, checked=False)
-    assert result.status == "wake" and "written by an llm node" in result.reason and result.planned == []
+    assert result.status == "wake" and "written by an llm step" in result.reason and result.planned == []
 
 
 # The second rule 4 route. An each over an llm's list doubts an item (an unsure answer, a failed call,
@@ -1643,7 +1658,7 @@ def test_a_doubted_llm_item_never_enters_a_command(kind):
                       llm=lambda i, t, s: {"files": ["$(touch /tmp/x) notes.md", "ok.md"]})
     result = go(habit, environment, checked=False)
     assert not [a for _, a in tool.calls if a.get("command", "").startswith("cat")]
-    assert result.status == "wake" and "written by an llm node" in result.reason
+    assert result.status == "wake" and "written by an llm step" in result.reason
 
 
 def test_a_sub_habits_doubted_llm_item_never_reaches_its_caller():
@@ -1715,3 +1730,40 @@ def test_a_table_keeps_the_one_line_form_where_it_is_not_a_message():
     run.vars["v"] = {"a": 1, "b": True}
     assert run.text("{v}") == '{"a": 1, "b": true}'
     assert run.text("{v}", table=True) == "a: 1\nb: true"
+
+
+# ---- a read step is checked again once its template is filled -----------------------------------------------
+
+@pytest.mark.parametrize("url", ["file:///etc/hosts", "gopher://x/1", "ftp://x/y", "dict://x/y", "/etc/hosts", "-o"])
+def test_a_read_step_that_is_no_read_once_filled_is_handed_back(url):
+    habit = small(look={"do": "terminal", "read": True, "args": {"command": "curl -s {url}"}, "next": "done"})
+    habit["inputs"] = ["url"]
+    tool = toolbox()
+    result = go(habit, env(tool), {"url": url})
+    assert tool.calls == [] and result.status == "wake"
+
+
+def test_a_read_step_that_is_still_a_read_once_filled_runs():
+    habit = small(look={"do": "terminal", "read": True, "args": {"command": "curl -s {url}"}, "next": "done"})
+    habit["inputs"] = ["url"]
+    tool = toolbox()
+    result = go(habit, env(tool), {"url": "https://example.com/a?b=1"})
+    assert result.status == "end" and commands(tool) == ["curl -s 'https://example.com/a?b=1'"]
+
+
+def test_each_item_of_a_read_step_is_checked_when_filled():
+    habit = small(
+        look={"do": "terminal", "read": True, "args": {"command": "ls ~/Downloads"}, "as": "urls", "next": "get"},
+        get={"do": "terminal", "read": True, "each": "urls", "args": {"command": "curl -s {item}"}, "next": "done"})
+    tool = toolbox(lambda name, args: json.dumps({"output": "https://a.example/x\nfile:///etc/hosts", "exit_code": 0})
+                   if args["command"] == "ls ~/Downloads" else "ok")
+    go(habit, env(tool))
+    assert "curl -s file:///etc/hosts" not in commands(tool)
+    assert "curl -s https://a.example/x" in commands(tool)
+
+
+def test_a_step_not_marked_read_is_not_checked_again():
+    habit = small(look={"do": "terminal", "args": {"command": "echo {word}"}, "next": "done"})
+    habit["inputs"] = ["word"]
+    tool = toolbox()
+    assert go(habit, env(tool), {"word": "hello"}).status == "end"

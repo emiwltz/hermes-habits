@@ -1,10 +1,10 @@
 """The ledger: runs, scores, statuses and memory, in one SQLite file.
 
-A habit earns its autonomy: it starts in shadow, becomes active after enough
-compared runs that agree with the LLM (or, with promote: ask, once the user says
-yes to it when they are met), and retires when it stops agreeing. Status is kept
-per version (the graph's fingerprint): any change to the graph sends it back to
-shadow with fresh scores. It also keeps each status change and the news still to
+A habit earns its autonomy: it starts learning, becomes automatic after enough
+compared runs that agree with the LLM (or, by default, once the user says
+yes to it when they are met), and rests when it stops agreeing. Status is kept
+per version (the reflex's fingerprint): any change to the reflex sends it back to
+learning with fresh scores. It also keeps each status change and the news still to
 tell.
 """
 
@@ -18,6 +18,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 SCHEMA = """
@@ -35,28 +36,65 @@ CREATE TABLE IF NOT EXISTS memory (habit TEXT, node TEXT, value TEXT, PRIMARY KE
 CREATE TABLE IF NOT EXISTS calls (session TEXT, at REAL, tool TEXT, args TEXT);
 CREATE TABLE IF NOT EXISTS failures (habit TEXT PRIMARY KEY, checks INTEGER);
 CREATE TABLE IF NOT EXISTS news (
-  id INTEGER PRIMARY KEY, habit TEXT, version TEXT, kind TEXT, note TEXT, at REAL, told INTEGER DEFAULT 0);
+  id INTEGER PRIMARY KEY, habit TEXT, version TEXT, kind TEXT, note TEXT, at REAL, told INTEGER DEFAULT 0,
+  told_at REAL);
 CREATE TABLE IF NOT EXISTS history (
   id INTEGER PRIMARY KEY, habit TEXT, version TEXT, "from" TEXT, "to" TEXT, "by" TEXT, note TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS drafts (            -- the nursery: one row per spotted action (or grown group)
+  key TEXT PRIMARY KEY, name TEXT UNIQUE, tool TEXT, args TEXT, raw TEXT,
+  parts TEXT DEFAULT '[]', graph TEXT, reads INTEGER DEFAULT 0,
+  state TEXT,                                  -- spotted | practising | ready | asked | saved | rest | no | gone
+  turns INTEGER, days INTEGER, first_seen REAL, last_seen REAL, moments TEXT DEFAULT '{}',
+  same INTEGER DEFAULT 0, shape INTEGER DEFAULT 0, differs INTEGER DEFAULT 0, errors INTEGER DEFAULT 0,
+  seen INTEGER DEFAULT 0, streak INTEGER DEFAULT 0, since REAL, no_until REAL, habit TEXT, cwd TEXT);
+CREATE TABLE IF NOT EXISTS proposals (         -- change and rest of saved learned reflexes
+  id INTEGER PRIMARY KEY, kind TEXT, subject TEXT, detail TEXT DEFAULT '{}', status TEXT DEFAULT 'open',
+  at REAL, decided REAL, "by" TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS proposals_open ON proposals (kind, subject) WHERE status = 'open';
+CREATE TABLE IF NOT EXISTS practice (          -- each comparison: the verdict only, never an output
+  id INTEGER PRIMARY KEY, draft TEXT, at REAL, session TEXT, kind TEXT, verdict TEXT);
+CREATE INDEX IF NOT EXISTS practice_draft ON practice (draft, id);
+CREATE TABLE IF NOT EXISTS dreams (
+  id INTEGER PRIMARY KEY, started REAL, ended REAL, status TEXT,
+  turns INTEGER, sessions INTEGER, spotted INTEGER, proposed INTEGER, why TEXT, manual INTEGER DEFAULT 0);
 """
 
 logger = logging.getLogger(__name__)
 
-# Origins older versions wrote (the writer, the side door): such a habit still acts on its own only after the user's
+# Origins older versions wrote (the writer, the side entrance): such a habit still acts on its own only after the user's
 # yes, or the rules' in auto.
 MADE = ("learned", "portal")
 VOUCHERS = ("user", "cli", "rules")  # who may make such a habit active: the user, in a chat or a terminal; the rules
 # The user's own yes, which shows the model a habit Hermes made: the chat's alone. A terminal is the model's too (a
 # guard on its words misses xargs or a variable), and the rules' promotion is none.
 YES = ("user",)
-SCHEMA_VERSION = 2  # 1: an active state counts only with its move in the history; 2: the learning layer is gone
-OLD_PROPOSED = "proposed by an older version: /habits try lets it practise"
-NEWS = ("ready", "retired", "demoted")  # the kinds of news this version tells
+SCHEMA_VERSION = 3  # 1: an active state counts only with its move in the history; 2: the learning layer is gone;
+# 3: the nursery (drafts, proposals, practice, dreams), and the day a piece of news was told
+OLD_PROPOSED = "proposed by an older version: /habits try lets it practice"
+NEWS = ("ready", "retired", "demoted", "dream_learn", "dream_learned", "dream_proposal")  # the kinds of news told
 GRAPH = 12  # a version's first characters: its graph's fingerprint, the whole version before descriptions counted
 DAY = 86400
 TURN_DAYS = 14  # how long a run keeps its request
 MESSAGE_CHARS = 300
 UNDO_SECONDS = DAY
+
+
+CAUTION = {  # what each caution setting means in numbers; normal is what Habits always did
+    "relaxed": dict(ready_matches=2, rest_differs=3, promote_runs=8, promote_agreement=.85, retire_window=15,
+                    retire_agreement=.70, spot_check=.05, min_confidence=.75, trigger_confidence=.65),
+    "normal": dict(ready_matches=3, rest_differs=2, promote_runs=12, promote_agreement=.90, retire_window=20,
+                   retire_agreement=.75, spot_check=.10, min_confidence=.80, trigger_confidence=.70),
+    "strict": dict(ready_matches=5, rest_differs=1, promote_runs=20, promote_agreement=.95, retire_window=30,
+                   retire_agreement=.85, spot_check=.20, min_confidence=.85, trigger_confidence=.75)}
+DRAFT_FROZEN = ("name", "tool", "args", "raw", "parts", "graph", "reads")  # fixed once a draft leaves spotted
+DRAFT_JSON = ("args", "parts", "graph", "moments")
+DRAFT_FREE = ("turns", "days", "first_seen", "last_seen", "moments", "no_until", "habit", "cwd", "since")
+DRAFT_COLUMNS = DRAFT_FROZEN + DRAFT_FREE + ("same", "shape", "differs", "errors", "seen", "streak")
+PRACTICE_KINDS = ("read", "plan", "turn")
+PRACTICE_VERDICTS = ("same", "shape", "differs", "error", "seen")
+NO_DAYS = 30  # a no holds this long
+DREAM_DONE = ("ok", "empty", "partial")  # a dream that read something: it satisfies the daily rule
+DREAM_RETRY = 3600  # a dream that read nothing (unread, failed) is tried again after this
 
 
 @dataclass(frozen=True)
@@ -69,6 +107,22 @@ class Rules:
     retire_low_spots: int = 2
     demote_wakes: int = 3
     promote: str = "ask"  # auto: the thresholds alone make a habit active; anything else waits for the user's yes
+    ready_matches: int = 3  # a draft is ready after this many matches
+    rest_differs: int = 2  # a draft rests after this many differs in a row
+    spot_check: float = 0.1
+    min_confidence: float = 0.8
+    trigger_confidence: float = 0.7
+
+
+def rules_for(caution: str, learning: str, overrides: dict | None = None) -> Rules:
+    """The thresholds of a caution setting (an unknown one is normal). learning "auto" lets the thresholds alone make
+    a habit active. overrides: numbers the user set by hand, which win over the caution's row."""
+    row = dict(CAUTION.get(str(caution or "").strip().lower(), CAUTION["normal"]))
+    fields = Rules.__dataclass_fields__
+    row.update({k: v for k, v in (overrides or {}).items() if k in row and v is not None})
+    promote = overrides.get("promote") if overrides and "promote" in overrides else None
+    row["promote"] = "auto" if str(learning or "").strip().lower() == "auto" else (promote or "ask")
+    return Rules(**{k: v for k, v in row.items() if k in fields})
 
 
 class Ledger:
@@ -78,8 +132,32 @@ class Ledger:
         self.path, self._rules, self.clock = str(path), rules, clock
         self.lock = threading.Lock()
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._open()
+        except sqlite3.DatabaseError as exc:
+            # A file that is not a database, or is cut: kept aside (nothing is lost), a fresh ledger starts and the
+            # habits are back to learning, the safe side. A folder that cannot be written is not a corrupt file.
+            if not any(word in str(exc) for word in ("not a database", "malformed")):
+                raise
+            self._set_aside(exc)
+            self._open()
+
+    def _open(self):
         with self._db() as db:
             self._schema(db)  # also brings an older file up to date
+
+    def _set_aside(self, exc):
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.clock()))
+        kept = f"{self.path}.broken-{stamp}"
+        try:
+            os.replace(self.path, kept)
+            for extra in ("-wal", "-shm"):  # the journal belongs to the broken file: not to the fresh one
+                if os.path.exists(self.path + extra):
+                    os.replace(self.path + extra, kept + extra)
+        except OSError:
+            raise exc  # cannot move it: say the original problem
+        logger.warning("habits: the ledger file %s is damaged (%s). It is kept aside as %s and a fresh ledger starts; "
+                       "habits go back to learning.", self.path, exc, kept)
 
     @property
     def rules(self) -> Rules:
@@ -87,7 +165,18 @@ class Ledger:
 
     @staticmethod
     def _schema(db):
-        db.execute("PRAGMA journal_mode=WAL")
+        newer = db.execute("PRAGMA user_version").fetchone()[0]
+        if newer > SCHEMA_VERSION:  # written by a newer Habits: nothing is written here, the file stays as it is
+            raise RuntimeError(f"the ledger file is from a newer Habits (version {newer}; this one knows "
+                               f"{SCHEMA_VERSION}): it is left untouched; update Habits to use it")
+        for attempt in range(100):  # two openers of a file not yet in WAL: sqlite refuses the second at once,
+            try:                    # without waiting, so the wait is here (5 s at most)
+                db.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 99:
+                    raise
+                time.sleep(0.05)
         db.executescript(SCHEMA)
         columns = {row[1] for row in db.execute("PRAGMA table_info(habits)")}
         for column, kind in (("start", "REAL"), ("origin", "TEXT DEFAULT 'asked'"), ("ready", "REAL"),
@@ -105,6 +194,11 @@ class Ledger:
             if column not in columns:
                 Ledger._add(db, "runs", column, kind)
         db.execute("CREATE INDEX IF NOT EXISTS runs_session ON runs (session, id)")  # after its column
+        # record() forgets old requests on every run: only the few rows that still hold one are in this index
+        # The columns the scores and /habits read, so that counting a habit's runs never opens the wide rows
+        db.execute("CREATE INDEX IF NOT EXISTS runs_scores ON runs (habit, version, id, mode, kind, status, failed, "
+                   "compared, planned, matched, s1, woke, turn_ms, turn_tokens, turn_calls, outage)")
+        db.execute("CREATE INDEX IF NOT EXISTS runs_said ON runs (at) WHERE said IS NOT NULL")
         current = db.execute("PRAGMA user_version").fetchone()[0]
         if current < 1:  # never again on a file past it: it would vouch an active state written by hand since
             # Once: a habit made active before its moves were kept (asked for, or promoted by the rules) keeps its
@@ -120,6 +214,22 @@ class Ledger:
         if current < 2:
             db.commit()  # what came before is its own transaction
             Ledger._v2(db)
+        if current < 3:
+            db.commit()
+            Ledger._v3(db)
+
+    @staticmethod
+    def _v3(db):
+        """Once, under the write lock: the nursery's tables exist (SCHEMA made them) and news can say when it was
+        told."""
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute("PRAGMA user_version").fetchone()[0] >= 3:
+            db.commit()
+            return
+        if "told_at" not in {row[1] for row in db.execute("PRAGMA table_info(news)")}:
+            Ledger._add(db, "news", "told_at", "REAL")
+        db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        db.commit()
 
     @staticmethod
     def _v2(db):
@@ -135,10 +245,10 @@ class Ledger:
                        "WHERE habit = ?", (now, OLD_PROPOSED, habit))
             db.execute('INSERT INTO history (habit, version, "from", "to", "by", note, at) VALUES '
                        "(?, ?, 'proposed', 'retired', 'habits', ?, ?)", (habit, version, OLD_PROPOSED, now))
-        db.execute("DELETE FROM news WHERE told = 0 AND kind NOT IN (?, ?, ?)", NEWS)
+        db.execute(f"DELETE FROM news WHERE told = 0 AND kind NOT IN ({', '.join('?' for _ in NEWS)})", NEWS)
         db.execute("DROP TABLE IF EXISTS turns")
         db.execute("DROP TABLE IF EXISTS candidates")
-        db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        db.execute("PRAGMA user_version = 2")
         db.commit()
 
     @staticmethod
@@ -155,6 +265,10 @@ class Ledger:
         missing = not os.path.exists(self.path)  # deleted under a live process: the gateway lives for days
         if missing:  # its folder too, maybe: sqlite creates the file, not the folder
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            try:  # the file is created readable by its owner only: it holds what Hermes ran and what the user decided
+                os.close(os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600))
+            except OSError:
+                pass  # sqlite then creates it itself, as before
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         try:
@@ -251,10 +365,18 @@ class Ledger:
         db.execute("INSERT INTO news (habit, version, kind, note, at) VALUES (?, ?, ?, ?, ?)",
                    (habit, version, kind, note, self.clock()))
 
+    def tell(self, habit, kind, note="", version="") -> None:
+        """A line of news to tell in a later reply (the dream's: dream_learn, dream_learned, dream_proposal)."""
+        if kind not in NEWS:
+            raise ValueError(f"unknown news kind: {kind}")
+        with self._tx() as db:
+            self._tell(db, habit, version, kind, note)
+
     def adopt(self, habit, version, origin="asked", status="shadow", note=""):
         """A habit habit_save just saved on the user's ask: on record as asked, in shadow. Pass the version the
-        catalog reads, or the next look at it starts it again."""
-        if origin != "asked":
+        catalog reads, or the next look at it starts it again. origin "learned": a reflex the dream made, saved after
+        the user's yes; it still acts on its own only by the user's yes or the rules' (MADE)."""
+        if origin not in ("asked", "learned"):
             raise ValueError(origin)
         with self._tx() as db:
             self._move(db, habit, version, status, note, by=origin)
@@ -294,13 +416,19 @@ class Ledger:
                 db.execute("DELETE FROM news WHERE habit = ? AND told = 0 AND kind = 'ready'", (habit,))
         return bool(moved)
 
-    def wrong(self, session, by="user") -> str | None:
+    def wrong(self, session, by="user", habit=None) -> str | None:
         """The user says the last habit that answered in this session got it wrong: that run counts as a
         disagreement and, still active in that version, the habit goes back to shadow, its new scores starting
-        with that run. Returns its name, or None when no habit answered in this session."""
+        with that run. Returns its name, or None when no habit answered in this session. habit: the user named it
+        (a new chat has no run of its own), so its latest run in any session is the one."""
         with self._tx() as db:
-            run = db.execute("SELECT id, habit, version FROM runs WHERE session = ? AND mode = 'active' "
-                             "ORDER BY id DESC LIMIT 1", (session,)).fetchone()
+            where, params = ("runs.habit = ?", (habit,)) if habit else ("session = ?", (session,))
+            # a run on its own, or a call by name / a start on a loaded skill of a habit that is automatic now in the
+            # version that ran (a one-off or a learned reflex is called, not matched: its runs are mode adhoc)
+            run = db.execute(f"SELECT id, habit, version FROM runs WHERE {where} AND (mode = 'active' OR "
+                             "(mode = 'adhoc' AND EXISTS (SELECT 1 FROM habits h WHERE h.habit = runs.habit AND "
+                             "h.version = runs.version AND h.status = 'active' AND (h.origin = 'learned' OR "
+                             "runs.kind = 'skill')))) ORDER BY id DESC LIMIT 1", params).fetchone()
             if run is None:
                 return None
             note = "wrong, said the user"
@@ -351,21 +479,45 @@ class Ledger:
             self._move(db, habit, version, "retired", note, by=by)
             self._tell(db, habit, version, "retired", note)
 
-    def news(self, names=None, kinds=None, take=True) -> list[dict]:
+    def news(self, names=None, kinds=None, take=True, daily=False) -> list[dict]:
         """The news nobody was told of yet (of these habits and kinds, when given), oldest first: id, habit,
-        version, kind (ready, retired, demoted), note, at. Taken once: two processes (the
-        gateway and a cron tick) never both tell it. take=False only looks; told() then takes what went out."""
+        version, kind (ready, retired, demoted, dream_*), note, at. Taken once: two processes (the
+        gateway and a cron tick) never both tell it. take=False only looks; told() then takes what went out.
+        daily: nothing at all when a line was told since local midnight (one line a day, all kinds together)."""
         with self.lock, self._db() as db:
+            if daily and self._told_today(db):
+                return []
             rows = [dict(r) for r in db.execute("SELECT id, habit, version, kind, note, at FROM news WHERE told = 0 "
                                                 "ORDER BY id")
                     if (names is None or r["habit"] in names) and (kinds is None or r["kind"] in kinds)]
             return [r for r in rows if not take or
-                    db.execute("UPDATE news SET told = 1 WHERE id = ? AND told = 0", (r["id"],)).rowcount]
+                    db.execute("UPDATE news SET told = 1, told_at = ? WHERE id = ? AND told = 0",
+                               (self.clock(), r["id"])).rowcount]
+
+    def withdraw_news(self, habit, kinds=None) -> int:
+        """Deletes the news of this habit nobody was told yet (of these kinds, when given): a line that stopped being
+        true is never told. Returns how many went."""
+        marks = f" AND kind IN ({', '.join('?' for _ in kinds)})" if kinds else ""
+        with self._tx() as db:
+            return db.execute(f"DELETE FROM news WHERE habit = ? AND told = 0{marks}",
+                              (habit, *(kinds or ()))).rowcount
 
     def told(self, ids) -> list[int]:
-        """Takes these news rows: the ids that nobody had taken yet."""
+        """Takes these news rows (and notes when): the ids that nobody had taken yet."""
         with self.lock, self._db() as db:
-            return [i for i in ids if db.execute("UPDATE news SET told = 1 WHERE id = ? AND told = 0", (i,)).rowcount]
+            return [i for i in ids if db.execute("UPDATE news SET told = 1, told_at = ? WHERE id = ? AND told = 0",
+                                                 (self.clock(), i)).rowcount]
+
+    def _midnight(self) -> float:
+        return datetime.fromtimestamp(self.clock()).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+    def _told_today(self, db) -> bool:
+        return db.execute("SELECT 1 FROM news WHERE told_at >= ? LIMIT 1", (self._midnight(),)).fetchone() is not None
+
+    def told_today(self) -> bool:
+        """A line of news was told since local midnight."""
+        with self.lock, self._db() as db:
+            return self._told_today(db)
 
     def untold(self, names=None, take=True) -> list[tuple[str, str]]:
         """(habit, why) of each retirement by the thresholds nobody was told of yet (of names alone, when given),
@@ -429,7 +581,7 @@ class Ledger:
 
     def last_trace(self, habit) -> dict | None:
         rows = self._do("SELECT trace FROM runs WHERE habit = ? ORDER BY id DESC LIMIT 1", (habit,))
-        return json.loads(rows[0]["trace"]) if rows else None
+        return json.loads(rows[0]["trace"]) if rows and rows[0]["trace"] else None
 
     # ---- scores ---------------------------------------------------------
 
@@ -582,6 +734,196 @@ class Ledger:
                 "saved": self.saved(habit, version),
                 "origin": info.get("origin") or "asked",
                 "ready": info.get("status") == "shadow" and info.get("ready") is not None}
+
+    # ---- the nursery: drafts, practice, proposals, dreams ------------------------------------
+
+    @staticmethod
+    def _draft(row) -> dict:
+        out = dict(row)
+        for column in DRAFT_JSON:
+            try:
+                out[column] = json.loads(out[column]) if out.get(column) is not None else None
+            except ValueError:
+                pass
+        return out
+
+    @staticmethod
+    def _dump(column, value):
+        if column == "raw":
+            return value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False)
+        if column in DRAFT_JSON and not isinstance(value, str):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        if column == "reads":
+            return 1 if value else 0
+        return value
+
+    def drafts(self, states: tuple[str, ...] | None = None) -> list[dict]:
+        """The drafts (in these states, when given), oldest first, their JSON columns decoded."""
+        rows = self._do("SELECT * FROM drafts ORDER BY COALESCE(first_seen, 0), key")
+        return [self._draft(r) for r in rows if states is None or r["state"] in states]
+
+    def draft(self, key: str) -> dict | None:
+        rows = self._do("SELECT * FROM drafts WHERE key = ?", (key,))
+        return self._draft(rows[0]) if rows else None
+
+    def put_draft(self, key: str, **fields) -> None:
+        """Writes a spotted action. A new row starts in spotted; the state is never set here (move_draft does).
+        name, tool, args, raw, parts, graph and reads are written only while the row is new or spotted: the user's
+        yes covers what the card showed. Counts and moments are always updated."""
+        unknown = set(fields) - set(DRAFT_COLUMNS)
+        if unknown:
+            raise ValueError(sorted(unknown))
+        with self._tx() as db:
+            row = db.execute("SELECT state FROM drafts WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                db.execute("INSERT INTO drafts (key, state, since) VALUES (?, 'spotted', ?)", (key, self.clock()))
+            elif row["state"] != "spotted":
+                fields = {k: v for k, v in fields.items() if k not in DRAFT_FROZEN}
+            if fields:
+                marks = ", ".join(f"{k} = ?" for k in fields)
+                db.execute(f"UPDATE drafts SET {marks} WHERE key = ?",
+                           (*(self._dump(k, v) for k, v in fields.items()), key))
+
+    def move_draft(self, key: str, to: str, was: tuple[str, ...], **fields) -> bool:
+        """A draft changes state if it is still in one of `was` (a compare-and-set: of two threads, one wins).
+        fields: other free columns to write with the move (habit, no_until, counts...)."""
+        unknown = set(fields) - set(DRAFT_COLUMNS) - set(DRAFT_FROZEN)
+        if unknown:
+            raise ValueError(sorted(unknown))
+        fields = {k: v for k, v in fields.items() if k not in DRAFT_FROZEN}
+        fields.setdefault("since", self.clock())
+        marks = ", ".join(f"{k} = ?" for k in fields)
+        with self._tx() as db:
+            holders = ", ".join("?" for _ in was)
+            moved = db.execute(f"UPDATE drafts SET state = ?, {marks} WHERE key = ? AND state IN ({holders})",
+                               (to, *(self._dump(k, v) for k, v in fields.items()), key, *was)).rowcount
+        return bool(moved)
+
+    def rename_draft(self, key: str, name: str, was: tuple[str, ...]) -> bool:
+        """A draft past spotted gets another name because its own was taken (the only change to a frozen column):
+        it stays where it is, its card is new (`since` moves), and the yes the old card collected is not valid."""
+        with self._tx() as db:
+            holders = ", ".join("?" for _ in was)
+            moved = db.execute(f"UPDATE drafts SET name = ?, since = ? WHERE key = ? AND state IN ({holders})",
+                               (name, self.clock(), key, *was)).rowcount
+        return bool(moved)
+
+    def practised(self, key: str, kind: str, verdict: str, session: str = "") -> dict | None:
+        """One comparison of a draft: its verdict (never an output) is recorded and the draft's counts move in the
+        same transaction. same and shape reset the streak; differs and error add to it; seen leaves it. Returns the
+        draft after, or None when there is no such draft."""
+        if kind not in PRACTICE_KINDS or verdict not in PRACTICE_VERDICTS:
+            raise ValueError((kind, verdict))
+        column = {"same": "same", "shape": "shape", "differs": "differs", "error": "errors", "seen": "seen"}[verdict]
+        streak = {"same": "0", "shape": "0", "differs": "streak + 1", "error": "streak + 1", "seen": "streak"}[verdict]
+        with self._tx() as db:
+            if db.execute("SELECT 1 FROM drafts WHERE key = ?", (key,)).fetchone() is None:
+                return None
+            db.execute("INSERT INTO practice (draft, at, session, kind, verdict) VALUES (?, ?, ?, ?, ?)",
+                       (key, self.clock(), session or "", kind, verdict))
+            db.execute(f"UPDATE drafts SET {column} = COALESCE({column}, 0) + 1, streak = {streak} WHERE key = ?",
+                       (key,))
+            row = db.execute("SELECT * FROM drafts WHERE key = ?", (key,)).fetchone()
+        return self._draft(row)
+
+    def practice(self, key: str, limit: int = 10) -> list[dict]:
+        """The latest comparisons of a draft, the newest first."""
+        return [dict(r) for r in self._do("SELECT * FROM practice WHERE draft = ? ORDER BY id DESC LIMIT ?",
+                                          (key, limit))]
+
+    def propose(self, kind: str, subject: str, detail: dict) -> int | None:
+        """A proposal to change or rest a saved learned reflex. None when one is open for it, or when the user said
+        no to it in the last 30 days."""
+        if kind not in ("change", "rest"):
+            raise ValueError(kind)
+        with self._tx() as db:
+            if db.execute("SELECT 1 FROM proposals WHERE kind = ? AND subject = ? AND (status = 'open' OR "
+                          "(status = 'no' AND decided >= ?)) LIMIT 1",
+                          (kind, subject, self.clock() - NO_DAYS * DAY)).fetchone():
+                return None
+            cur = db.execute("INSERT INTO proposals (kind, subject, detail, status, at) VALUES (?, ?, ?, 'open', ?)",
+                             (kind, subject, json.dumps(detail, ensure_ascii=False, default=str), self.clock()))
+            return cur.lastrowid
+
+    def proposals(self, status: tuple[str, ...] = ("open",)) -> list[dict]:
+        """Proposals in these statuses, oldest first, their detail decoded."""
+        out = []
+        for r in self._do("SELECT * FROM proposals ORDER BY id"):
+            if r["status"] in status:
+                row = dict(r)
+                try:
+                    row["detail"] = json.loads(row["detail"] or "{}")
+                except ValueError:
+                    row["detail"] = {}
+                out.append(row)
+        return out
+
+    def decide(self, proposal_id: int, status: str, by: str = "user") -> bool:
+        """An open proposal becomes yes, no or gone, once (a compare-and-set)."""
+        if status not in ("yes", "no", "gone"):
+            raise ValueError(status)
+        with self._tx() as db:
+            return bool(db.execute('UPDATE proposals SET status = ?, decided = ?, "by" = ? WHERE id = ? AND '
+                                   "status = 'open'", (status, self.clock(), by, proposal_id)).rowcount)
+
+    def _dream_due(self, db, every: float) -> bool:
+        """The one rule of a daily dream, for the process that looks (maybe_dream) and the one that starts it
+        (dream_start): not while a dream that read something (ok, empty, partial: it wrote its drafts) started less
+        than `every` seconds ago, nor while one that read nothing (unread, failed) started less than DREAM_RETRY ago.
+        A manual dream (every = 0) is always due."""
+        if not every or every <= 0:
+            return True
+        now = self.clock()
+        done = db.execute("SELECT started FROM dreams WHERE status IN %s ORDER BY started DESC LIMIT 1"
+                          % (DREAM_DONE,)).fetchone()
+        if done is not None and now - done["started"] < every:
+            return False
+        bad = db.execute("SELECT started FROM dreams WHERE status IN ('unread', 'failed') AND manual = 0 "
+                         "ORDER BY started DESC LIMIT 1").fetchone()
+        return bad is None or now - bad["started"] >= DREAM_RETRY
+
+    def dream_due(self, every: float) -> bool:
+        """Whether a daily dream may start now (see _dream_due); a ledger that cannot say counts as due."""
+        with self.lock, self._db() as db:
+            return self._dream_due(db, every)
+
+    def dream_start(self, every: float, manual: bool = False) -> int | None:
+        """Starts a dream and returns its id. The caller holds the dream's file lock, so a row still running is a
+        dead process's: marked failed first. None when every > 0 and a daily dream is not due (_dream_due)."""
+        now = self.clock()
+        with self._tx() as db:
+            db.execute("UPDATE dreams SET status = 'failed', ended = ?, why = COALESCE(why, 'the process stopped') "
+                       "WHERE status = 'running'", (now,))
+            if not self._dream_due(db, every):
+                return None
+            return db.execute("INSERT INTO dreams (started, status, manual) VALUES (?, 'running', ?)",
+                              (now, 1 if manual else 0)).lastrowid
+
+    def dream_end(self, dream_id: int, status: str, **counts) -> None:
+        """Closes a dream: status (ok, empty, partial, unread, failed) and any of turns, sessions, spotted,
+        proposed, why."""
+        unknown = set(counts) - {"turns", "sessions", "spotted", "proposed", "why"}
+        if unknown:
+            raise ValueError(sorted(unknown))
+        marks = "".join(f", {k} = ?" for k in counts)
+        self._do(f"UPDATE dreams SET status = ?, ended = ?{marks} WHERE id = ?",
+                 (status, self.clock(), *counts.values(), dream_id))
+
+    def last_dream(self, ok_only: bool = False) -> dict | None:
+        rows = self._do("SELECT * FROM dreams" + (f" WHERE status IN {DREAM_DONE}" if ok_only else "")
+                        + " ORDER BY id DESC LIMIT 1")
+        return dict(rows[0]) if rows else None
+
+    def prune(self, practice_days: int = 60, keep_dreams: int = 30) -> None:
+        """Forgets comparisons older than practice_days, all but the last keep_dreams dreams, and the trace of runs
+        older than practice_days (a trace is the bulk of a run's row; the counts and scores need none, so every
+        number stays true while the file stops growing by a trace per run)."""
+        with self._tx() as db:
+            db.execute("UPDATE runs SET trace = NULL WHERE trace IS NOT NULL AND at < ?",
+                       (self.clock() - practice_days * DAY,))
+            db.execute("DELETE FROM practice WHERE at < ?", (self.clock() - practice_days * DAY,))
+            db.execute("DELETE FROM dreams WHERE id NOT IN (SELECT id FROM dreams ORDER BY id DESC LIMIT ?)",
+                       (keep_dreams,))
 
     # ---- memory and turn calls --------------------------------------------
 

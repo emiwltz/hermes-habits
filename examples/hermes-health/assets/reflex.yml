@@ -19,10 +19,10 @@ nodes:
     args: {command: "grep -hoE '\"gateway_state\": *\"(startup_failed|degraded)\"|\"state\": *\"(fatal|retrying)\"' \"$HERMES_HOME/gateway_state.json\" ~/.hermes/gateway_state.json 2>/dev/null | sort -u || true"}
     as: gateway
     next: frozen
-  frozen:                        # says running, but no heartbeat for 3 min (Hermes re-stamps the file every 60 s)
-    do: terminal                 # /dev/null keeps grep off its input when find prints nothing
-    read: true
-    args: {command: "grep -lE '\"gateway_state\": *\"running\"' /dev/null $(find ~/.hermes -maxdepth 1 -name gateway_state.json -mmin +3 2>/dev/null) || true"}
+  frozen:                        # says running, no heartbeat for 3 min (Hermes re-stamps the file every 60 s), AND the
+    do: terminal                 # process of its pid is still there. A gateway that was killed or lost in a reboot leaves
+    read: true                   # the same file behind forever: that is not a machine in trouble, so no alarm.
+    args: {command: "ps -p $(grep -hsoE '\"pid\": *[0-9]+' ~/.hermes/gateway_state.json | grep -oE '[0-9]+' | head -n 1) -o pid= 2>/dev/null | grep -q . && grep -lE '\"gateway_state\": *\"running\"' /dev/null $(find ~/.hermes -maxdepth 1 -name gateway_state.json -mmin +3 2>/dev/null) || true"}
     as: frozen
     next: model
   model:                         # the last model call that failed for good, last 30 minutes, any session: after its
@@ -65,7 +65,7 @@ nodes:
   gateway_attention:             # an end per check: the verdict is the answer, and the model may be the broken part
     end: "Hermes needs attention: the gateway reports {gateway}\nNothing was changed. Next: hermes gateway status.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
   frozen_attention:
-    end: "Hermes needs attention: the gateway file says running but was not updated for 3 minutes: {frozen}\nNothing was changed. Next: hermes gateway status.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
+    end: "Hermes needs attention: the gateway file says running but was not updated for 3 minutes, and its process is still there: it may be frozen ({frozen}).\nNothing was changed. Next: hermes gateway status.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
   model_attention:
     end: "Hermes needs attention: a model call failed in the last 30 minutes: {model_failure}\nNothing was changed. Next: hermes model to switch models.\nRead: gateway file, heartbeat and disk of ~/.hermes; gateway file and logs of the active Hermes home."
   internet_attention:

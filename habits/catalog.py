@@ -1,4 +1,4 @@
-"""Find habits: a skill with assets/reflex.yml (or assets/HABIT.yaml, the name v0.1 wrote), plus the examples
+"""Find habits: a skill with assets/reflex.yml (or assets/HABIT.yaml, the file's first name), plus the examples
 shipped with the plugin.
 
 Skills are read through Hermes's public skills API. Each habit is loaded once
@@ -22,7 +22,7 @@ from .yaml12 import load as load_yaml
 logger = logging.getLogger(__name__)
 
 HABIT_FILE = Path("assets") / "reflex.yml"
-LEGACY_FILE = Path("assets") / "HABIT.yaml"  # what v0.1 wrote: still read, still protected
+LEGACY_FILE = Path("assets") / "HABIT.yaml"  # the file's first name: still read, still protected
 # An older version kept a learned habit's text here. Nothing writes it any more; it stays out of the fingerprint
 # so such a habit keeps its version.
 LEARNED_FILE = Path("assets") / "LEARNED.md"
@@ -40,7 +40,7 @@ ASSET_BYTES = 1_000_000
 class Habit:
     name: str
     description: str
-    path: Path  # the reflex file (reflex.yml, or HABIT.yaml for a habit saved by v0.1)
+    path: Path  # the reflex file (reflex.yml, or HABIT.yaml for a habit saved under the file's first name)
     graph: dict = field(default_factory=dict)
     issues: list = field(default_factory=list)
     origin: str = "skill"  # skill or example
@@ -93,7 +93,7 @@ _cache: dict[str, tuple[tuple, Habit]] = {}
 
 def reflex_file(folder: Path) -> Path:
     """A habit folder's reflex file: assets/reflex.yml if it exists, else the legacy assets/HABIT.yaml when that
-    exists (a habit saved by v0.1), else reflex.yml (a habit not saved yet). With both files, the new name wins and
+    exists (a habit saved under the file's first name), else reflex.yml (a habit not saved yet). With both files, the new name wins and
     the legacy file is one more file of assets/."""
     new, old = folder / HABIT_FILE, folder / LEGACY_FILE
     return old if os.path.lexists(old) and not os.path.lexists(new) else new
@@ -150,12 +150,12 @@ def read(path: Path, name: str, description: str, origin: str) -> Habit:
     habit = Habit(name, description, path, origin=origin, files=_fingerprint(files) if files else "")
     try:
         habit.graph = graph.load(path.read_text(encoding="utf-8"))
-        habit.issues = [str(issue) for issue in graph.validate(habit.graph)]
+        habit.issues = [str(issue) for issue in graph.validate(habit.graph, allow_llm_in_command=True, allow_delete=True)]
     except (OSError, ValueError) as exc:
         habit.issues = [f"format: {exc}"]
     except Exception as exc:  # a check that failed: the habit stays listed, refused, with why
         logger.warning("habits: could not check %s: %s", path, exc, exc_info=True)
-        habit.issues = [f"format: the graph could not be checked ({type(exc).__name__})"]
+        habit.issues = [f"format: the reflex could not be checked ({type(exc).__name__})"]
     _cache[key] = (stamp, habit)
     return habit
 

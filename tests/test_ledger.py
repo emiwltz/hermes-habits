@@ -125,14 +125,6 @@ def test_runs_answered_by_the_llm_fallback_do_not_count(tmp_path):
     assert ledger.evaluate(HABIT, "v1") == "shadow"
 
 
-def test_runs_answered_by_clef_count_like_runs_answered_by_jev(tmp_path):
-    ledger = ledger_at(tmp_path)
-    for backend in ("clef", "jev", "clef,jev"):
-        compared_run(ledger, 1, backends=(backend,))
-    compared_run(ledger, 0, backends=("clef", "llm"))  # one question went to the fallback: the run is left out
-    assert ledger.agreement(HABIT, "v1") == (1.0, 3)
-
-
 def test_agreed_counts_the_runs_that_agree_on_their_own_since_the_last_shadow(tmp_path):
     # An active habit is checked on every run until 3 agree. A run the LLM fallback decided counts there (the
     # judge compared its answer), unlike in the scores; one under the promotion bar does not.
@@ -610,7 +602,7 @@ def test_adopt_records_an_asked_habit_and_tells_nothing(tmp_path):
     ledger.adopt("asked-one", "a1", "asked")
     assert ledger.info("asked-one")["origin"] == "asked" and ledger.history("asked-one")[0]["by"] == "asked"
     assert ledger.status("asked-one", "a1") == "shadow" and ledger.news() == []
-    for origin in ("learned", "review"):
+    for origin in ("review", "portal"):  # "learned" is accepted since the nursery
         with pytest.raises(ValueError):
             ledger.adopt("x", "v1", origin)
 
@@ -766,7 +758,7 @@ def test_an_old_ledger_with_learning_tables_and_proposed_habits_opens_and_upgrad
     for _ in range(2):  # the gateway and a cron tick open it, one after the other
         ledger = Ledger(path)
     with ledger._db() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert not {"turns", "candidates"} & tables
     assert ledger.info("p")["status"] == "retired"
@@ -783,3 +775,114 @@ def test_an_undo_right_after_the_upgrade_never_brings_back_proposed(tmp_path):
                "(?, 'v1', 'proposed', 'shadow', 'user', 'on trial, said the user', ?)", (HABIT, clock.t))
     assert ledger.undo() is not None
     assert ledger.status(HABIT, "v1") == "retired"
+
+
+# ---- a file the ledger cannot use ----------------------------------------------------------------------------------
+
+def test_a_corrupt_file_is_kept_aside_under_another_name_and_a_fresh_ledger_starts(tmp_path, caplog):
+    path = tmp_path / "ledger.db"
+    path.write_bytes(b"this is not a database at all" * 50)
+    (tmp_path / "ledger.db-wal").write_bytes(b"junk")
+    ledger = Ledger(path, Rules(), clock=Clock())
+    assert ledger.runs(HABIT) == []  # a working, empty ledger
+    kept = sorted(p.name for p in tmp_path.glob("ledger.db.broken-*"))
+    assert len(kept) == 1 and not kept[0].endswith(("-wal", "-shm"))
+    assert (tmp_path / kept[0]).read_bytes().startswith(b"this is not a database")  # nothing lost
+    line = [r.getMessage() for r in caplog.records if "kept aside" in r.getMessage()]
+    assert len(line) == 1 and "ledger.db" in line[0] and kept[0] in line[0]
+
+
+def test_a_file_cut_in_half_is_kept_aside_too(tmp_path):
+    path = tmp_path / "ledger.db"
+    good = ledger_at(tmp_path)
+    for _ in range(40):
+        compared_run(good, True)
+    data = path.read_bytes()
+    for extra in ("-wal", "-shm"):
+        (tmp_path / f"ledger.db{extra}").unlink(missing_ok=True)
+    path.write_bytes(data[: len(data) // 2] if len(data) > 8192 else b"x" * 9000)
+    ledger = Ledger(path, Rules(), clock=Clock())
+    assert ledger.runs(HABIT) == []
+    assert list(tmp_path.glob("ledger.db.broken-*"))
+
+
+def test_a_file_of_a_newer_version_is_refused_and_left_untouched(tmp_path):
+    import sqlite3
+    path = tmp_path / "ledger.db"
+    ledger_at(tmp_path)
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA user_version = 7")
+    db.commit()
+    db.close()
+    before = path.read_bytes()
+    with pytest.raises(RuntimeError, match=r"newer.*version 7.*knows 3"):
+        Ledger(path, Rules(), clock=Clock())
+    assert path.read_bytes() == before and not list(tmp_path.glob("ledger.db.broken-*"))
+
+
+def test_a_read_only_folder_is_not_taken_for_a_corrupt_file(tmp_path):
+    import os
+    import sqlite3
+    ledger_at(tmp_path)
+    os.chmod(tmp_path, 0o500)
+    try:
+        try:
+            Ledger(tmp_path / "ledger.db", Rules(), clock=Clock())
+        except sqlite3.Error:
+            pass
+        assert not list(tmp_path.glob("ledger.db.broken-*"))
+    finally:
+        os.chmod(tmp_path, 0o700)
+
+
+# ---- a habit that runs often -----------------------------------------------------------------------------------------
+
+def test_recording_a_run_does_not_scan_the_whole_runs_table(tmp_path):
+    ledger = ledger_at(tmp_path)
+    with ledger._db() as db:
+        plan = " ".join(str(r[3]) for r in db.execute(
+            "EXPLAIN QUERY PLAN UPDATE runs SET said = NULL WHERE said IS NOT NULL AND at < 1"))
+    assert "runs_said" in plan
+
+
+def test_prune_drops_the_trace_of_old_runs_and_every_number_stays_true(tmp_path):
+    clock = Clock()
+    ledger = ledger_at(tmp_path, clock)
+    for i in range(30):
+        compared_run(ledger, i % 3 != 0)
+        clock.t += 3600
+    before = {key: ledger.summary(HABIT, "v1") [key] for key in ("runs", "compared", "agreement", "woke", "saved")}
+    assert before["runs"] == 30 and before["compared"] == 30
+    clock.t += 59 * 86400
+    ledger.prune()
+    with ledger._db() as db:
+        kept = db.execute("SELECT COUNT(*) FROM runs WHERE trace IS NOT NULL").fetchone()[0]
+        total = db.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+    assert total == 30 and 0 < kept < 30  # the oldest runs lost their trace, the recent ones keep it
+    clock.t += 40 * 86400
+    ledger.prune()
+    with ledger._db() as db:
+        assert db.execute("SELECT COUNT(*) FROM runs WHERE trace IS NOT NULL").fetchone()[0] == 0
+    after = {key: ledger.summary(HABIT, "v1")[key] for key in before}
+    assert after == before  # /habits shows the same numbers
+    assert ledger.last_trace(HABIT) is None  # no trace left to show, and no crash
+    assert len(ledger.runs(HABIT, 100)) == 30
+
+
+def test_the_scores_read_a_covering_index_not_the_wide_rows(tmp_path):
+    ledger = ledger_at(tmp_path)
+    with ledger._db() as db:
+        for sql in ("SELECT COUNT(*), SUM(woke) FROM runs WHERE habit = 'a' AND version = 'b'",
+                    "SELECT planned, matched, s1 FROM runs WHERE habit = 'a' AND version = 'b' AND compared = 1"):
+            plan = " ".join(str(r[3]) for r in db.execute("EXPLAIN QUERY PLAN " + sql))
+            assert "COVERING INDEX runs_scores" in plan, plan
+
+
+def test_the_ledger_file_is_created_readable_by_its_owner_only(tmp_path):
+    import os
+    import stat
+    from habits.ledger import Ledger
+    ledger = Ledger(tmp_path / "habits")
+    ledger.status("x", "v1")  # any write
+    mode = stat.S_IMODE(os.stat(ledger.path).st_mode)
+    assert mode & 0o077 == 0, oct(mode)

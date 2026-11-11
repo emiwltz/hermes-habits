@@ -2,6 +2,7 @@
 
 import json
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -77,15 +78,19 @@ def test_the_list_groups_habits_by_state(chat, tmp_path, monkeypatch):
         habits.ledger.set_status(name, catalog.find(name).version, status)
     with_habit(tmp_path, monkeypatch, "f-by-name", DEMO.replace("trigger: message\n", ""))
     reply = habits.command("")
-    assert ctx.posted[-1].splitlines() == [  # the list goes last: news may have been posted before
+    # no answer: the card as text (what a yes lets it do), then the words that answer it, then the list, last (R1:
+    # it used to be posted aside, where a one-shot chat never showed it)
+    assert not any(line.startswith("🔁") for line in ctx.posted)  # the list is not posted aside
+    assert reply.startswith(f"{NAME} · 4/4 right") and "It will do: mkdir -p ~/Downloads/<kind>" in reply
+    assert reply.splitlines()[-7:] == [
         "🔁 Your habits · 1 automatic · 2 learning",
         "━ a-active · automatic",
         "┄ b-learning · learning 0/4",
         "❓ sort-downloads-by-type · ready · 4/4 right",
         "─ e-retired · resting",
-        "◇ f-by-name · called by name",
+        "◇ f-by-name · called by name · waits for your yes: /habits yes f-by-name",  # copied by hand (round 1)
         "❓ 1 decision ↓"]
-    assert reply == f"❓ {NAME}: /habits yes {NAME} · /habits try {NAME} · /habits rest {NAME}"  # no answer
+    assert reply.splitlines()[-8] == f"❓ {NAME}: /habits yes {NAME} · /habits try {NAME} · /habits rest {NAME}"
 
 
 def test_the_list_shows_8_habits_then_how_many_more(chat, tmp_path, monkeypatch):
@@ -100,20 +105,29 @@ def test_the_empty_list_names_the_shipped_reflexes_and_one_to_try(chat, monkeypa
     # A first-time user with no key: the empty state says what to call right now, in a chat and in a terminal.
     ctx, habits = chat
     monkeypatch.setattr(catalog, "skills", lambda: [])
-    shipped = "check-links, hacker-news-digest, hermes-health, summarize-articles, watch-hermes-releases"
+    shipped = "check-links, disk-space, hacker-news-digest, hermes-health, summarize-articles, watch-hermes-releases"
     assert habits.command("").splitlines() == [
-        '🔁 No habits of your own yet. After a task you repeat, tell me "make it a habit".',
+        '🔁 No habits of your own yet. After a task you repeat, tell Hermes "make it a habit".',
         f"Built in, ready now: {shipped}.",
+        "Also built in, and it writes files: tidy-downloads. Test it before you rely on it.",
         "Try one: ask \"Is Hermes OK?\""]
-    assert habits.listing().splitlines()[1:] == [f"Built in, ready now: {shipped}.",
-                                                 "Try one: hermes habits run hermes-health"]
-    assert "tidy-downloads" not in habits.listing()  # it moves files: not one to try blind
+    assert habits.listing().splitlines() == [  # in a terminal the first line names the dream too
+        '🔁 No habits of your own yet. After a task you repeat, tell Hermes "make it a habit". '
+        "Run `hermes habits dream` to see what comes back in your history.",
+        f"Built in, ready now: {shipped}.",
+        "Also built in, and it writes files: tidy-downloads. Test it before you rely on it.",
+        "Try one: hermes habits run hermes-health"]
+    assert "ready now: " in habits.listing() and "ready now: check-links, disk-space, hacker-news-digest, hermes-health, " \
+        "summarize-articles, watch-hermes-releases." in habits.listing()  # the same seven names `run` knows, the writer apart
     ctx.config["language"] = "fr"
     assert habits.command("").splitlines()[1:] == [f"Fournis, prêts tout de suite : {shipped}.",
+                                                   "Fourni aussi, et il écrit des fichiers : tidy-downloads. Teste-le avant de t'y fier.",
                                                    "Essaie : demande « Hermes va bien ? »"]
     assert habits.listing().splitlines()[-1] == "Essaie : hermes habits run hermes-health"
+    assert habits.listing().splitlines()[0].endswith(
+        "Lance `hermes habits dream` pour voir ce qui revient dans ton historique.")
     no_examples(monkeypatch)
-    assert habits.command("") == "🔁 Pas encore d'habitude à toi. Après une tâche que tu répètes, dis-moi « fais-en une habitude »."
+    assert habits.command("") == "🔁 Pas encore d'habitude à toi. Après une tâche que tu répètes, dis à Hermes « fais-en une habitude »."
 
 
 def test_the_list_speaks_french_when_asked(chat):
@@ -121,11 +135,13 @@ def test_the_list_speaks_french_when_asked(chat):
     ctx.config["language"] = "fr"
     ready(ctx, habits)
     ctx.picks = [None]
-    assert habits.command("") == f"❓ {NAME} : /habits oui {NAME} · /habits essai {NAME} · /habits repos {NAME}"
-    assert ctx.posted[-1].splitlines() == ["🔁 Tes habitudes · 0 automatique · 1 apprend",
-                                          "❓ sort-downloads-by-type · prête · 4/4 justes", "❓ 1 décision ↓"]
+    reply = habits.command("")  # no answer to the buttons: the card as text, then the words
+    assert reply.startswith(f"{NAME} · 4/4") and len(reply.splitlines()) >= 2
+    assert reply.splitlines()[-4] == f"❓ {NAME} : /habits oui {NAME} · /habits essai {NAME} · /habits repos {NAME}"
+    assert reply.splitlines()[-3:] == ["🔁 Tes habitudes · 0 automatique · 1 en apprentissage",
+                                       "❓ sort-downloads-by-type · prête · 4/4 justes", "❓ 1 décision ↓"]
     assert ctx.asked[0][1] == ["Oui, automatique", "Encore à l'essai", "La mettre au repos"]
-    question, does = ctx.asked[0][0].splitlines()
+    question, does = ctx.asked[0][0].splitlines()[-2:]
     assert question.startswith(f"{NAME} · 4/4 justes") and question.endswith(
         " · elle écrit. Dernières demandes : « Sort my downloads please ». La laisser répondre seule ?")
     assert does.startswith("Elle fera : mkdir -p ~/Downloads/<kind> && mv ~/Downloads/<item> ~/Downloads/<kind>/, mv ")
@@ -136,7 +152,7 @@ def test_yes_on_the_card_makes_the_habit_active_with_a_history_row(chat):
     ready(ctx, habits)
     ctx.picks = ["yes"]
     reply = habits.command("", platform="telegram", session_id="chat")
-    assert ctx.posted[-1].startswith("🔁 Your habits") and "❓ 1 decision ↓" in ctx.posted[-1]  # before the card
+    assert ctx.asked[0][0].startswith("🔁 Your habits") and "❓ 1 decision ↓" in ctx.asked[0][0]  # above the card
     assert reply == f"✅ {NAME} answers on its own now. I check behind it 1 time in 10. Not right? /habits wrong"
     assert habits.ledger.status(NAME, version()) == "active"
     last = habits.ledger.history(NAME, 1)[0]
@@ -150,16 +166,44 @@ def test_with_no_buttons_each_decision_is_a_text_command(chat):
     plain = FakeCtx(ctx.config)  # an older Hermes: no ask_choice, no post_message
     habits.ctx = plain
     reply = habits.command("")
-    assert reply.splitlines()[0].startswith("🔁 Your habits")
-    assert reply.splitlines()[-1] == f"❓ {NAME}: /habits yes {NAME} · /habits try {NAME} · /habits rest {NAME}"
-    card, does = reply.splitlines()[-3:-1]  # the card, as the buttons would have shown it: what a yes lets it do
+    assert reply.splitlines()[-3].startswith("🔁 Your habits")  # the list stands under the card (R1)
+    assert reply.splitlines()[-4] == f"❓ {NAME}: /habits yes {NAME} · /habits try {NAME} · /habits rest {NAME}"
+    card, does = reply.splitlines()[-6:-4]  # the card, as the buttons would have shown it: what a yes lets it do
     assert card.startswith(f"{NAME} · 4/4 right") and does.startswith("It will do: mkdir -p ~/Downloads/<kind>")
     assert habits.ledger.status(NAME, version()) == "shadow"
     habits.ctx = ctx
-    ctx.picks = [None]  # buttons, and no answer: the list was posted, the commands follow
-    assert habits.command("") == f"❓ {NAME}: /habits yes {NAME} · /habits try {NAME} · /habits rest {NAME}"
+    ctx.picks = [None]  # buttons, and no answer (a one-shot chat): the card and the commands follow, the list under them
+    reply = habits.command("")
+    assert reply.splitlines()[0].startswith(f"{NAME} · 4/4 right") and "It will do: mkdir -p ~/Downloads/<kind>" in reply
+    assert reply.splitlines()[-4] == f"❓ {NAME}: /habits yes {NAME} · /habits try {NAME} · /habits rest {NAME}"
+    assert reply.splitlines()[-3].startswith("🔁 Your habits")
     assert habits.command("yes") == f"✅ {NAME} answers on its own now. I check behind it 1 time in 10. Not right? " \
                                     "/habits wrong"  # the one decision waiting
+
+
+def test_a_typed_yes_on_a_ready_habit_whose_card_never_went_out_shows_the_card_first(chat):
+    ctx, habits = chat
+    ready(ctx, habits)
+    first = habits.command(f"yes {NAME}")  # only the news line went out: no card, so no informed yes
+    assert first.startswith(f"{NAME} · 4/4 right") and "It will do: mkdir -p ~/Downloads/<kind>" in first
+    assert first.splitlines()[-1] == f"Say /habits yes {NAME} again to let this version answer on its own, or /habits rest {NAME}."
+    assert habits.ledger.status(NAME, version()) == "shadow"
+    assert habits.command(f"yes {NAME}").startswith(f"✅ {NAME} answers on its own now.")  # the second one is the yes
+    assert habits.ledger.status(NAME, version()) == "active"
+
+
+def test_the_yes_of_a_button_needs_no_second_card(chat):
+    ctx, habits = chat
+    ready(ctx, habits)
+    ctx.picks = ["yes"]  # a button carries the card itself and names the version
+    assert habits.command("").startswith(f"✅ {NAME} answers on its own now.")
+
+
+def test_the_terminals_promote_is_the_users_own_and_needs_no_card(chat):
+    ctx, habits = chat
+    ready(ctx, habits)
+    moved, said = habits.yes(NAME, by="cli")
+    assert moved and said.startswith(f"✅ {NAME} answers on its own now.")
 
 
 def test_where_no_message_can_be_posted_the_list_tops_the_first_card(chat, monkeypatch):
@@ -213,7 +257,7 @@ def test_rest_retires_the_habit_until_the_user_tries_it(chat):
     assert habits.command("") == f"─ {NAME} is resting. To bring it back: /habits try {NAME}"
     assert habits.ledger.status(NAME, version()) == "retired"
     assert habits.command("").splitlines()[1:] == [f"─ {NAME} · resting"] and len(ctx.asked) == 1
-    assert habits.command(f"essai {NAME}") == f"┄ {NAME} is on trial: it rehearses beside me without acting."
+    assert habits.command(f"essai {NAME}") == f"┄ {NAME} practices beside Hermes, without acting."
     assert habits.ledger.status(NAME, version()) == "shadow"
 
 
@@ -221,7 +265,7 @@ def test_a_habit_shows_its_decision_under_its_detail(chat):
     ctx, habits = chat
     ready(ctx, habits)
     detail = habits.command(NAME)
-    assert detail.startswith(f"❓ {NAME} · ready · 4/4 right\nSort the downloads\non request · version ")
+    assert detail.startswith(f"❓ {NAME} · ready · 4/4 right\nSort the downloads\nstarts from a message · version ")
     assert detail.splitlines()[-2].startswith("It will do: mkdir -p ~/Downloads/<kind>")  # what a yes lets it do
     assert detail.splitlines()[-1] == f"❓ {NAME}: /habits yes {NAME} · /habits try {NAME} · /habits rest {NAME}"
 
@@ -261,7 +305,7 @@ def test_undo_takes_back_the_last_change_within_24_hours(chat):
     ready(ctx, habits)
     assert habits.yes(NAME)[0]
     at = time.strftime("%H:%M", time.localtime(habits.ledger.history(NAME, 1)[0]["at"]))
-    assert habits.command("annule") == f"↩︎ Annulé : {NAME} redevient « apprend », comme avant ton oui de {at}."
+    assert habits.command("annule") == f"↩︎ Annulé : {NAME} redevient « en apprentissage », comme avant ton oui de {at}."
     assert habits.ledger.status(NAME, version()) == "shadow" and habits.summary(catalog.find(NAME))["ready"]
     later = time.time() + 25 * 3600
     habits.ledger.clock = lambda: later
@@ -276,6 +320,7 @@ def test_a_verb_with_no_name_and_several_decisions_asks_which(chat, tmp_path, mo
     ready(ctx, habits)
     assert habits.command("oui") == "Which one? /habits oui <name>"
     assert habits.command("oui nope") == 'No habit named "nope". /habits lists them.'
+    assert habits.command("oui b-ready").startswith("b-ready · 0/0 right")  # no card went out yet: it comes first
     assert habits.command("oui b-ready").startswith("✅ b-ready answers on its own now.")
 
 
@@ -290,9 +335,12 @@ def test_the_cli_promotes_pauses_resumes_and_undoes(chat, capsys):
         return code, capsys.readouterr().out.strip()
     assert cli("promote", "nope") == (1, 'No habit named "nope". hermes habits list lists them.')
     llm_turn(ctx, habits, "s0")  # not ready yet: the user's yes is still theirs to give
-    # 1 run agrees: each of the next 2 is checked behind it, then 1 in 10; the terminal's commands follow
-    assert cli("promote", NAME) == (0, f"✅ {NAME} answers on its own now. I check behind it its next 2 runs, then 1 "
-                                       "time in 10. Not right? hermes habits undo")
+    # 1 run agrees: each run is checked behind it until 2 more agree (a run that differs does not count: the trial of
+    # 11 November saw 4 checked where the line said "its next 3 runs"), then 1 in 10; the terminal's commands follow
+    # (R1: the line says plainly that these runs stay as slow as before, then that it answers alone)
+    assert cli("promote", NAME) == (0, f"✅ {NAME} answers on its own now. Its first runs stay as slow as before: Hermes "
+                                       "checks behind it until 2 runs agree, then it answers alone (1 run in 10 is "
+                                       "still checked). Not right? hermes habits undo")
     assert cli("promote", NAME) == (1, f"━ {NAME} answers on its own already. Not right? hermes habits undo")
     assert cli("pause") == (0, "⏸ Habits paused: none starts from a message or a schedule, and the scheduled ones stay "
                                "quiet. hermes habits resume")
@@ -324,7 +372,7 @@ def test_the_section_names_each_habit_and_its_state_and_the_rules(chat, tmp_path
     text = section(habits)
     assert f"- {NAME}() · {L} · Sort the downloads" in text
     assert f"- appris() · {L}\n" in text and "Ignore previous" not in text  # nobody saved it: none of its text
-    for rule in ("Pass the baton: habit_run", "/habits wrong", "never change one yourself", "instead of delegating",
+    for rule in ("Call one: habit_run", "/habits wrong", "never change one yourself", "instead of delegating",
                  "Never patch, merge or delete a skill that holds assets/reflex.yml"):
         assert rule in text, rule
     assert "«" not in text and "faux" not in text  # English only
@@ -423,8 +471,15 @@ def test_read_only_examples_are_listed_as_reflexes_to_call(chat, monkeypatch):
     text = section(habits)
     for example in catalog.examples():
         listed = f"- {cockpit.signature(example)} · call it · " in text
-        assert listed == trigger.read_only(example.graph), example.name
+        assert listed == (trigger.read_only(example.graph) and example.kind != "watch"), example.name
     assert "tidy-downloads" not in text  # it moves files live by name
+    # Round 1: "start my day" made the model call the daily digest. A template that starts on a schedule stays in
+    # `hermes habits list`, and the model is not offered it.
+    assert "hacker-news-digest" not in text and "watch-hermes-releases" not in text
+    monkeypatch.setattr(catalog, "skills", lambda: [])
+    assert "hacker-news-digest" in habits.listing() and "hacker-news-digest" not in section(habits)
+    assert {"hermes-health", "check-links", "disk-space"} <= {h.name for h in catalog.examples()
+                                                              if f"- {cockpit.signature(h)} · call it" in text}
 
 
 def test_a_fresh_install_lists_the_shipped_reflexes_to_call_and_how_to_make_one(chat, monkeypatch):
@@ -436,16 +491,15 @@ def test_a_fresh_install_lists_the_shipped_reflexes_to_call_and_how_to_make_one(
     listed = [line for line in text.splitlines() if line.startswith("- ") and "(" in line.split(" ")[1]]
     assert listed == [
         "- check-links(page) · call it · Check the links of a web page and report broken ones",
-        "- hacker-news-digest() · call it · Daily Hacker News stories close to your interests",
+        "- disk-space() · call it · How full is the disk of the home folder?",
         "- hermes-health() · call it · Is Hermes OK? Gateway, model, internet, disk",
-        "- summarize-articles(urls) · call it · Summarize a few web articles, skipping error pages",
-        "- watch-hermes-releases() · call it · Tell the user when a new Hermes release is out"]
+        "- summarize-articles(urls) · call it · Summarize a few web articles, skipping error pages"]
     assert text.startswith(cockpit.PROMPT_INTRO) and text.endswith(cockpit.PROMPT_TAIL)
     assert cockpit.PROMPT_NONE_OWN in text.splitlines() and "habits:writing-habits" in cockpit.PROMPT_NONE_OWN
     assert len(text) <= cockpit.PROMPT_CHARS and not hasattr(cockpit, "PROMPT_EMPTY")
     no_examples(monkeypatch)  # no example either: the relay and how to make one, no empty list
     text = section(habits)
-    assert cockpit.PROMPT_LIST not in text and cockpit.PROMPT_NONE_OWN in text and "draw a one-off graph" in text
+    assert cockpit.PROMPT_LIST not in text and cockpit.PROMPT_NONE_OWN in text and "write a one-off reflex" in text
 
 
 def test_a_habit_of_ones_own_drops_the_how_to_make_one_line(chat):
@@ -863,7 +917,7 @@ def test_reading_the_plugins_folder_or_its_list_is_no_state_change(chat, monkeyp
     ctx, habits = chat
     monkeypatch.setattr(catalog, "folders", lambda: {})
     for command in ("hermes habits list", f"hermes habits show {NAME} --json", "ls ~/.hermes/plugin-data/habits",
-                    "hermes habits pause", "hermes config get plugins.entries.habits.settings.promote",
+                    "hermes config get plugins.entries.habits.settings.promote",
                     "hermes config show | grep -A3 habits", "grep -rn bind_asker ~/.hermes/hermes-agent/hermes_cli"):
         assert habits.on_pre_tool_call(tool_name="terminal", args={"command": command}) is None, command
 
@@ -872,22 +926,24 @@ def test_reading_the_plugins_folder_or_its_list_is_no_state_change(chat, monkeyp
 
 def test_the_settings_are_in_the_manifest_with_the_plugins_defaults():
     schema = yaml.safe_load((ROOT / "plugin.yaml").read_text())["config_schema"]
-    for key in ("promote", "language"):
+    for key in ("learning", "language"):
         assert schema[key]["default"] == plugin.DEFAULTS[key], key
-    assert schema["promote"]["enum"] == ["ask", "auto"]
-    assert not {"learn", "learn_after", "notice"} & (set(plugin.DEFAULTS) | set(schema))
+    assert schema["learning"]["enum"] == ["off", "suggest", "practice", "auto"]
+    assert not {"learn", "learn_after", "notice", "promote"} & (set(plugin.DEFAULTS) & set(schema))
     assert schema["language"]["enum"] == ["en", "fr"]
-    assert {k: v["default"] for k, v in schema.items() if "default" in v} == plugin.DEFAULTS  # each one, the code's
+    # each one, the code's (the hidden overrides of 0.28 are in DEFAULTS only: test_settings pins that)
+    assert {k: v["default"] for k, v in schema.items() if "default" in v} == {k: plugin.DEFAULTS[k] for k in schema
+                                                                             if "default" in schema[k]}
 
 
 def test_the_manifest_pitches_reflexes_and_its_settings_say_what_the_code_does():
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())
     pitch = manifest["description"]
     assert pitch.startswith("Reflexes for Hermes") and len(pitch) <= 300 and pitch.count(". ") <= 1
-    for words in ("two levels", "a habit acts", "about a second", "done", "handed back", "your yes"):
+    for words in ("small decisions", "no model turn between the steps", "done", "handed back", "your yes"):
         assert words in pitch, words
     said = " ".join([pitch] + [v.get("description", "") for v in manifest["config_schema"].values()]).lower()
-    for gone in ("designs its own", "learn", "propos", "notice", "promoted or retired"):
+    for gone in ("designs its own", "notice", "promoted or retired"):
         assert gone not in said, gone  # lot A removed them
 
 
@@ -940,6 +996,8 @@ def test_the_terminal_words_leave_a_path_with_habits_in_it_alone(chat, capsys):
     import argparse
     parser = argparse.ArgumentParser()
     habits.cli_setup(parser)
+    (habits.home() / "pages").mkdir(parents=True, exist_ok=True)  # the line names a page only once it is written
+    (habits.home() / "pages" / f"{NAME}.html").write_text("<html></html>")
     assert habits.cli_handle(parser.parse_args(["show", NAME])) == 0
     shown = capsys.readouterr().out
     assert "plugin-datahermes" not in shown and "plugin-data/habits/pages/" in shown
@@ -999,7 +1057,7 @@ def test_a_habit_nobody_saved_shows_nothing_and_runs_dry_by_name(chat, tmp_path,
     reply = json.loads(habits.tool_run({"name": "venue"}))  # by name, before any yes: dry
     assert not [a for _, a in ctx.calls if "mv " in a.get("command", "")]
     # Its planned commands never reach the model as orders: the model does the task its own way (and is compared).
-    assert reply["done"] is False and reply["left"] == ["the task itself: it ran dry and wrote nothing"]
+    assert reply["done"] is False and reply["left"] == ["the task itself: it ran as a test and wrote nothing"]
     assert reply["next"] == tools.LEARNING_NEXT and "mv " not in json.dumps(reply)
     # Seen in review: its read values reached the model in plain text, though its author chose them.
     copied = "spec: habits/0.1\nstart: a\nfallback: h\nnodes:\n  a: {do: terminal, read: true, as: x, next: b, args: {command: echo hi}}\n" \
@@ -1050,9 +1108,9 @@ def test_a_habit_in_detail_speaks_the_users_language(chat):
     ctx.config["language"] = "fr"
     ready(ctx, habits)
     lines = habits.command(NAME, platform="telegram").splitlines()
-    assert lines[0] == f"❓ {NAME} · prête · 4/4 justes" and lines[2].startswith("sur demande · version ")
+    assert lines[0] == f"❓ {NAME} · prête · 4/4 justes" and lines[2].startswith("part d'un message · version ")
     assert any(" · à blanc · finie · " in line for line in lines)
-    assert lines[-3] == f"schéma : /habits view {NAME}"  # a bare path would be sent as a file
+    assert lines[-3] == f"schéma : /habits voir {NAME}"  # a bare path would be sent as a file
     assert "shadow" not in "\n".join(lines) and "/Users" not in "\n".join(lines)
     assert habits.command("nimporte") == "Pas d'habitude nommée « nimporte ». /habits les liste."
     assert habits.command("view", platform="telegram").startswith("La galerie de tes habitudes : ouvre le fichier")
@@ -1079,7 +1137,7 @@ def test_an_undone_wrong_says_the_runs_it_is_checked_on(chat):
     habits.command("faux", session_id="mine")
     said = habits.command("annule")
     assert said.startswith(f'↩︎ Undone: {NAME} is "automatic" again') and said.endswith(
-        " I check behind it its next 3 runs.")
+        " I check behind it until 3 runs agree.")
 
 
 def test_counts_of_one_and_of_nothing_read_right(chat, tmp_path, monkeypatch):
@@ -1154,6 +1212,18 @@ def test_a_habit_nobody_saved_put_to_rest_runs_dry_by_name(chat, tmp_path, monke
 
 def mv(ctx) -> list:
     return [a for _, a in ctx.calls if "mv " in a.get("command", "")]
+
+
+def test_while_the_pause_is_on_the_list_the_model_reads_does_not_offer_an_automatic_habit(chat):
+    # Real Mac: the prompt listed "ranger-demo() · automatic" while the user's pause was on.
+    ctx, habits = chat
+    assert habits.ledger.approve(NAME, catalog.find(NAME).version)
+    assert f"- {NAME}() · automatic" in section(habits)
+    habits.command("pause")
+    text = section(habits)
+    assert f"- {NAME}() · paused · do it yourself" in text and f"- {NAME}() · automatic" not in text
+    habits.command("resume")
+    assert f"- {NAME}() · automatic" in section(habits)
 
 
 def test_by_name_a_habit_with_a_door_acts_only_once_automatic(chat, tmp_path, monkeypatch):
@@ -1241,14 +1311,17 @@ def test_no_news_line_in_a_cron_turn(chat):
     assert habits.ledger.news(take=False) != []
 
 
-def test_one_news_line_per_reply(chat, tmp_path, monkeypatch):
+def test_one_news_line_per_reply_and_per_day(chat, tmp_path, monkeypatch):
     ctx, habits = chat
+    ctx.config["dream"] = "manual"  # no dream behind these replies
     with_habit(tmp_path, monkeypatch, "other", DEMO)
     rested(habits)
     habits.ledger.retire("other", catalog.find("other").version, "3 errors in a row")
     first = habits.on_pre_llm_call(session_id="d", user_message="Salut")["context"]
     assert f"{NAME} goes to rest" in first and "other goes to rest" not in first
     habits.on_post_llm_call(session_id="d", assistant_response="Salut !")
+    assert habits.on_pre_llm_call(session_id="e", user_message="Salut") is None  # one line a day: the next waits
+    habits.ledger.clock = lambda: time.time() + 86400
     assert "other goes to rest" in habits.on_pre_llm_call(session_id="e", user_message="Salut")["context"]
 
 
@@ -1270,6 +1343,42 @@ def test_a_silent_reply_of_any_marker_leaves_the_news_untold(chat, silence):
     assert habits.news() != []
 
 
+def test_the_prompt_gives_the_call_that_works_with_and_without_hermess_tool_bridge(chat, tmp_path, monkeypatch):
+    # On the owner's real Hermes (11 November) habit_run sat behind Hermes's tool bridge (tool_search, tool_describe,
+    # tool_call), where Hermes puts every plugin tool by default, and the section said only "Call one: habit_run
+    # {name, inputs}": of 11 reflex turns, 3 began with "Tool 'habit_run' does not exist" and 4 spent a
+    # tool_describe, 10 to 16 s for a reflex that runs in 2. The section gives both calls, each in its exact shape.
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "skills", lambda: [])
+    text = section(habits)
+    assert "Call one: habit_run {name, inputs}." in text  # habit_run is in the tool list: the direct call
+    assert cockpit.PROMPT_BRIDGE in cockpit.PROMPT_INTRO and cockpit.PROMPT_BRIDGE in text
+    bridge = cockpit.PROMPT_BRIDGE
+    assert bridge.startswith("Not in your tool list? ") and bridge.endswith("no tool_describe first.")
+    # Hermes's own shape, with {…} for what the direct call holds: {name, inputs}, {name, message}, {habits: […]},
+    # {file, inputs, dry: true}: the forms the section gives.
+    assert 'tool_call {calls: [{name: "habit_run", arguments: {…}}]} with the same {…}' in bridge
+    for form in ("habit_run {name, inputs}", "habit_run {habits: [", 'habit_run {file: "<path>", inputs, dry: true}'):
+        assert form in text, form
+    # several reflexes: one habit_run either way, so one entry in the bridge's calls (Hermes refuses a tool_call
+    # with two entries for a tool of its own machine: "tool_call takes exactly one entry for local tools")
+    assert "habit_run {habits: [{name: hermes-health}, {name: check-links, inputs: {page: …}}]}" in text
+    assert "one entry" in bridge and bridge.count("calls: [{") == 1 and "ONE call, not one each" in text
+    # the bridge's call as Hermes parses it: calls is a list of one {name, arguments}, and its check of a call sent
+    # with no tool_describe before refuses nothing here (habit_run requires no argument)
+    shape = re.search(r"tool_call (\{calls: \[\{name: \"habit_run\", arguments: \{…\}\}\]\})", bridge).group(1)
+    assert json.loads(re.sub(r"([{ ])(\w+):", r'\1"\2":', shape.replace("{…}", "{}"))) == {
+        "calls": [{"name": "habit_run", "arguments": {}}]}
+    assert "required" not in tools.RUN_SCHEMA["parameters"]
+    assert set(tools.RUN_SCHEMA["parameters"]["properties"]) >= {"name", "inputs", "message", "habits", "file", "dry"}
+    for n in range(12):  # with twelve reflexes of one's own it still fits, every line shown
+        with_habit(tmp_path, monkeypatch, f"my-reflex-number-{n:02d}", DEMO.replace("trigger: message\n", ""),
+                   description="Sort the files of a folder by their type, nicely")
+        habits.ledger.adopt(f"my-reflex-number-{n:02d}", catalog.find(f"my-reflex-number-{n:02d}").version, "asked")
+    text = section(habits)
+    assert len(text) <= cockpit.PROMPT_CHARS == 2400 and text.count("\n- my-reflex-number-") == 12 and bridge in text
+
+
 def test_the_prompt_gives_the_exact_forms_of_habits_dry_and_message(chat, tmp_path, monkeypatch):
     # Seen live: two different reflexes in one message became two habit_run calls, and the model loaded the tool's
     # description (tool_describe) before using dry or habits. The forms it needs are in the prompt, before any load.
@@ -1288,6 +1397,8 @@ def test_the_prompt_gives_the_exact_forms_of_habits_dry_and_message(chat, tmp_pa
         habits.ledger.adopt(f"my-reflex-number-{n:02d}", catalog.find(f"my-reflex-number-{n:02d}").version, "asked")
     text = section(habits)
     assert len(text) <= cockpit.PROMPT_CHARS and text.count("\n- my-reflex-number-") == 12
+    # the real-model trial, defect 1: one short sentence says a listed reflex stands for typing its command
+    assert "Your reflexes (name(inputs) · state · what for). Each replaces typing its command:" in text
 
 
 def test_show_tells_the_file_and_the_steps_of_a_reflex_in_the_order_a_reader_follows(chat, monkeypatch):
@@ -1298,13 +1409,15 @@ def test_show_tells_the_file_and_the_steps_of_a_reflex_in_the_order_a_reader_fol
     shown = habits.detail("hermes-health").splitlines()
     assert f"file: {health.path}" in shown and "steps:" in shown
     steps = shown[shown.index("steps:") + 1:]
-    assert len(steps) == len(health.graph["nodes"]) <= 20
-    assert steps[0].startswith("  gateway: do terminal grep -hoE ") and steps[0].endswith("→ frozen")
+    lines = [line for line in steps if not line.startswith("        ")]  # a long step wraps under itself
+    assert len(lines) == len(health.graph["nodes"]) <= 20
+    assert steps[0].startswith("  gateway: do terminal grep -hoE ") and "→ frozen" in " ".join(steps[:6])
+    assert not any(line.endswith("…") for line in steps)  # `show` cuts nothing
     assert "  gateway_ok: check gateway empty → yes frozen_ok, no gateway_attention" in steps
     assert "  disk_full: check disk greater 89 → yes disk_attention, no quiet" in steps
-    assert steps[-1].startswith("  help: wake ")  # the fallback nothing leads to comes last
-    assert all(len(line) < 140 for line in steps)
-    assert [s.split(":")[0].strip() for s in steps].index("gateway_attention") > [s.split(":")[0].strip() for s in steps].index("gateway_ok")
+    assert lines[-1].startswith("  help: wake ")  # the fallback nothing leads to comes last
+    assert all(len(line) <= 100 for line in steps)  # a long step wraps between words
+    assert [s.split(":")[0].strip() for s in lines].index("gateway_attention") > [s.split(":")[0].strip() for s in lines].index("gateway_ok")
     # in a chat the page is a command and the steps are the file's: the chat shows only the lines it always did
     assert "steps:" not in habits.detail("hermes-health", platform="telegram")
 
@@ -1318,10 +1431,25 @@ def test_a_step_is_told_by_its_verb_and_the_steps_have_a_french_twin():
         "d": {"end": "All done.\nSecond line " + "y" * 80},
         "lost": {"wake": "Check by hand"}}}
     lines = display.steps(graph_)
-    assert lines[0] == "  a: ask \"Is it urgent? " + "x" * 46 + "\" → yes b, no c"
-    assert lines[1:] == ["  b: use check-links → c", "  c: llm → d", "  d: end \"All done. Second line " + "y" * 38 + "\"",
+    assert lines[0] == '  a: ask "Is it urgent?…" → yes b, no c'  # a cut ends with … and never inside a word
+    assert lines[1:] == ["  b: use check-links → c", "  c: llm → d", "  d: end \"All done. Second line…\"",
                          "  lost: wake \"Check by hand\""]
     assert texts.say("file", "fr", path="/x") == "fichier : /x" and texts.say("steps", "fr") == "étapes :"
+
+
+def test_a_step_line_never_cuts_a_sentence_in_the_middle_of_a_word():
+    from habits import display
+    text = "The reflex could not run git proj branch: do it the usual way."
+    [line] = display.steps({"start": "back", "nodes": {"back": {"wake": text}}})
+    assert line == '  back: wake "The reflex could not run git proj branch: do it the usual…"'
+    words = text.split()
+    for size in range(20, 70):  # whatever the size, what is shown ends on a whole word of the text
+        cut = display._cut(text, size)
+        assert len(cut) <= size and cut.rstrip("…").split()[-1] in words, (size, cut)
+    command = "git -C /home/someone/project branch --show-current && git -C /home/someone/project log --oneline"
+    [step] = display.steps({"start": "a", "nodes": {"a": {"do": "terminal", "args": {"command": command}, "next": "b"}}})
+    shown = step.split("terminal ", 1)[1].split(" → ")[0].rstrip("…").split()[-1]
+    assert shown in command.split() and step.endswith(" → b")
 
 
 def test_the_steps_never_raise_on_a_graph_the_validation_refuses():
@@ -1337,3 +1465,301 @@ def test_the_steps_never_raise_on_a_graph_the_validation_refuses():
 def test_the_terminal_words_keep_line_breaks_and_no_other_control_character():
     from habits import display
     assert display.terminal("a\x1b[2Jb\x07c\x85d\nnext /habits") == "a [2Jb c d\nnext /habits".replace("/habits", display.terminal("/habits"))
+
+
+# ---- the guard fails closed: the verb is read the way the shell reads it ---------------------------------------
+
+STATE_VERBS_SPELLED = [  # the model's `hermes habits promote x`, spelled so the plain text check misses it
+    "hermes habits $'promote' x",
+    "hermes habits {promote,x}",
+    "hermes habits $'\\x70romote' x",
+    'hermes habits "$(echo promote)" x',
+    "hermes habits ${P:-promote} x",
+    "hermes habits $VERB x",
+    "hermes habits `echo undo`",
+    "P=promote; hermes habits $P x",
+    "hermes --profile demo habits retire x",
+    "hermes habits pause",
+    "hermes habits cleanup",
+    "hermes habits dream-apply x",  # a verb that does not exist yet
+    "env hermes habits resume",
+    "/usr/bin/env -i ~/.local/bin/hermes habits reset x",
+    "bash -c 'hermes habits promote x'",
+    "sh -c \"hermes habits $'undo'\"",
+    "echo x | xargs hermes habits promote",
+    "hermes habits list; hermes habits $'retire' x",
+    "hermes $'habits' resume",
+    "hermes habits -h promote",
+]
+
+
+@pytest.mark.parametrize("command", STATE_VERBS_SPELLED)
+def test_a_state_verb_spelled_so_the_text_misses_it_is_still_the_users(chat, monkeypatch, command):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    for tool, args in (("terminal", {"command": command}),
+                       ("execute_code", {"code": f"import os\nos.system({command!r})"})):
+        verdict = habits.on_pre_tool_call(tool_name=tool, args=args)
+        assert verdict and verdict["action"] == "block" and "/habits" in verdict["message"], (tool, command)
+
+
+@pytest.mark.parametrize("code", [
+    "import subprocess\nsubprocess.run(['hermes', 'habits', 'pro' + 'mote', 'x'])",
+    "import subprocess\nverb = 'promote'\nsubprocess.run(['hermes', 'habits', verb])",
+    "import subprocess\nsubprocess.run(f'hermes habits {verb} x', shell=True)",
+    "import subprocess\nsubprocess.run('hermes habits ' + verb, shell=True)",
+    "import subprocess\nsubprocess.run(['hermes', 'habits', '\\x70romote'])",
+    "import subprocess\nsubprocess.run(['hermes', 'habits', 'pause'])",
+    "import subprocess\nsubprocess.run('hermes habits {} x'.format('retire'), shell=True)",
+    "import subprocess\nsubprocess.run(['hermes', 'habits', 'run', 'x', '--live'])",
+    "import subprocess\nsubprocess.run('hermes habits $\\'promote\\' x', shell=True)",
+    "import subprocess\nsubprocess.run(['hermes', 'habits'] + ['promote', 'x'])",
+    "import subprocess\nsubprocess.run(['hermes', 'habits', *['promote', 'x']])",
+    "import subprocess\nsubprocess.run(['hermes', 'habits', 'list'])\nsubprocess.run(['hermes', 'habits', 'undo'])",
+    "import subprocess\nsubprocess.run(['hermes', ''.join(['ha', 'bits']), 'promote'])",
+    "import subprocess\nsubprocess.run(['hermes', chr(104) + 'abits', 'promote'])",
+    "def broken(:\n  'hermes habits list'",  # code that does not parse: the reader cannot read it
+])
+def test_code_that_runs_a_state_verb_by_any_spelling_is_blocked(chat, monkeypatch, code):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    verdict = habits.on_pre_tool_call(tool_name="execute_code", args={"code": code})
+    assert verdict and verdict["action"] == "block" and "/habits" in verdict["message"], code
+
+
+@pytest.mark.parametrize("command", [
+    "hermes habits", "hermes habits list", f"hermes habits show {NAME} --json", f"hermes habits view {NAME}",
+    "hermes habits check draft/reflex.yml", f"hermes habits tick {NAME}", "hermes habits help", "hermes habits --help",
+    "hermes habits -h", "~/.local/bin/hermes habits list | head -5", "hermes --profile demo habits list",
+    "hermes habits run draft/reflex.yml --json", "hermes habits run draft/reflex.yml --input a=1 --message hi",
+    "cd /tmp/hb && hermes habits run draft/reflex.yml --within /tmp/hb --json 2>&1 | tail -3",
+    "ls ~/code/hermes-habits && git -C ~/code/hermes-habits log --oneline | head -3",
+    "grep -rn habits ~/notes", "echo habits are good habits",
+])
+def test_the_commands_that_change_nothing_still_pass(chat, monkeypatch, command):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    assert habits.on_pre_tool_call(tool_name="terminal", args={"command": command}) is None, command
+
+
+def test_code_that_calls_hermes_for_something_else_still_passes(chat, monkeypatch):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    # (a chat whose message is a variable is no longer here: it may carry /habits yes, see test_guard)
+    for code in ("import subprocess\nsubprocess.run(['hermes', 'chat', '-q', 'summarize the README'])",
+                 "import subprocess\nsubprocess.run(['hermes', 'config', 'show'])"):
+        assert habits.on_pre_tool_call(tool_name="execute_code", args={"code": code}) is None, code
+
+
+def test_a_listing_from_code_passes_and_a_run_of_a_draft_from_code_passes(chat, monkeypatch):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    for code in ("import subprocess\nprint(subprocess.run(['hermes', 'habits', 'list'], capture_output=True).stdout)",
+                 "import subprocess\nsubprocess.run('hermes habits show x --json', shell=True)",
+                 "print('habits are good')"):
+        assert habits.on_pre_tool_call(tool_name="execute_code", args={"code": code}) is None, code
+
+
+@pytest.mark.parametrize("command", [
+    f"hermes habits run {NAME} --live",
+    f"hermes habits run {NAME} --live --json",
+    f"hermes habits run {NAME} --li",
+    f"hermes habits run {NAME} --l",
+    f"hermes habits run {NAME} --liv --json",
+    f"hermes habits run --live {NAME}",
+    f"hermes habits run {NAME} --memory m.json",
+    f"hermes habits run {NAME} --in a=1 --li",
+    f"hermes habits run {NAME} --$'live'",
+    f"hermes habits run {NAME} $FLAG",
+    f"hermes habits run {NAME} --live=1",
+])
+def test_a_live_run_from_the_model_is_refused_with_what_to_do_instead(chat, monkeypatch, command):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    for tool, args in (("terminal", {"command": command}),
+                       ("execute_code", {"code": f"import os\nos.system({command!r})"})):
+        verdict = habits.on_pre_tool_call(tool_name=tool, args=args)
+        assert verdict and verdict["action"] == "block", command
+        assert "habit_run" in verdict["message"] and "user" in verdict["message"], verdict["message"]
+
+
+def test_a_live_run_is_refused_whatever_the_state_of_the_habit(chat, monkeypatch):
+    ctx, habits = chat
+    folder = Path.home() / ".hermes" / "skills" / NAME
+    monkeypatch.setattr(catalog, "folders", lambda: {NAME: folder})
+    for status in ("shadow", "active", "retired"):
+        monkeypatch.setattr(habits.ledger, "status", lambda *a, _s=status, **k: _s, raising=False)
+        verdict = habits.on_pre_tool_call(tool_name="terminal", args={"command": f"hermes habits run {NAME} --live"})
+        assert verdict and verdict["action"] == "block" and "habit_run" in verdict["message"], status
+
+
+def deep(n):
+    return "echo " + "$(" * n + "x" + ")" * n
+
+
+def test_a_line_nested_too_deep_is_one_the_reader_cannot_read():
+    from habits import shell
+    for line in (deep(600), "hermes habits " + "$(" * 600 + "x" + ")" * 600):
+        with pytest.raises(shell.Unknown):
+            shell._lex(line)
+        assert shell.reads_only(line) is False
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("terminal", {"command": deep(600)}),
+    ("terminal", {"command": "cp /tmp/x.yaml ~/.hermes/skills/fresh/assets/reflex.yml; " + deep(600)}),
+    ("terminal", {"command": "hermes habits " + "$(" * 600 + "x" + ")" * 600}),
+    ("write_file", {"path": "~/.hermes/skills/x/notes.md", "content": "x"}),
+    ("patch", {"path": "~/x.md", "old_string": "a", "new_string": "b"}),
+    ("execute_code", {"code": "x = " + "(" * 400 + "1" + ")" * 400 + "\nimport subprocess"}),
+    ("skill_manage", {"name": "a", "action": "edit", "content": "x"}),
+])
+def test_anything_that_breaks_the_guard_on_a_dangerous_tool_blocks_the_call(chat, monkeypatch, caplog, tool, args):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+
+    def broken(*a, **k):
+        raise RuntimeError("boom")
+    from habits import guard
+    monkeypatch.setattr(guard, "concerns", broken)  # the guard's first question: is this call the plugin's business?
+    verdict = habits.on_pre_tool_call(tool_name=tool, args=args)
+    assert verdict and verdict["action"] == "block" and "Habits" in verdict["message"], tool
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("terminal", {"command": "cp /tmp/x.yaml ~/.hermes/skills/fresh/assets/reflex.yml; " + deep(600)}),
+    ("terminal", {"command": "hermes habits " + "$(" * 600 + "x" + ")" * 600}),
+    ("write_file", {"path": "~/.hermes/skills/x/notes.md", "content": "x"}),
+    ("patch", {"path": "~/.hermes/x.md", "old_string": "a", "new_string": "b"}),
+    ("execute_code", {"code": "x = " + "(" * 400 + "1" + ")" * 400 + "\nimport subprocess  # hermes"}),
+    ("skill_manage", {"name": "a", "action": "edit", "content": "x"}),
+])
+def test_a_careful_reading_that_breaks_blocks_the_call_it_was_reading(chat, monkeypatch, tool, args):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    from habits import guard
+    monkeypatch.setattr(guard, "changes_state", lambda *a, **k: 1 / 0)
+    verdict = habits.on_pre_tool_call(tool_name=tool, args=args)
+    assert verdict and verdict["action"] == "block" and "Habits" in verdict["message"], tool
+
+
+def test_other_tools_go_on_when_the_guard_breaks(chat, monkeypatch):
+    ctx, habits = chat
+    from habits import guard
+    monkeypatch.setattr(guard, "changes_state", lambda *a, **k: 1 / 0)
+    monkeypatch.setattr(guard, "concerns", lambda *a, **k: 1 / 0)
+    for tool in ("read_file", "search_files", "web_search", "habit_run", "memory"):
+        assert habits.on_pre_tool_call(tool_name=tool, args={"path": "x"}) is None, tool
+
+
+def test_a_deeply_nested_line_with_a_state_verb_is_blocked_end_to_end(chat, monkeypatch):
+    ctx, habits = chat
+    monkeypatch.setattr(catalog, "folders", lambda: {})
+    for command in (deep(600) + " ; hermes habits $'promote' x", "hermes habits $'promote' " + deep(600)):
+        verdict = habits.on_pre_tool_call(tool_name="terminal", args={"command": command})
+        assert verdict and verdict["action"] == "block", command[:40]
+
+
+# ---- a reflex the user copied by hand, with no start of its own (round 1, defect 2) ---------------------------------
+
+STOCK = ("spec: habits/0.1\ninputs: [file]\nstart: count\nfallback: help\nnodes:\n"
+         "  count: {do: terminal, read: true, args: {command: 'wc -l {file}'}, next: tidy}\n"
+         "  tidy: {do: terminal, args: {command: 'rm -f ./old.log'}, next: done}\n"
+         "  done: {end: Counted.}\n  help: {wake: Could not count.}\n")
+
+
+def test_a_copied_reflex_with_no_start_waits_for_the_yes_and_can_get_it(chat, tmp_path, monkeypatch):
+    # Round 1: the list said "called by name", the yes answered "nothing to decide", and the model was told to do it
+    # itself: 0 of 5 requests called it. The rule is the specification's (C1): a reflex the plugin did not save acts
+    # only after the user's yes, and it can get that yes, in a chat and in a terminal.
+    no_examples(monkeypatch)
+    ctx, habits = chat
+    with_habit(tmp_path, monkeypatch, "stock-report", STOCK)
+    # before the yes: the list says it waits and gives the words, the model is not told to call it
+    wait = "◇ stock-report · called by name · waits for your yes: /habits yes stock-report"
+    assert wait in habits.command("").splitlines() and habits.command("stock-report").splitlines()[0] == wait
+    assert f"- stock-report(file) · {L}" in section(habits) and "stock-report" not in habits.callable_names()
+    # a typed yes shows what it would run first, the deleting command included, and takes nothing yet
+    card = habits.command("yes stock-report", session_id="s1")
+    assert "wc -l {file}" in card and "rm -f ./old.log" in card and "`rm" in card.split("Say /habits yes")[0]
+    assert card.splitlines()[-1] == "Say /habits yes stock-report again to let Hermes call it, or /habits rest stock-report."
+    assert habits.ledger.status("stock-report", catalog.find("stock-report").version) == "shadow"
+    said = habits.command("yes stock-report", session_id="s1")
+    assert said.startswith("✅ stock-report can be called by Hermes now") and "answers on its own" not in said
+    assert habits.ledger.status("stock-report", catalog.find("stock-report").version) == "active"
+    # after the yes: the model's list says it may call it, the list says it is called by name, a second yes is told
+    assert f"- stock-report(file) · call it" in section(habits) and "stock-report" in habits.callable_names()
+    assert "◇ stock-report · called by name" in habits.command("").splitlines()
+    assert habits.command("yes stock-report", session_id="s1").startswith("◇ stock-report can be called by Hermes already")
+    # after the yes it runs for real when Hermes calls it (Hermes's own approval rules still decide a deleting command)
+    with_habit(tmp_path, monkeypatch, "stock-make", STOCK.replace("rm -f ./old.log", "mkdir -p ./out"))
+    for _ in range(2):
+        habits.command("yes stock-make", session_id="s1")
+    reply = json.loads(habits.tool_run({"name": "stock-make", "inputs": {"file": "a.txt"}}))
+    assert reply["status"] == "end" and reply["done"] and any(
+        name == "terminal" and "mkdir -p ./out" in args["command"] for name, args in ctx.calls)
+
+
+def test_a_copied_reflex_takes_its_yes_in_a_terminal(chat, tmp_path, monkeypatch, capsys):
+    no_examples(monkeypatch)
+    ctx, habits = chat
+    with_habit(tmp_path, monkeypatch, "stock-report", STOCK)
+
+    def yes():
+        code = habits.cli_handle(SimpleNamespace(habits_command="yes", name="stock-report"))
+        return code, capsys.readouterr().out
+
+    code, shown = yes()  # the terminal shows what it would run, then waits for the same words again
+    assert code == 1 and "rm -f ./old.log" in shown and "hermes habits yes stock-report again" in shown
+    code, shown = yes()
+    assert code == 0 and shown.startswith("✅ stock-report can be called by Hermes now")
+    assert "- stock-report(file) · call it" in section(habits)
+    assert [(h["to"], h["by"]) for h in habits.ledger.history("stock-report")][0] == ("active", "cli")
+    habits.cli_handle(SimpleNamespace(habits_command="list", json=False, home=None))
+    assert "◇ stock-report · called by name" in capsys.readouterr().out
+    # a reflex the plugin saved itself still has nothing to decide
+    with_habit(tmp_path, monkeypatch, "saved-one", STOCK)
+    habits.ledger.adopt("saved-one", catalog.find("saved-one").version, "asked")
+    assert habits.command("yes saved-one").endswith("there is nothing to decide.")
+
+
+# ---- R1: wrong by name, in a chat that has run nothing yet --------------------------------------------------------
+
+def test_wrong_with_a_name_works_in_a_new_chat(chat):
+    ctx, habits = chat
+    ready(ctx, habits)
+    assert habits.yes(NAME)[0]
+    active_turn(habits, "yesterday")
+    assert habits.command("wrong", session_id="new-chat") == "No habit answered on its own in this conversation."
+    assert habits.command("wrong", session_id="") == "No habit answered on its own in this conversation."
+    assert habits.command(f"wrong {NAME}", session_id="new-chat").startswith(f"↩︎ Noted: {NAME} goes back to learning")
+    assert habits.ledger.status(NAME, version()) == "shadow"
+    assert habits.ledger.runs(NAME, 1)[0]["matched"] == 0
+
+
+def test_wrong_with_a_name_never_touches_another_habit(chat, tmp_path, monkeypatch):
+    ctx, habits = chat
+    ready(ctx, habits)
+    assert habits.yes(NAME)[0]
+    active_turn(habits, "same-session")
+    with_habit(tmp_path, monkeypatch, "other-habit", DEMO)
+    assert habits.command("wrong other-habit", session_id="same-session") == (
+        "No habit answered on its own in this conversation.")
+    assert habits.ledger.status(NAME, version()) == "active"
+
+
+def test_show_says_where_a_message_habit_stands_while_hermes_checks_behind_it(chat):
+    ctx, habits = chat
+    ready(ctx, habits)
+    assert habits.yes(NAME)[0]
+    agreed = 1
+    habits.ledger.agreed = lambda name, vers: agreed  # a run agreed so far, as in the yes above
+    assert (f"Where it stands: Hermes still checks behind it ({agreed} of 3 runs agreed), so its runs are as slow as "
+            "before; then it answers alone.") in habits.detail(NAME)
+    ctx.config["language"] = "fr"
+    assert f"Hermes vérifie encore derrière elle ({agreed} fois d'accord sur 3)" in habits.detail(NAME)
+    ctx.config["language"] = "en"
+    habits.ledger.agreed = lambda name, vers: 3
+    assert "Where it stands: it answers alone; 1 run in 10 is still checked behind." in habits.detail(NAME)
+    habits.ledger.set_status(NAME, version(), "shadow", "x")
+    assert "Where it stands" not in habits.detail(NAME)

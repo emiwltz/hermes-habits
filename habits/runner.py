@@ -1,6 +1,6 @@
-"""Run a habit graph: the S1 decides, Hermes tools act, every step is traced.
+"""Run a habit graph: the decision model decides, Hermes tools act, every step is traced.
 
-The same graph with the same S1 answers always takes the same path. Anything
+The same graph with the same decision-model answers always takes the same path. Anything
 that goes wrong (an error without an exit, an unsure answer, a budget) ends on
 the fallback, a wake node, with the reason: a habit never fails silently.
 """
@@ -95,6 +95,8 @@ class Env:
     workers: int = 8  # reads of an each that run at the same time (graph.PARALLEL_TOOLS only); 1: one by one
     workdir: str | None = None  # where terminal commands start, whatever folder the session is in
     writes: Callable[[str, dict], str] | None = None  # (tool, args) -> why a write may not run, "" when it may
+    llm_in_commands: bool = False  # model_text: quoted -> a value an llm wrote may fill one operand of a terminal command
+    deleting: bool = False  # permissions: hermes, a live run with the user's yes inside a turn -> a deleting command may run
 
 
 @dataclass
@@ -240,6 +242,8 @@ class _Run:
         self.vars = {**inputs, "trigger": trigger}
         self.tables: set[str] = set()  # variables that map each item to a value
         self.unsafe: set[str] = set(unsafe) & set(inputs)  # variables written by an llm node
+        self.outside: set[str] = set()  # of those, the ones whose only source is text from outside (a page, a screen)
+        self.each_outside = False  # the each being rendered runs over such a value: its {item} is text from outside
         self.partial: set[str] = set()  # tables of a do whose calls partly failed: never a check: changed reference
         self.kept = False  # a check: changed set a read aside
         self.failed_calls = []  # [node, item key]: a call that ran and failed, not a value refused before it
@@ -417,10 +421,20 @@ class _Run:
         if not isinstance(value, str):
             return value
         if tool == "terminal":
+            risky = set()
             for path in (m.group(0)[1:-1] for m in graph.TEMPLATE.finditer(value)):
                 head = path.split(".")[0]
                 if head in self.unsafe or (head == "item" and tainted):
-                    raise BadValue(f'"{path}" was written by an llm node and cannot enter a terminal call')
+                    risky.add(head)
+                    # model_text: never keeps a model's text out of every command; text from outside is held to the
+                    # code positions and the deleting rule (checked below), and is still one quoted operand.
+                    if not self.env.llm_in_commands and not (head in self.outside or head == "item" and self.each_outside):
+                        raise BadValue(f'"{path}" was written by an llm step and cannot enter a terminal call')
+            # Whatever the switch says, such a value (a model's, or text a page, a server or a screen sent) is never code:
+            # the program, the script of sed/awk/jq, an option that takes code, a command that deletes.
+            where = graph._code_position(value, risky) if risky and key == "command" else ""
+            if where:
+                raise BadValue(f"a value written by an llm step or read from a tool's output cannot go {where}")
         line = tool == "terminal" and key == "command"
         whole = graph.TEMPLATE.fullmatch(value)
         if whole and not line:
@@ -445,8 +459,28 @@ class _Run:
             return shlex.quote(text)
         filled = graph.TEMPLATE.sub(sub, value)
         if line and graph._deletes(filled):
-            raise BadValue("the filled command would delete files; habits never delete")
+            # A deleting command with a value an llm wrote in it never runs, whatever the switches: only one the reflex
+            # itself holds may pass, and only when the switch lets it.
+            written = any(m.group(0)[1:-1].split(".")[0] in self.unsafe or (m.group(0)[1:-1].split(".")[0] == "item"
+                                                                          and tainted)
+                          for m in graph.TEMPLATE.finditer(value))
+            if written:
+                raise BadValue("the filled command would delete files with a value a model or a tool wrote: that "
+                               "never runs")
+            if not self.env.deleting and not self.env.dry:  # a test run only plans, so it can show the delete
+                raise BadValue("the filled command would delete files: a habit may do that only with your yes and "
+                               "permissions set to hermes")
         return filled
+
+    @staticmethod
+    def still_read(node, args):
+        """A terminal step marked read: true was checked as a template at validation; a value filled in can turn it into
+        something else (curl -s {url} with file:// or gopher://). Check the filled command with the same reader."""
+        command = args.get("command") if isinstance(args, dict) else None
+        if node.get("read") is True and node.get("do") == "terminal" and isinstance(command, str):
+            cause = shell.why(command)
+            if cause:
+                raise BadValue(f"the filled command is no longer a read ({cause}): {command[:80]!r}")
 
     def items(self, node, key="each") -> list:
         """The items of an each (or of a pick, which also takes a table's keys), filtered by where, without the
@@ -479,7 +513,16 @@ class _Run:
         self.doubted.add(_key(item))
         self.doubts.append({"item": item, "node": node, "reason": reason, "confidence": confidence})
 
-    def store(self, node, value, table=False, unsafe=False, partial=False):
+    def origin(self, node) -> dict:
+        """store() keywords for a do step's output: unsafe when the step ran over, or its arguments hold, a value a model
+        wrote or a tool's output carried (jq, grep, echo over a page print text derived from it: one step of laundering
+        does not clean it), or when the step itself reads from outside; outside when every such source is text from outside."""
+        each = node["each"].split(".")[0] if isinstance(node.get("each"), str) else None
+        heads = (graph._references(node.get("args")) | ({each} if each else set())) & self.unsafe
+        unsafe = bool(heads) or graph.from_outside(node)
+        return {"unsafe": unsafe, "outside": unsafe and all(h in self.outside for h in heads)}
+
+    def store(self, node, value, table=False, unsafe=False, partial=False, outside=None):
         """unsafe: written by an llm node, or a table an each built over such a value, whose keys are its items (a
         pick takes one of them)."""
         name = node.get("as")
@@ -488,10 +531,14 @@ class _Run:
         self.vars[name] = value
         (self.tables.add if table else self.tables.discard)(name)
         (self.unsafe.add if unsafe else self.unsafe.discard)(name)
+        if outside is None:  # taken from a value by an each or a pick: as outside as that value
+            sources = {node[key].split(".")[0] for key in ("each", "pick") if isinstance(node.get(key), str)}
+            outside = bool(sources) and all(h in self.outside for h in sources)
+        (self.outside.add if unsafe and outside else self.outside.discard)(name)
         (self.partial.add if partial else self.partial.discard)(name)
 
     def state(self, names, item=None) -> str:
-        """The state an ask gives the S1; with item, a table's entry for that item."""
+        """The state an ask gives the decision model; with item, a table's entry for that item."""
         parts = []
         for name in names or []:
             try:
@@ -657,15 +704,17 @@ class _Run:
 
     def _do(self, name, node, step):
         tool, read = node["do"], _reads(node)
+        self.each_outside = False
         if "each" not in node:
             try:
                 args = self.render(tool, node.get("args"), None)
+                self.still_read(node, args)
             except BadValue as exc:
                 return self.exit_error(name, node, step, str(exc))
             out, error = self.call(name, tool, args, read)
             if error:
                 return self.exit_error(name, node, step, error)
-            self.store(node, out)
+            self.store(node, out, **self.origin(node))
             step["out"] = _short(out)
             step["summary"] = "planned (dry run)" if self.env.dry and not read else f"{tool} ok"
             return node["next"]
@@ -675,7 +724,9 @@ class _Run:
         outputs, failures, calls = {}, [], []
         for item in items:
             try:
+                self.each_outside = node["each"].split(".")[0] in self.outside
                 args = self.render(tool, node.get("args"), item, tainted=node["each"].split(".")[0] in self.unsafe)
+                self.still_read(node, args)
             except BadValue as exc:
                 failures.append(str(exc))
                 self.doubt(item, name, str(exc), unsafe=node["each"].split(".")[0] in self.unsafe)
@@ -697,7 +748,7 @@ class _Run:
                 self.failed_calls.append([name, _key(item)])
             else:
                 outputs[_key(item)] = out
-        self.store(node, outputs, table=True, unsafe=node["each"].split(".")[0] in self.unsafe, partial=bool(failures))
+        self.store(node, outputs, table=True, partial=bool(failures), **self.origin(node))
         verb = "planned (dry run)" if self.env.dry and not read else "done"
         step["summary"] = f"{len(items)} {tool} call{'' if len(items) == 1 else 's'} {verb}" + (f", {len(failures)} failed" if failures else "")
         if "one_by_one_ms" in step:
@@ -743,7 +794,7 @@ class _Run:
             return None, f"{tool} refused: {refused}"
         self.called.add(tool)
         command = args.get("command") if tool == "terminal" and isinstance(args.get("command"), str) else ""
-        pipe = shell.pipeline(command) if read and command else None
+        pipe = shell.pipeline(command) if command else None  # a step that acts too: "No such file" then tail is no success
         # a line the reader cannot read counts, for all it knows, when it names hc at all
         self.untrusted |= "hc" in command and (bool(SCREEN.search(command))
                                                or any(shell.uses(command, *screen) for screen in SCREENS))
@@ -847,10 +898,10 @@ class _Run:
 
 def _reads(node) -> bool:
     """A step that only reads: marked read: true, or a read tool, or a read-only command."""
+    if node.get("read") is False:  # said so, even of a tool that reads (a draft's web call is only planned in a test)
+        return False
     if node.get("read") is True or node.get("do") in graph.READ_TOOLS:
         return True
-    if node.get("read") is False:
-        return False
     command = (node.get("args") or {}).get("command") if node.get("do") == "terminal" else None
     # curl, ssh and hc reach another machine (hc read pi/t3 goes over ssh): such a read runs in shadow only when the
     # graph says read: true (after a ;, in a $( ) or through ssh too)

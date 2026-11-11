@@ -45,6 +45,8 @@ class FakeCtx:
         self.skills[name] = Path(path)
 
     def get_config(self, key, default=None):
+        if key == "dream" and key not in self.config:
+            return "manual"  # no test starts a real background dream by accident; the daily rule's tests say "daily"
         return self.config.get(key, default)
 
     def dispatch_tool(self, name, args):
@@ -135,7 +137,9 @@ def test_both_skills_are_registered():
     assert set(ctx.skills) == {"habits", "writing-habits"} and all(p.exists() for p in ctx.skills.values())
     for name, description in plugin.SKILLS:  # what the skill index shows matches the file's own frontmatter
         head = (plugin.ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
-        assert yaml.safe_load(head) == {"name": name, "description": description} and len(description) <= 60
+        meta = yaml.safe_load(head)
+        assert meta["name"] == name and len(description) <= 60
+        assert meta["description"] == description  # the index and the file say the same, in the plugin's words
 
 
 def test_a_skill_another_plugin_holds_leaves_habits_working():
@@ -173,7 +177,10 @@ def test_the_run_description_leads_with_a_reflex_called_by_name():
     first = _first_sentence(tools.RUN_DESCRIPTION)
     assert first == tools.RUN_HEAD.split(". ")[0] + "." and len(first) <= 60 and "…" not in first
     assert "reflex" in first and "by name" in first
-    assert set(tools.RUN_SCHEMA["parameters"]["properties"]) >= {"name", "inputs", "message", "scenario", "file"}
+    # what it is for, in the words the prompt section uses for a reflex: the listing is all a model sees of the tool
+    assert first == "Call a reflex by name: it does a known task in a second."
+    assert "does a known task in a second" in cockpit.PROMPT_INTRO.splitlines()[0]
+    assert set(tools.RUN_SCHEMA["parameters"]["properties"]) >= {"name", "inputs", "message", "reflex", "file"}
 
 
 # Habit_run {…, dry: true}. Reads, asks, checks and llm steps run; writes are only planned; nothing is recorded.
@@ -489,11 +496,11 @@ def test_yaml_text_keeps_yes_and_no_as_text(setup):
 
 
 @pytest.mark.parametrize("args, why", [
-    ({}, "scenario"), ({"scenario": DEMO, "file": "/x.yaml"}, "not both"), ({"file": "/nowhere/x.yaml"}, "no file"),
+    ({}, "reflex"), ({"scenario": DEMO, "file": "/x.yaml"}, "not both"), ({"reflex": DEMO, "file": "/x.yaml"}, "not both"), ({"file": "/nowhere/x.yaml"}, "no file"),
     ({"file": "~/.hermes/.env"}, ".yaml"), ({"file": "~/.hermes/config.yaml"}, "in Hermes's home"),
     ({"file": "~/.hermes/CACHE/SCRATCH/d.yaml"}, "in Hermes's home"), ({"file": "~/.codex/auth.json"}, "secrets"),
 ])
-def test_a_graph_comes_from_scenario_or_file_and_never_both(setup, args, why, tmp_path, monkeypatch):
+def test_a_reflex_comes_from_reflex_or_file_and_never_both(setup, args, why, tmp_path, monkeypatch):
     _, habits = setup
     # A fake home, first with no ~/.hermes (as on CI), then with an empty one: a secrets or config path is refused by
     # its name, never as missing, so the refusal never tells whether the file or its folder exists.
@@ -508,7 +515,7 @@ def test_a_graph_comes_from_scenario_or_file_and_never_both(setup, args, why, tm
         run = json.loads(habits.tool_run(args))
         assert run["status"] == "refused" and (why in " ".join(run["issues"]) or not args)
         if not args:  # habit_run also takes a saved habit's name: the refusal says the three ways
-            assert "scenario, file or name" in " ".join(run["issues"])
+            assert "reflex, file or name" in " ".join(run["issues"])
 
 
 def test_a_graph_with_aliases_is_refused_at_once_and_a_save_writes_none(setup, tmp_path):
@@ -569,6 +576,38 @@ def test_a_secrets_file_is_never_read_into_a_reply_or_a_page(setup, tmp_path, mo
     assert not [c for c in ctx.calls if "FAKE" in json.dumps(c)]
 
 
+# One list for one rule: the folders of keys and logins a reflex file is never read from are the folders the dream
+# stays out of. Until 11 November four lists disagreed: a reflex file was refused in ~/.claude and read in
+# ~/.config/rclone, and the dream did the reverse.
+@pytest.mark.parametrize("folder", [".claude", ".config/rclone", ".config/glab-cli", ".1password", ".anthropic",
+                                    ".config/gh", ".ssh", "Library/Keychains", ".netrc"])
+def test_a_folder_of_keys_is_private_for_a_reflex_file_and_for_the_dream_alike(setup, tmp_path, monkeypatch, folder):
+    from habits import dream
+    _, habits = setup
+    home = tmp_path / "home"
+    (home / folder).mkdir(parents=True)
+    (home / folder / "remote.yaml").write_text(DEMO)
+    monkeypatch.setenv("HOME", str(home))
+    assert tools.CREDENTIAL_DIRS is dream.PRIVATE_FOLDERS
+    with pytest.raises(ValueError, match="a folder of keys and logins"):
+        tools.graph_file(f"~/{folder}/remote.yaml")
+    reply = json.loads(habits.tool_run({"file": f"~/{folder}/remote.yaml"}))
+    assert reply["status"] == "refused" and "mv " not in json.dumps(reply)
+    assert dream.excluded("terminal", {"command": f"cat ~/{folder}/remote.yaml"}, None, "~/proj") != ""
+    assert dream.excluded("terminal", {"command": "ls"}, None, f"~/{folder}") != ""
+    assert dream.excluded("read_file", {"path": f"~/{folder}/remote.yaml"}, None, "~/proj") != ""
+
+
+def test_a_folder_beside_the_private_ones_is_not_private(setup, tmp_path, monkeypatch):
+    from habits import dream
+    home = tmp_path / "home"
+    (home / ".config" / "app").mkdir(parents=True)
+    (home / ".config" / "app" / "reflex.yaml").write_text(DEMO)
+    monkeypatch.setenv("HOME", str(home))
+    assert tools.graph_file("~/.config/app/reflex.yaml") == (home / ".config" / "app" / "reflex.yaml").resolve()
+    assert dream.excluded("terminal", {"command": "ls ~/proj/claude"}, None, "~/proj") == ""
+
+
 # A create turn wrote its draft in ~/.hermes/cache/scratch/, Hermes's own drafts folder (its
 # TMPDIR), and was refused as "a secrets or config file". A .yaml or .json there is a draft; Hermes's config files,
 # a link out of scratch and a token store by its name stay refused.
@@ -591,13 +630,52 @@ def test_a_draft_in_hermess_scratch_folder_is_read(setup, tmp_path, monkeypatch)
         assert reply["status"] == "refused" and "FAKE" not in json.dumps(reply), file
 
 
+def test_a_draft_in_a_named_profiles_scratch_folder_is_read_and_its_config_is_not(setup, tmp_path, monkeypatch):
+    # Round 1 (defect 4): in a named profile the home is ~/.hermes/profiles/<name>, and its drafts folder is that
+    # profile's own cache/scratch. Real secrets and config files of any profile stay refused.
+    _, habits = setup
+    home = tmp_path / "home"
+    profile = home / ".hermes" / "profiles" / "coder"
+    scratch = profile / "cache" / "scratch" / "draft-one"
+    scratch.mkdir(parents=True)
+    (scratch / "reflex.yml").write_text(DEMO)
+    (profile / "config.yaml").write_text("model:\n  api_key: FAKE-CONFIG-KEY-0123456789\n")
+    (profile / "cache" / "other.yaml").write_text(DEMO)
+    (scratch / "credentials.json").write_text('{"token": "FAKE-TOKEN-0123456789"}')
+    (home / ".hermes" / "config.yaml").write_text("model:\n  api_key: FAKE-CONFIG-KEY-0123456789\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    assert json.loads(habits.tool_run({"file": str(scratch / "reflex.yml")}))["status"] == "end"
+    for file in (profile / "config.yaml", profile / "cache" / "other.yaml", scratch / "credentials.json",
+                 home / ".hermes" / "config.yaml"):
+        reply = json.loads(habits.tool_run({"file": str(file)}))
+        assert reply["status"] == "refused" and "FAKE" not in json.dumps(reply), file
+
+
+def test_the_plugins_own_installed_examples_are_read_and_their_neighbours_are_not(setup, tmp_path, monkeypatch):
+    # `habits show hermes-health` prints this path; `habits check <path>` must read it.
+    _, habits = setup
+    home = tmp_path / "home"
+    example = home / ".hermes" / "plugins" / "habits" / "examples" / "hermes-health" / "assets" / "reflex.yml"
+    secret = home / ".hermes" / "plugins" / "habits" / "secret.yml"
+    other = home / ".hermes" / "plugins" / "other" / "examples" / "x" / "assets" / "reflex.yml"
+    for file in (example, secret, other):
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(DEMO)
+    monkeypatch.setenv("HOME", str(home))
+    assert json.loads(habits.tool_run({"file": str(example)}))["status"] == "end"
+    for file in (secret, other):
+        reply = json.loads(habits.tool_run({"file": str(file)}))
+        assert reply["status"] == "refused" and "config file and keys" in json.dumps(reply), file
+
+
 def test_a_saved_habits_own_file_and_a_draft_named_after_tokens_still_run(setup, tmp_path, monkeypatch):
     _, habits = setup
     home = tmp_path / "home"
     saved = home / ".hermes" / "skills" / "sort" / "assets" / "reflex.yml"
     saved.parent.mkdir(parents=True)
     saved.write_text(DEMO)
-    (home / ".hermes" / "skills" / "old" / "assets").mkdir(parents=True)  # saved by v0.1
+    (home / ".hermes" / "skills" / "old" / "assets").mkdir(parents=True)  # saved under the file's first name
     (home / ".hermes" / "skills" / "old" / "assets" / "HABIT.yaml").write_text(DEMO)
     (home / "scratch").mkdir()
     (home / "scratch" / "token-refresh-watch.yaml").write_text(DEMO)
@@ -840,7 +918,7 @@ def test_a_shadow_watch_sets_its_reference_then_wakes_hermes_to_do_the_task(setu
     assert lines[-1] == watch.GATE_WAKE and lines[0] == 'Habits watch "watch": Something changed.'
     assert any(line.startswith("values: ") and "Zed.app" in line for line in lines)
     assert any("The watch is learning" in line for line in lines)
-    assert f"Its graph: {assets / 'reflex.yml'}" in lines  # the cron agent never has to search the disk for it
+    assert f"Its reflex: {assets / 'reflex.yml'}" in lines  # the cron agent never has to search the disk for it
     assert judged == ["wake"]
     run = habits.ledger.runs("watch", 1)[0]
     assert run["mode"] == "shadow" and run["woke"] == 1 and run["compared"] == 1
@@ -973,7 +1051,7 @@ def test_problems_of_refuses_a_graph_whose_nodes_are_no_mapping_inside_hermes(mo
     monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
     monkeypatch.setitem(sys.modules, "tools.registry", types.SimpleNamespace(registry=registry))
     scenario = {"spec": "habits/0.1", "start": "s", "fallback": "w", "nodes": [{"do": "x"}]}
-    assert tools.problems_of(scenario) == ["format: nodes must be a non-empty mapping of named nodes."]
+    assert tools.problems_of(scenario) == ["format: nodes must be a non-empty mapping of named steps."]
 
 
 def test_problems_of_turns_an_unforeseen_crash_into_a_refusal(monkeypatch):
@@ -983,7 +1061,7 @@ def test_problems_of_turns_an_unforeseen_crash_into_a_refusal(monkeypatch):
     scenario = {"spec": "habits/0.1", "start": "s", "fallback": "w", "nodes": {
         "s": {"end": "ok"}, "w": {"wake": "w"}}}
     found = tools.problems_of(scenario)
-    assert len(found) == 1 and found[0].startswith("format: the graph could not be checked (RuntimeError)")
+    assert len(found) == 1 and found[0].startswith("format: the reflex could not be checked (RuntimeError)")
 
 
 def test_both_tool_descriptions_name_the_main_tools_once():
@@ -1081,7 +1159,7 @@ def test_an_active_habit_that_did_everything_answers_without_the_model(setup, mo
     assert "tokens instead of" not in habits.command("")  # no shadow turn was counted in tokens
 
 
-@pytest.mark.parametrize("name, said", [("clef", "(+ Clef)"), ("jev", "(+ Jev)")])
+@pytest.mark.parametrize("name, said", [("jev", "(+ Jev)")])
 def test_the_direct_answer_names_the_decision_model_that_answered(setup, monkeypatch, name, said):
     ctx, habits = setup
     promote(ctx, habits, monkeypatch)
@@ -1103,7 +1181,8 @@ def test_without_the_block_action_the_model_confirms(setup, monkeypatch):
     assert "action" not in reply and "do not redo or re-check it" in reply["context"]
     monkeypatch.setitem(sys.modules, "agent.turn_context", type("H", (), {"PRE_LLM_BLOCK_EXIT_REASON": "x"}))
     ctx.config["habits"] = {"direct": False}
-    monkeypatch.setattr(habits, "setting", lambda key: False if key == "direct" else plugin.DEFAULTS.get(key))
+    was = habits.setting  # the numbers are the caution row's now: DEFAULTS holds None for them (0.28)
+    monkeypatch.setattr(habits, "setting", lambda key: False if key == "direct" else was(key))
     reply = habits.on_pre_llm_call(session_id="o2", user_message="sort my downloads")
     assert "action" not in reply
 
@@ -1645,6 +1724,21 @@ def test_a_read_only_request_habit_the_user_asked_for_starts_active(setup, monke
     assert saved["state"] == "automatic" and habits.ledger.status("apps-status", version) == "active"
     assert "spot" in saved["next"] and "asked" in habits.ledger.info("apps-status")["note"]
     assert len(asked) == 1 and "Replying to" not in asked[0][1]  # the quoted reply is not what the user says
+    # Real Mac: the model told the user "answers in 0.4 s" and not that it now answers ALONE. The user is told so.
+    line = saved["tell_user"]
+    assert "apps-status" in line and "on its own" in line and "/habits rest apps-status" in line
+    assert "tell_user" in saved["next"]
+
+
+def test_the_line_for_a_habit_that_starts_automatic_is_in_the_users_language(setup, monkeypatch, tmp_path):
+    ctx, habits = setup
+    ctx.config["language"] = "fr"
+    with_habit(tmp_path, monkeypatch, "apps-status", APPS, "List the apps installed in /Applications")
+    reply, asked = asking(lambda state: "habit" in state)
+    monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([deciders.Fake(reply)]))
+    habits.on_pre_llm_call(session_id="s", user_message="Make it a habit")
+    line = save_apps(habits, "s")["tell_user"]
+    assert "toute seule" in line and "/habits rest apps-status" in line
 
 
 def test_any_other_new_habit_starts_in_shadow(setup, monkeypatch, tmp_path):
@@ -1770,6 +1864,39 @@ def test_what_a_web_read_brings_back_is_handed_over_as_data(setup, monkeypatch):
     assert wrapped(context) and "Ignore" not in head and "propose a repair" in context.split("</untrusted_tool_result>")[-1]
 
 
+@pytest.mark.parametrize("tool", ["x_search", "session_search", "feishu_doc_read", "read_terminal", "vision_analyze",
+                                  "video_analyze"])
+def test_every_tool_that_returns_other_peoples_text_is_handed_over_as_data(setup, monkeypatch, tool):
+    # One list for one rule: the tools a reflex may not feed into a command (graph.from_outside) are the tools whose
+    # run reaches the model as data. Until 11 November the second list held three prefixes of the nine: a run that
+    # only searched X, past sessions or a screen came back as the plugin's own words, and as a direct answer.
+    from habits import graph
+    from habits.runner import Result
+    ctx, habits = setup
+    assert graph.from_outside({"do": tool, "args": {}})
+    read = Result(status="end", message=POISON, node="finished", tools=[tool])
+    assert tools.read_outside(read)
+    reply = tools.relay(read)
+    assert wrapped(reply["untrusted"]) and "Ignore your instructions" in reply["untrusted"]
+    assert not {"message", "report", "values", "left"} & set(reply) and "Ignore" not in reply["next"]
+    promote(ctx, habits, monkeypatch)
+    monkeypatch.setitem(sys.modules, "agent.turn_context", type("H", (), {"PRE_LLM_BLOCK_EXIT_REASON": "x"}))
+    monkeypatch.setattr(habits, "run", lambda *a, **k: read)
+    answer_ = habits.on_pre_llm_call(session_id="a", user_message="sort my downloads")
+    assert wrapped(answer_["context"]) and "Ignore" not in answer_["context"].split("<untrusted_tool_result")[0]
+    assert "action" not in answer_ and "message" not in answer_  # no direct answer: the model reads it as data
+    local = Result(status="end", message="Downloads sorted.", node="finished", tools=["terminal", "read_file"])
+    assert not tools.read_outside(local) and "untrusted" not in tools.relay(local)
+    assert habits.on_pre_llm_call(session_id="b", user_message="sort my downloads")  # the turn above is not replayed
+
+
+def test_the_tools_whose_results_are_text_from_outside_are_listed_once():
+    from habits import graph
+    assert not hasattr(tools, "UNTRUSTED_TOOLS") or tools.UNTRUSTED_TOOLS is graph.UNTRUSTED_TOOLS
+    assert {"web_", "browser_", "mcp_", "x_search", "session_search", "feishu_doc_read", "read_terminal",
+            "vision_analyze", "video_analyze"} <= set(graph.UNTRUSTED_TOOLS)
+
+
 def test_a_hand_back_after_a_web_read_says_where_what_is_left_is(setup, monkeypatch):
     # `left` moves inside the untrusted block: next names that place, and says it is data, never orders.
     from habits.runner import Result
@@ -1819,7 +1946,7 @@ def test_a_watch_that_read_the_web_wakes_with_its_findings_as_data(setup, monkey
     text = "\n".join(lines)
     assert lines[-1] == watch.GATE_WAKE and wrapped(text)
     outside = text.split("</untrusted_tool_result>")
-    assert "Ignore" not in outside[0].split("<untrusted_tool_result")[0] and "Its graph:" in outside[-1]
+    assert "Ignore" not in outside[0].split("<untrusted_tool_result")[0] and "Its reflex:" in outside[-1]
     # A watch saved before repairs were proposed keeps its old cron prompt ("repair it"): each wake says it.
     assert "Do not call habit_save for this watch before the user agrees" in outside[-1]
 
@@ -2499,7 +2626,7 @@ def test_hermes_habits_run_loads_the_tools_of_its_habit_and_prints_the_same_json
     monkeypatch.setattr(tools, "_load_tools", lambda names=None: asked.append(names))
     code, out, _ = cli_run(habits, capsys, "sort-downloads-by-type")
     assert code == 0 and asked == [{"terminal"}]
-    assert list(out) == ["habit", "version", "kind", "mode", "status", "message", "node", "reason", "failed", "doubts",
+    assert list(out) == ["habit", "version", "kind", "mode", "status", "message", "step", "reason", "failed", "doubts",
                          "doubted", "values", "planned", "planned_count", "tools", "files", "counts", "backends",
                          "trigger", "asks", "llm_ms", "within", "memory", "model_calls", "ms", "plan_ms",
                          "plan_model_calls"]
@@ -2972,6 +3099,8 @@ def test_a_one_off_is_shown_as_what_it_is(setup, monkeypatch, tmp_path, capsys):
     # Seen in the audit: a one-off was listed as "shadow 0/12 compared runs", and Hermes then did it by hand.
     ctx, habits = setup
     with_habit(tmp_path, monkeypatch, "point-matin", DEMO.replace("trigger: message\n", ""))
+    # Saved with habit_save. (Round 1: one the user copied by hand waits for their yes, see the test of the yes.)
+    habits.ledger.adopt("point-matin", catalog.find("point-matin").version, "asked")
     habits.tool_run({"name": "point-matin"})
     listing = habits.listing()
     assert "◇ point-matin · called by name" in habits.command("") and "◇ point-matin · called by name" in listing
@@ -3012,7 +3141,7 @@ def test_habit_save_says_a_new_habit_waits_for_the_user_s_yes(setup, monkeypatch
     text = tools.SAVE_DESCRIPTION
     assert "yes in /habits" in text and "agreeing with you on 12 runs" not in text
     assert "starts automatic" in text and "only reads" in text  # the exception, said once
-    assert "creates its cron job at once" in text and "wakes Hermes" in text  # a schedule habit, while it learns
+    assert "creates its cron job at once" in text and "hands the task to Hermes" in text  # a schedule habit, while it learns
     ctx.config["promote"] = "ask"
     ctx.config["promote_runs"] = 7
     request = json.loads(habits.tool_save({"name": "sort-downloads-by-type", "description": "Sort the downloads",
@@ -3059,7 +3188,7 @@ def test_a_watch_reads_well_in_its_detail(setup, monkeypatch, tmp_path):
     monkeypatch.setattr(habits, "judge_watch", lambda habit, result: True)
     habits.tick("watch")
     detail = habits.command("watch")
-    assert "every 5m · version" in detail and "1 check · 1 wake" in detail
+    assert "starts on a schedule: every 5 min · version" in detail and "1 check · 1 handed back" in detail
 
 
 def test_the_cli_points_to_its_own_list_and_fails_on_an_unknown_name(setup, capsys):
@@ -3117,7 +3246,7 @@ def test_a_watch_whose_read_fails_wakes_only_on_the_third_failure_in_a_row(setup
     assert any("could not read GitHub" in line for line in found[7]) and found[7][-1] == watch.GATE_WAKE
     assert [run["woke"] for run in reversed(habits.ledger.runs("hermes-watch", 20))] == [
         0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
-    assert "11 checks · 1 wake" in habits.command("hermes-watch")
+    assert "11 checks · 1 handed back" in habits.command("hermes-watch")
     # The same graph, the same version, still active: nothing rewrote it.
     assert catalog.find("hermes-watch").version == habit.version
     assert habits.ledger.status(habit.name, habit.version) == "active"
@@ -3458,25 +3587,17 @@ def test_a_habit_that_still_declares_an_event_is_refused_everywhere_without_a_cr
     assert ctx.calls == []
 
 
-CLOUDFLARE_ACCOUNT = "0123456789abcdef0123456789abcdef"
-
-
-def test_the_manifest_names_the_two_decision_models_and_their_secrets(setup, monkeypatch):
+def test_the_manifest_names_the_decision_model_and_its_secret(setup, monkeypatch):
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text())["config_schema"]
-    assert manifest["backend"]["enum"] == ["auto", "jev", "clef", "llm"] == list(plugin.CHOICES["backend"])
-    assert "else Clef when its token and account are set, then your Hermes model" in manifest["backend"]["description"]
-    assert manifest["clef_model"]["enum"] == ["clef-flash", "clef"] == list(plugin.CHOICES["clef_model"])
-    assert manifest["clef_model"]["default"] == plugin.DEFAULTS["clef_model"] == "clef-flash"
+    assert manifest["decision_model"]["enum"] == ["auto", "jev", "hermes"] == list(plugin.CHOICES["decision_model"])
+    assert "auto asks Jev when its key is set, else your Hermes model" in manifest["decision_model"]["description"]
     secrets = {v["env"]: key for key, v in manifest.items() if v.get("type") == "secret"}
-    assert secrets == {"TYPESAFE_API_KEY": "typesafe_api_key", "CLOUDFLARE_API_TOKEN": "cloudflare_api_token",
-                       "CLOUDFLARE_ACCOUNT_ID": "cloudflare_account_id"}
-    for key in ("cloudflare_api_token", "cloudflare_account_id"):
-        assert manifest[key]["description"] == "Optional. Fast decisions with Clef on Cloudflare Workers AI."
+    assert secrets == {"TYPESAFE_API_KEY": "typesafe_api_key"}
     ctx, habits = setup
     asked = []
     monkeypatch.setattr(habits, "secret", lambda name: asked.append(name))
     assert [b.name for b in plugin.Habits.decider(habits).backends] == ["llm"]
-    assert sorted(asked) == ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "TYPESAFE_API_KEY"]
+    assert asked == ["TYPESAFE_API_KEY"]
 
 
 def decider_with(habits, monkeypatch, secrets, **config):
@@ -3485,50 +3606,27 @@ def decider_with(habits, monkeypatch, secrets, **config):
     return plugin.Habits.decider(habits)
 
 
-@pytest.mark.parametrize("secrets, order", [
-    ({}, ["llm"]),
-    ({"TYPESAFE_API_KEY": "j"}, ["jev", "llm"]),
-    ({"CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": CLOUDFLARE_ACCOUNT}, ["clef", "llm"]),
-    ({"CLOUDFLARE_API_TOKEN": "t"}, ["llm"]),  # half a pair is no Clef: auto leaves it out
-    ({"CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": "not-an-id"}, ["llm"]),
-    ({"TYPESAFE_API_KEY": "j", "CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": CLOUDFLARE_ACCOUNT},
-     ["jev", "clef", "llm"]),
+@pytest.mark.parametrize("secrets, backend, order", [
+    ({}, "auto", ["llm"]),
+    ({"TYPESAFE_API_KEY": "j"}, "auto", ["jev", "llm"]),
+    ({"TYPESAFE_API_KEY": "j"}, "llm", ["llm", "jev"]),
 ])
-def test_auto_asks_jev_then_clef_then_the_hermes_model_for_what_is_set(setup, monkeypatch, secrets, order):
+def test_auto_asks_jev_then_the_hermes_model_for_what_is_set(setup, monkeypatch, secrets, backend, order):
     ctx, habits = setup
-    assert [b.name for b in decider_with(habits, monkeypatch, secrets).backends] == order
+    assert [b.name for b in decider_with(habits, monkeypatch, secrets, backend=backend).backends] == order
 
 
-def test_backend_clef_goes_first_and_the_setting_picks_the_model(setup, monkeypatch):
-    ctx, habits = setup
-    both = {"TYPESAFE_API_KEY": "j", "CLOUDFLARE_API_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": CLOUDFLARE_ACCOUNT}
-    chain = decider_with(habits, monkeypatch, both, backend="clef", clef_model="clef")
-    assert [b.name for b in chain.backends] == ["clef", "jev", "llm"]
-    assert chain.backends[0].url.endswith(f"/accounts/{CLOUDFLARE_ACCOUNT}/ai/run/@cf/cloudflare/clef")
-    ctx.config["clef_model"] = "nonsense"  # a value it does not know keeps the default
-    assert decider_with(habits, monkeypatch, both).backends[0].model == "clef-flash"
-
-
-def test_backend_clef_with_nothing_set_says_which_settings_are_missing(setup, monkeypatch):
-    ctx, habits = setup
-    chain = decider_with(habits, monkeypatch, {}, backend="clef")
-    assert [b.name for b in chain.backends] == ["clef", "llm"]
-    with pytest.raises(deciders.DecisionError) as raised:
-        chain.backends[0].ask("s", [deciders.question("Is it?", {"yes_no": True})])
-    assert "cloudflare_api_token" in str(raised.value) and "cloudflare_account_id" in str(raised.value)
-
-
-def test_the_cloudflare_secrets_come_from_hermes_never_from_the_environment(setup, monkeypatch):
-    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "from-the-environment")
-    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", CLOUDFLARE_ACCOUNT)
+def test_the_secret_comes_from_hermes_never_from_the_environment(setup, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "from-the-environment")
     monkeypatch.setitem(sys.modules, "agent", None)  # no Hermes secret scope to ask
     ctx, habits = setup
     assert [b.name for b in plugin.Habits.decider(habits).backends] == ["llm"]
 
 
-def test_habits_off_turns_every_hook_off_and_the_tools_refuse(setup, monkeypatch, tmp_path):
-    # HABITS_OFF=1 hermes -z "…" measures Hermes without habits: no trigger, no guard, nothing counted, and a model
-    # that reaches for habit_run (a one-off's SKILL.md says to) does the task by hand. The tools stay listed.
+def test_habits_off_turns_every_hook_off_but_the_guard_and_the_tools_refuse(setup, monkeypatch, tmp_path):
+    # HABITS_OFF=1 hermes -z "…" measures Hermes without habits: no trigger, nothing counted, and a model that
+    # reaches for habit_run (a one-off's SKILL.md says to) does the task by hand. The tools stay listed. The guard
+    # stays on: a model can start a hermes with the variable set, and that must not open the ledger to it.
     ctx, habits = setup
     registered = FakeCtx()
     monkeypatch.setattr(plugin, "Habits", lambda _ctx: habits)
@@ -3537,7 +3635,8 @@ def test_habits_off_turns_every_hook_off_and_the_tools_refuse(setup, monkeypatch
     edit = {"path": str(tmp_path / "skills" / "sort-downloads-by-type" / "assets" / "reflex.yml"), "content": "x"}
     monkeypatch.setenv("HABITS_OFF", "1")
     assert hooks["pre_llm_call"](session_id="s1", user_message="Sort my downloads please") is None
-    assert hooks["pre_tool_call"](tool_name="write_file", args=edit) is None  # the guard steps aside too
+    assert hooks["pre_tool_call"](tool_name="write_file", args=edit)["action"] == "block"  # the guard stays
+    assert hooks["pre_tool_call"](tool_name="terminal", args={"command": "hermes habits promote x"})["action"] == "block"
     assert hooks["post_tool_call"](tool_name="terminal", session_id="s1", args={"command": "ls"}) is None
     assert hooks["post_api_request"](session_id="s1", usage={"total_tokens": 5}) is None
     assert hooks["post_llm_call"](session_id="s1") is None
@@ -3620,7 +3719,7 @@ def test_hermes_habits_run_runs_dry_and_records_nothing(setup, monkeypatch, caps
     used = curator(monkeypatch)
     code, out, _ = cli_run(habits, capsys, "sort-downloads-by-type")
     habit = catalog.find("sort-downloads-by-type")
-    assert code == 0 and out["status"] == "end" and out["message"] == "Downloads sorted." and out["mode"] == "dry"
+    assert code == 0 and out["status"] == "end" and out["message"] == "Downloads sorted." and out["mode"] == "test"
     assert out["version"] == habit.version and out["kind"] == "request" and out["doubts"] == 0 and not out["failed"]
     assert {p["tool"] for p in out["planned"]} == {"terminal"} and out["planned_count"] == 5  # 4 moves, 1 to the bin
     assert out["tools"] == ["terminal"] and out["counts"]["questions"] == 6 and out["model_calls"] == 0
@@ -3704,7 +3803,7 @@ def test_hermes_habits_run_takes_a_file_and_its_inputs(setup, tmp_path, capsys):
     assert "no file" in cli_run(habits, capsys, str(tmp_path / "none.yaml"))[1]["message"]
     path.write_text(BROKEN)
     code, out, _ = cli_run(habits, capsys, str(path))
-    assert code == 1 and out["message"].startswith("invalid graph:")
+    assert code == 1 and out["message"].startswith("invalid reflex:")
     code, text, _ = cli_run(habits, capsys, "sort-downloads-by-type", as_json=False)
     assert code == 0 and "  - sort: terminal" in text
 
@@ -3883,7 +3982,7 @@ def test_hermes_habits_run_takes_a_message_as_its_hook_would(setup, monkeypatch,
     ctx, habits = setup
     monkeypatch.setattr(habits, "decider", lambda: deciders.Chain([deciders.Fake(message_answer)]))
     code, out, _ = cli_run(habits, capsys, "sort-downloads-by-type", message="Sort my downloads please")
-    assert code == 0 and out["status"] == "end" and out["mode"] == "dry"
+    assert code == 0 and out["status"] == "end" and out["mode"] == "test"
     assert out["trigger"]["picked"] == out["trigger"]["fired"] == "sort-downloads-by-type"
     assert out["trigger"]["backends"] == ["fake", "fake"] and isinstance(out["trigger"]["ms"], int)
     for text, picked in (("What time is it?", None), ("Sort everything but the pdfs", "sort-downloads-by-type"),
@@ -3944,7 +4043,7 @@ def test_hermes_habits_run_json_keeps_what_decided_each_hand_back(setup, monkeyp
     code, out, _ = cli_run(habits, capsys, str(path), message="Which files are images?")
     assert code == 0 and out["status"] == "end" and out["message"] == "Une image."
     (kind,) = out["asks"]
-    assert kind["node"] == "kind" and ["photo plage.jpg", "yes", 0.95] in kind["answers"]
+    assert kind["step"] == "kind" and ["photo plage.jpg", "yes", 0.95] in kind["answers"]
     assert kind["probabilities"][kind["answers"].index(["photo plage.jpg", "yes", 0.95])] == {"yes": 0.95, "no": 0.05}
     assert ["invoice.pdf", 0.6] in kind["dropped"] and out["doubted"] == []  # dropped, not doubted
     assert set(out["llm_ms"]) == {"say"} and isinstance(out["llm_ms"]["say"], int)
@@ -3992,7 +4091,7 @@ def test_hermes_habits_run_json_keeps_a_picks_options_probabilities_and_margin(s
     code, out, _ = cli_run(habits, capsys, str(path))
     assert code == 0 and (out["status"], out["message"]) == ("end", "invoice.pdf")
     (pick,) = out["asks"]
-    assert pick["node"] == "pick" and pick["margin"] == 0.76 and "invoice.pdf" in pick["options"].values()
+    assert pick["step"] == "pick" and pick["margin"] == 0.76 and "invoice.pdf" in pick["options"].values()
     assert pick["probabilities"][0]["none"] == 0.1 and pick["answers"][0][0] == "invoice.pdf"
 
 
@@ -4085,7 +4184,7 @@ def test_hermes_habits_run_keeps_the_reference_of_check_changed_in_a_memory_file
 
 def test_run_is_a_cli_verb_and_in_the_help(setup):
     ctx, habits = setup
-    assert "run" in display.CLI_VERBS and "run" in display.HELP
+    assert "run" in display.CLI_VERBS and "run" in texts.say("help", "en")
     import argparse
     parser = argparse.ArgumentParser()
     habits.cli_setup(parser)
@@ -4401,10 +4500,10 @@ def test_the_plugin_registers_no_auxiliary_task():
     assert ctx.tasks == []
 
 
-def test_the_repair_and_save_texts_hedge_the_users_yes_on_promote():
-    # learning_next says promote: auto needs no yes; the static texts must not promise one unconditionally.
+def test_the_repair_and_save_texts_hedge_the_users_yes_on_learning_auto():
+    # learning_next says learning: auto needs no yes; the static texts must not promise one unconditionally.
     for text in (tools.REPAIR, tools.SAVE_DESCRIPTION):
-        assert "until the user's yes" not in text and "promote: auto" in text
+        assert "until the user's yes" not in text and "learning to auto" in text.replace("learning is auto", "learning to auto")
 
 
 def test_what_the_model_reads_says_learning_automatic_resting():
@@ -4425,3 +4524,83 @@ def test_the_done_sentences_say_to_use_the_result_as_it_is():
     assert tools.FAN_DONE == "Done: every reflex finished; use these results as they are, do not redo or re-check them."
     assert "Done: use this result as it is; do not redo or re-check it." in tools.RUN_REPLY
     assert "answer from" not in tools.RUN_REPLY + tools.DONE + tools.DRY_DONE + tools.FAN_DONE
+
+
+def test_the_guards_are_asked_about_the_command_the_reflex_wrote_not_the_runners_status_line(monkeypatch):
+    # The runner appends PIPE_LINE (it holds "habits-pipe") to a one-pipe read; the plugin's own guard would then
+    # read the line as mentioning habits and refuse `ls | grep -c sh`. The guards judge the reflex's text only.
+    seen = []
+    guards(monkeypatch, get_pre_tool_call_directive=lambda name, args, **kw: seen.append(args["command"]) or (None, None))
+    command = "curl -s https://example.org/ | grep -c hermes"
+    assert plugin.refused("terminal", {"command": command + runner.PIPE_LINE}) is None
+    assert seen == [command]
+
+
+def test_the_plugins_own_guard_refuses_the_decorated_line_only_because_of_the_status_line():
+    for command in ("ls ~ | grep -c hermes", "ls | grep -c sh", "ps aux | grep -c bash"):
+        assert not guard.hermes_habits_refusal("terminal", {"command": command})
+    # the word of the guard is kept: what the runner adds is not for the guard to judge, so it is cut before asking
+    assert plugin.guard_view("terminal", {"command": "ls | grep -c sh" + runner.PIPE_LINE}) == {"command": "ls | grep -c sh"}
+    assert plugin.guard_view("terminal", {"command": "ls"}) == {"command": "ls"}
+    assert plugin.guard_view("web_extract", {"urls": []}) == {"urls": []}
+
+
+def test_every_shipped_reflex_command_passes_the_plugins_own_guard_with_the_status_line_cut():
+    for path in sorted(Path("examples").glob("*/assets/reflex.yml")):
+        doc = yaml.safe_load(path.read_text())
+        steps = doc.get("steps") or doc.get("nodes") or {}
+        for step in (steps.values() if isinstance(steps, dict) else steps):
+            command = ((step or {}).get("args") or {}).get("command") if isinstance(step, dict) else None
+            if isinstance(command, str):
+                seen = plugin.guard_view("terminal", {"command": command + runner.PIPE_LINE})["command"]
+                assert seen == command
+                assert not guard.hermes_habits_refusal("terminal", {"command": seen}), (path.parent.parent.name, command)
+
+
+# Round 1 (defect 5): a saved reflex called by name inside a turn got "src/inventory/report.py", the folder Hermes
+# is in, and looked for it in the home folder, where its commands start.
+COUNT_LINES = ("spec: habits/0.1\ninputs: [file]\nstart: count\nfallback: help\nnodes:\n"
+               "  count: {do: terminal, read: true, args: {command: 'wc -l {file}'}, next: done}\n"
+               "  done: {end: Counted.}\n  help: {wake: Could not count.}\n")
+
+
+def test_a_relative_path_input_is_found_in_the_folder_hermes_is_in(setup, tmp_path, monkeypatch):
+    ctx, habits = setup
+    project = tmp_path / "proj"
+    (project / "src" / "inventory").mkdir(parents=True)
+    (project / "src" / "inventory" / "report.py").write_text("x = 1\n")
+    with_habit(tmp_path, monkeypatch, "count-lines", COUNT_LINES)
+    habits.ledger.adopt("count-lines", catalog.find("count-lines").version, "asked")
+    monkeypatch.setenv("TERMINAL_CWD", str(project))
+
+    def command(value, **more):
+        ctx.calls.clear()
+        habits.tool_run({"name": "count-lines", "inputs": {"file": value}, **more})
+        return next(args["command"] for name, args in ctx.calls if name == "terminal")
+
+    where = str(project / "src" / "inventory" / "report.py")
+    assert command("src/inventory/report.py") == f"wc -l {where}"
+    assert command("./src/inventory/../inventory/report.py") == f"wc -l {where}"
+    assert command("src/nothing/there.py") == "wc -l src/nothing/there.py"  # not found there: as given
+    assert command("/etc/hosts") == "wc -l /etc/hosts"  # already absolute: untouched
+    assert command("report") == "wc -l report"  # a bare word is not a path
+    monkeypatch.delenv("TERMINAL_CWD")
+    monkeypatch.chdir(tmp_path)  # Hermes started in tmp_path: proj/... is not under it
+    assert command("src/inventory/report.py") == "wc -l src/inventory/report.py"
+
+
+def test_a_dry_run_with_no_end_text_does_not_end_on_a_colon(setup, tmp_path, monkeypatch, capsys):
+    # Round 1: "Dry run (nothing written): " with nothing after it, for a reflex that planned a write and ends on a
+    # value that is empty.
+    ctx, habits = setup
+    text = ("spec: habits/0.1\nstart: write\nfallback: help\nnodes:\n"
+            "  write: {do: terminal, args: {command: 'touch ./note.txt'}, as: out, next: done}\n"
+            "  done: {end: '{out}'}\n  help: {wake: Could not.}\n")
+    with_habit(tmp_path, monkeypatch, "touch-note", text)
+    habits.ledger.adopt("touch-note", catalog.find("touch-note").version, "asked")
+    reply = json.loads(habits.tool_run({"name": "touch-note", "dry": True}))
+    assert reply["status"] == "end" and reply["message"] == "Dry run (nothing written)."
+    assert not reply["message"].rstrip().endswith(":")
+    code, shown, _ = cli_run(habits, capsys, "touch-note", as_json=False)
+    lines = shown.splitlines()
+    assert "Dry run (nothing written)." in lines and not any(line.rstrip().endswith("written):") for line in lines)

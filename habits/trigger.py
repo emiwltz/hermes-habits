@@ -1,5 +1,5 @@
 """Request habits: the turn hooks that pick a habit for a user message, confirm it and run it before the
-model, then measure the turn (its tokens and calls, and in shadow the model's own steps against the plan, or
+model, then measure the turn (its tokens and calls, and while learning the model's own steps against the plan, or
 its reply against the answer of a habit that only reads).
 """
 
@@ -31,7 +31,7 @@ def silent(reply: str) -> bool:
     said = reply.strip()
     return not said or said.upper().startswith(SILENT) or said.strip(" .!").upper() in QUIET
 MODEL_FRESH = 600  # seconds a model answer stays proof that the model answers
-# D4 (09/11): an active habit with fewer runs that agree with the model is checked on every run, then 1 in 10. A habit
+# An automatic habit with fewer runs that agree with the model is checked on every run, then 1 in 10. A habit
 # saved active has none; a promoted one has its shadow runs. A status habit created in a trial would have reported a
 # problem about an error 19 h old from its first day, on 1 check in 10.
 CLOSE_CHECKS = 3
@@ -41,7 +41,7 @@ ASKED = ("Does this message ask to keep a task as a habit (a routine, a shortcut
 
 
 def ignored(text: str) -> bool:
-    """A message no habit takes: empty, a command, or longer than what the S1 reads (its "but not…" could be
+    """A message no habit takes: empty, a command, or longer than what the decision model reads (its "but not…" could be
     past the cut: the model takes it)."""
     return not text or text.startswith("/") or len(text) > TRIGGER_CHARS
 
@@ -80,7 +80,7 @@ CONFIRM = 'What does this message ask about the saved task "{task}"?'
 # "…or only ask or talk about it" caught every status question ("How is the backup doing?"): run at 0.54-0.68 on
 # Jev, under 0.8, so a habit that answers a question never ran (two status trials). "…or a question about the saved
 # habit itself" still gave 0.75-0.77; the plain not_now 0.89-0.98, with the 16 demo messages still right but one (15 of
-# 16). The S1 sees only the paths a habit acts on, so the place a message names ("in the
+# 16). The decision model sees only the paths a habit acts on, so the place a message names ("in the
 # dashboard") read as another way: "How is the bakcup doing in the dashboard?" got run at 0.71-0.74. Saying that a
 # place is no change gave 0.92-0.94, "How is the backup doing?" 0.85-0.90 (0.77-0.83), and no trap of the two status
 # trials came nearer a gate that held it.
@@ -114,8 +114,8 @@ NAMED_CASES = {
     "more": "Run it and also do something else, or answer something else the message says or replies to (news, a "
             "reply or a confirmation about another matter)",
 }
-# D2, strict: such a habit runs only when the same call's second question answers "nothing" at
-# min_confidence or more, as sure as the "run". D1's looser gate (0.7) is gone: on a free bench pass "Friday works for
+# Such a habit runs only when the same call's second question answers "nothing" at
+# min_confidence or more, as sure as the "run". An earlier, looser gate (0.7) is gone: on a free bench pass "Friday works for
 # the plumber. Meanwhile… can you send me the garden note?" got "run" 0.74 and "nothing" 0.69 (over D1's 0.5), so it
 # would have sent the note and dropped the reply about the plumber.
 ALSO = "Besides asking for the saved task, does this message say anything else that needs an answer or an action?"
@@ -129,7 +129,7 @@ READS = "changes nothing"  # item 3a (09/11): "Restart the relay" ran a read-onl
 
 def targets(habit: dict, most: int = 3) -> list[str]:
     """The literal paths and URL hosts a habit's do nodes act on, in graph order (~/Downloads/{kind} is
-    ~/Downloads): a few, shortened, a folder in place of the paths under it. The S1 sees them, so another folder
+    ~/Downloads): a few, shortened, a folder in place of the paths under it. The decision model sees them, so another folder
     is told apart. A folder it only reads counts when it writes in there, or when the graph writes nowhere named."""
     def words(node):
         args = node.get("args") if isinstance(node.get("args"), dict) else {}
@@ -195,7 +195,7 @@ def read_only(habit: dict) -> bool:
 
 
 def task(habit: catalog.Habit, named: bool = False) -> str:
-    """A request habit as the S1 sees it: its description, then what it acts on, or what it only reads and that it
+    """A request habit as the decision model sees it: its description, then what it acts on, or what it only reads and that it
     changes nothing (no write, no file sent), and (named) that the message names which item."""
     where = ", ".join(targets(habit.graph))
     text = habit.description or habit.name
@@ -206,7 +206,7 @@ def task(habit: catalog.Habit, named: bool = False) -> str:
 
 
 def _seen(answer: deciders.Answer, gate: float, passed: bool) -> dict:
-    """What an S1 answer of the trigger was, for `hermes habits run --message --json`: a near miss shows there."""
+    """What a decision-model answer of the start was, for `hermes habits run --message --json`: a near miss shows there."""
     return {"answer": answer.value, "confidence": round(answer.confidence, 3), "probabilities": answer.probabilities,
             "backend": answer.backend, "gate": gate, "passed": passed}
 
@@ -248,6 +248,11 @@ class Trigger:
     def _pre_llm_call(self, session: str, text: str, parent: str, turn: str = "", platform: str = ""):
         self.pending.pop(session, None)
         self.telling.pop(session, None)
+        if session and platform:  # the start on a loaded skill needs to know whose turn this is
+            self.platforms.pop(session, None)
+            self.platforms[session] = platform
+            while len(self.platforms) > 500:
+                self.platforms.pop(next(iter(self.platforms)))
         if parent:
             return None  # a subagent's turn: its reply is not the user's
         self.said.pop(session, None)  # the newest last: the oldest session goes first
@@ -257,7 +262,7 @@ class Trigger:
         # News no message could tell when it happened (a habit ready, retired, demoted): this reply tells the oldest,
         # once it went out, one line per reply. Never a cron job's turn (its reply is often [SILENT], or has nowhere
         # to go) nor the curator's (no one reads it), nor a message no habit takes.
-        news = [] if platform in MACHINERY or ignored(text) else self.news()[:1]
+        news = [] if platform in MACHINERY or ignored(text) else self.news(daily=True)[:1]
         try:
             reply = None if platform == "curator" else self._turn(session, text, turn, platform)  # no user's ask
         except Exception as exc:
@@ -286,11 +291,11 @@ class Trigger:
         deadline = time.monotonic() + HOOK_SECONDS  # Hermes abandons the hook at 30 s
         if ignored(text) or self.paused():  # /habits pause: the model answers alone, and nothing says why
             return None
-        saved, candidates = catalog.skills(), []
+        saved, candidates, learning = catalog.skills(), [], self.setting("learning")
         for habit in saved:
             if habit.valid and habit.kind == "request":
                 status = self.ledger.status(habit.name, habit.version)
-                if status in ("shadow", "active"):
+                if status == "active" or (status == "shadow" and learning != "off"):  # learning off: no practice run
                     candidates.append((habit, status))
         if not candidates:
             return None
@@ -364,12 +369,12 @@ class Trigger:
                 # that does not know the block action ignores it and reads the context instead. Hermes keeps
                 # that message as the model's reply of the turn, outside any block: never after a web read.
                 lang = self.lang()
-                # What the answer cost, as it was: its llm nodes, and the model standing in for the S1 (the
+                # What the answer cost, as it was: its llm nodes, and the model standing in for the decision model (the
                 # trigger's questions included).
                 used = result.counts.get("llm", 0) + result.backends.count("llm") + chain.used.count("llm")
                 answered = {*result.backends, *chain.used}
                 reply = f"{message}\n\n" + texts.say("footer", lang, name=chosen.name, took=texts.seconds(result.ms, lang),
-                                                      calls=texts.calls(used, lang, "jev" in answered, "clef" in answered))
+                                                      calls=texts.calls(used, lang, "jev" in answered))
                 return {"action": "block", "message": reply, "context": context}
             return {"context": context}
         context = (f'[Habits] The habit "{chosen.name}" started this request in {took} and handed it back.\n'
@@ -382,7 +387,7 @@ class Trigger:
     def choose(self, text: str, habits: list, saved: list, chain: deciders.Chain, deadline: float,
                seen: dict | None = None, measured: catalog.Habit | None = None) -> tuple:
         """The habit a user message runs, as the hook decides it (`hermes habits run --message` too): (that habit
-        or None, the one the S1 picked or None). seen gets each answer that decided it (pick, confirm, also), and
+        or None, the one the decision model picked or None). seen gets each answer that decided it (pick, confirm, also), and
         after a pick that held, the confirmation of measured (the CLI's habit), recorded."""
         said = REPLY.sub("", text, count=1).lower()  # a quoted reply is not what the user says now
         if "habit_" in said:
@@ -403,7 +408,7 @@ class Trigger:
         return chosen, chosen
 
     def pick(self, text: str, habits: list, chain: deciders.Chain, seen: dict | None = None) -> catalog.Habit | None:
-        """One choice question to the S1: which habit fits this message, "none" first."""
+        """One choice question to the decision model: which habit fits this message, "none" first."""
         options = ("none",) + tuple(h.name for h in habits)
         # Not taken: "a greeting before a request is no chat" left "Hi! send me the notbook note
         # on sourdough" at 0.33-0.66 (0.48-0.52), and saying the habit's item comes from the message 0.62-0.76.
@@ -482,6 +487,11 @@ class Trigger:
                 self.ledger.note_call(str(session_id), str(tool_name), noted)
         except Exception as exc:
             logger.warning("habits: could not note a tool call: %s", exc)
+        try:  # a draft of the dream practices beside this call; cheap when nothing practices
+            self.practise(str(session_id or ""), str(tool_name), args if isinstance(args, dict) else {}, result,
+                          status)
+        except Exception as exc:
+            logger.warning("habits: could not practice beside a tool call: %s", exc)
         return None
 
     def answering(self) -> bool:
@@ -507,6 +517,13 @@ class Trigger:
         return None
 
     def on_post_llm_call(self, session_id="", assistant_response=None, conversation_history=None, platform="", **_):
+        try:
+            return self._post_llm_call(session_id, assistant_response)
+        finally:  # whatever the reply did, the practice of a grown draft ends with the turn and the dream may start
+            self.practise_turn(str(session_id or ""))  # neither raises
+            self.maybe_dream(str(platform or ""))
+
+    def _post_llm_call(self, session_id, assistant_response):
         said = _text(assistant_response).strip()
         try:
             telling = self.telling.pop(str(session_id or ""), None)
@@ -602,7 +619,7 @@ class Trigger:
 
     def asked_for(self, session: str) -> bool:
         """The user's own last message in this session asks to make a habit, or to remember how to do the task:
-        one yes/no to the S1 at the host's min_confidence. Unknown, or no decision model answering: no."""
+        one yes/no to the decision model at the host's min_confidence. Unknown, or no decision model answering: no."""
         text = self.said.get(session or "", "")
         if not text:
             return False

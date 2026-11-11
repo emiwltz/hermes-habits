@@ -1,12 +1,27 @@
 # habits/0.1
 
-A habit is a small, fixed graph that an LLM writes once and a host replays: fast decision models (S1) answer typed questions at the forks, tools act, and the LLM is woken only where the graph says so or when something goes wrong. Any saved habit can be called by name. A habit started by a message or a schedule practises in shadow first, beside the LLM, and with the default `promote: ask` acts alone only after the user's yes.
+This page is the format of a reflex and the rules around it. It is for someone who writes a reflex, or builds another
+runner for reflexes. Every argument, limit and message is in [docs/REFERENCE.md](docs/REFERENCE.md). What the plugin
+does on your machine is in [docs/SAFETY.md](docs/SAFETY.md).
 
-The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119. The *host* runs habits (here, the Hermes plugin). The *validator* is `habits/graph.py` and the *runner* is `habits/runner.py`. `habit.schema.json` describes the structure of a habit file; the validator remains the authority.
+The words "must" and "must not" mean a rule the checker enforces. "Should" means advice.
 
-## 1. File
+## The words
 
-A saved habit is the file `assets/reflex.yml` in a skill folder, next to the `SKILL.md` that holds the habit's name, its description (used to trigger it) and the slow procedure:
+| Word | Meaning |
+| --- | --- |
+| **reflex** | The file that runs: `assets/reflex.yml`. A few steps. |
+| **habit** | A reflex plus its story: its skill, its state, its numbers. |
+| **step** | One line of a reflex. The YAML key that holds the steps is `nodes`. |
+| **start** | What sets a reflex off. The YAML key is `trigger`. |
+| **done / handed back** | The only two ways a run comes back. |
+| **decision model** | The small model that answers `ask` steps: Jev, else Hermes's own model. |
+| **runner** | The part that runs a reflex. Here it is the Hermes plugin Habits. |
+
+## 1. The file
+
+A habit is a skill folder. `SKILL.md` holds its name, its description and the slow way to do the task by hand.
+`assets/reflex.yml` holds the reflex:
 
 ```text
 ~/.hermes/skills/tidy-downloads/
@@ -15,203 +30,215 @@ A saved habit is the file `assets/reflex.yml` in a skill folder, next to the `SK
     └── reflex.yml
 ```
 
-A habit saved by v0.1 as `assets/HABIT.yaml` is still read and still protected; if a folder holds both files, `assets/reflex.yml` is the one used.
+- A reflex saved under the older file name `assets/HABIT.yaml` is still read. With both files, `reflex.yml` wins.
+- A helper file that a step calls lives in `assets/` too. It is part of the habit: changing it is a new version.
+- The file is YAML 1.2, so only `true` and `false` are booleans: `yes` is text. It takes no YAML alias (`*name`).
+- The file is 256 KB at most.
+- Hermes can also run a one-off reflex that is not saved. `habit_run` takes it as an object, as YAML or JSON text,
+  or as the path of a `.yaml`, `.yml` or `.json` file.
+  A one-off reflex the model writes acts for real unless `dry: true`. It never deletes and never runs a command Hermes flags.
 
-A helper script the graph calls (by its full path) lives in the same `assets/` folder: it is part of the habit, and its version (§9) covers it. Writers SHOULD keep the logic in the graph and call a helper only for what a node cannot do.
+## 2. Top-level keys
 
-A one-off scenario is the same mapping, passed to the `habit_run` tool (a host MAY also take `dry: true`, §7.10, and several calls at once, §8) as an object, as YAML or JSON text, or as the path of a `.yaml`, `.yml` or `.json` file that holds it (`file`); `habit_save` takes the same two forms, and exactly one of them, and its procedure as its text or as the full path of a `.md` file that holds it, read under the same checks (a secret's name refused too). A graph takes no YAML alias (`*name`), and its text or file is 256 KB at most. The reference reader follows a file's links, then refuses a file Hermes keeps from its own tools, any file of Hermes's home but a skill's `assets/reflex.yml` and a draft in its `cache/scratch/` folder, a file of a folder of keys (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.codex`…), and a token store by its name; a mapping whose `spec` is not `habits/0.1` is refused with that one issue and no page, and a YAML error gives its line and column, never the line itself. A reader MUST use YAML 1.2 booleans: only `true` and `false` are booleans, and `yes`, `no`, `on` and `off` stay text. Writers SHOULD quote dates, times and numbers with leading zeros (`"2026-11-07"`, `"1:30"`, `"012"`), because the reference reader still applies YAML 1.1 rules to them.
+| Key | Required | Value |
+| --- | --- | --- |
+| `spec` | yes | `habits/0.1` |
+| `trigger` | no | The start: `message`, `skill`, or `{every: 30m}`. No `trigger` means "called". See section 6. |
+| `inputs` | no | Names of the values the caller gives: `[page, depth]`. |
+| `start` | yes | The name of the first step. |
+| `fallback` | yes | The name of a `wake` step. Every run that goes wrong ends there. |
+| `min_confidence` | no | Below this, an answer from the decision model is a doubt. A number from 0 to 1. |
+| `limits` | no | `seconds`, `steps`, `tools`, `questions`, `llm`. See REFERENCE. |
+| `nodes` | yes | 1 to 20 steps, each under its name. |
 
-## 2. Top-level fields
+Step names match `[a-z0-9_-]{1,40}`. Variable names match `[A-Za-z_][A-Za-z0-9_]*`. A habit name matches
+`[a-z0-9][a-z0-9_-]{0,39}`. Other top-level keys are ignored; do not add any.
 
-| Field | Required | Value | Default |
+## 3. Steps
+
+A step holds exactly one of these seven keys, and only the fields in its row.
+
+| Step | What it does | Its own fields | Where it goes next |
 | --- | --- | --- | --- |
-| `spec` | yes | `habits/0.1` | — |
-| `trigger` | no | `message`, or `{every: 30m}` (a whole number, then `m`, `h` or `d`: Hermes cron counts in minutes, and on its 60 s ticker `1m` fires about every 2 minutes); `every: 1d` MAY add a time of day, 24-hour and quoted: `{every: 1d, at: "21:00"}` is the cron job `0 21 * * *` (no other interval takes `at`: a day-of-month step `*/N` starts again on the 1st, so it keeps no gap) | absent or null: one-off or sub-habit |
-| `inputs` | no | variable names given by the caller (`habit_run` inputs, the `with` of a `use`) | `[]` |
-| `start` | yes | the first node | — |
-| `fallback` | yes | the `wake` node that ends every run that goes wrong (§7.1) | — |
-| `min_confidence` | no | threshold of every `ask`, a number from 0 to 1 | the host's setting, `0.8` |
-| `limits` | no | budgets: `seconds`, `steps`, `tools`, `questions`, `llm` (§7.5) | §7.5 |
-| `nodes` | yes | 1 to 20 nodes, each under its name | — |
+| `do` | Acts: calls a Hermes tool. | `args`, `read: true` when it only reads | `next`, optional `error` |
+| `ask` | Decides: a closed question for the decision model. | one answer type | `then: {answer: step}`, or `next` |
+| `check` | Tests a simple rule. No model. | `empty`, `changed`, `equals`, `contains`, `greater` | `then: {yes, no}` |
+| `use` | Calls another habit by name, 3 levels deep at most. | the habit's name | `next`, optional `error` |
+| `end` | Finishes: done. | a message | none |
+| `wake` | Finishes: handed back. | a message for Hermes | none |
+| `llm` | Advanced. One structured call to Hermes's model, no tool. | `schema` | `next`, optional `error` |
 
-Node names MUST match `[a-z0-9_-]{1,40}`. Variable names MUST match `[A-Za-z_][A-Za-z0-9_]*`. Habit names are skill names, used by `use` and `habit_save`; they SHOULD match `[a-z0-9][a-z0-9_-]{0,39}`, which `habit_save` requires. Other top-level keys are ignored; writers SHOULD NOT add any.
+An `ask` has exactly one answer type:
 
-## 3. Nodes
+- `yes_no: true`
+- `choice: [a, b, c]`, or a mapping `{option: description}` (2 to 255 options)
+- `score: [lowest, ..., highest]` (2 to 10 levels)
+- `pick: <list>`: choose one item of a list variable. It takes `next`, and an optional `unsure` step.
 
-A node MUST hold exactly one verb, and only the fields of its row: any other field is refused. `then` and `next` MUST NOT appear together.
+An `ask` also takes an optional `min_confidence`. Put `other` last in a `choice`: the model leans to the first option.
 
-| Verb | Family | Own fields | Exits | Modifiers |
-| --- | --- | --- | --- | --- |
-| `ask` | decide | `ask: <question>` and exactly one type: `yes_no: true`, `choice: [a, b, …]` or `{option: description}` (2 to 255 options), `score: [lowest, …, highest]` (2 to 10 levels), or `pick: <list variable>` (one item of it, optional `margin`); optional `min_confidence` | `then: {<answer>: node}` for every answer, plus an optional `unsure`; or `next`. With `each`: `next` only. With `pick`: `next`, plus an optional `unsure: node` | `as`, `each` (not with `pick`), `where`, `with` |
-| `check` | decide | `check:` with exactly one of `empty: v`, `changed: v`, `equals: [v, value]`, `contains: [v, value]`, `greater: [v, number]` | `then: {yes: node, no: node}`, both required | none |
-| `do` | act | `do: <Hermes tool>`, `args: {…}` (templates allowed), `read: true` when the call only reads | `next`, optional `error` | `as`, `each`, `where` |
-| `llm` | act | `llm: <instructions>`, optional `schema: {field: string, number, boolean or list}` with at least one field | `next`, optional `error` | `as`, `each`, `where`, `with` |
-| `use` | assemble | `use: <habit name>` | `next`, optional `error` | `as`, `with` |
-| `end` | finish | `end: <message>` | none | `with` |
-| `wake` | finish | `wake: <message for the LLM>` | none | `with` |
+Two rules about exits:
 
-- A `do`, `llm` or `use` node MUST have `next`; `error` alone is not enough.
-- `ask` and `check` have no `error` exit: their failures go to the fallback.
-- Options are text or whole numbers; a number is read as its digits. `then` keys are compared as text, like options, so `then: {1: low}` maps the option `1`. A `score` exits per level, like a choice. A `score` mapping is accepted, but its descriptions are not sent.
-- An `llm` node never holds a tool: `args`, `tools` or `read` break rule 5.
-- An `ssh` in a terminal command MUST give the command to run after the host: an `ssh` without one, its input the terminal's (no `<` file, not after a pipe; no `-N`, `-f`, `-O`, `-G`), is a session that waits for a person, and is refused at `habit_run` and `habit_save` (a saved file is not refused for it). A `terminal` `do` MUST give `args.command`, one shell line.
+- A `do`, `llm` or `use` step needs `next`. `error` alone is not enough.
+- `ask` and `check` have no `error` exit. Their failures go to the fallback.
+
+Count and compare dates in a `check`, never in an `ask`. An `llm` step never holds a tool.
 
 ## 4. Modifiers
 
-- `as: name` stores the node's value in a variable.
-- `each: name` runs the node once per item of a list variable, in order. A text is split into non-empty, trimmed lines. Items already in `doubts` are skipped. An `ask` with `each` asks one question per item (its text, a line break, the item), all in one batched call; when its `with` names a table of an earlier `each`, each question gets that item's entry as its state instead, one call per distinct state. `doubts: drop` on an `ask` with `each` leaves an item whose answer is unsure out (no entry, not a doubt; the report lists it), so the run is not handed back for an item the graph does not need.
-- `where: {variable: value}`, with `each`, keeps the items whose value of `variable` equals `value`, compared as text (§5). For a table, the value is the current item's entry. Write `{installed: yes}`, not `true`: a `yes_no` answer is the text `yes`. Without `each`, `where` has no effect.
-- `pick: name` on an `ask` chooses ONE item of a list variable (a text is split into lines; a table of an earlier `each` offers its entries, `item: value`, and gives the item) in a single choice question: its options are the items, each distinct one once and kept by `where` (doubts skipped), each with its text (200 characters at most), then `none` ("none of them"). 254 items at most, so 255 options with `none`, the limit of a choice question (Jev's own); with more, or with none, nothing is asked and the pick is unsure. It takes the top option, and stores that item in `as`, only when it is an item, its confidence is at the threshold, and its margin over the second option's probability is `margin` or more (0.15 unless given; a backend that gives no probabilities leaves the second `1 − confidence`). Otherwise it is unsure: `as` is unset and the run takes `unsure`, or the fallback. The trace keeps its options (80 characters each), each option's probability and the margin. The options are the items' own text, which the S1 reads as it reads the question, so an item written to sway it can: a pick over items anyone can name (file names, titles) SHOULD say in its question that a name claiming to be the one asked for, or telling it what to choose, is never it (on Jev such a file name was taken 9 times of 9, then 0 of 23). An item picked from a list an `llm` wrote, or from the table an `each` built over one (its keys are that list's items), is that `llm`'s value (§6, safety check 4).
-- `with: [variables]` gives variables to the node: the shared state of an `ask` or an `llm` (sent once, cut to 8,000 characters; a table, in an `ask` with `each`, gives each question its item's entry), the inputs of a `use`, the values returned by an `end` or a `wake`.
+| Modifier | On | Meaning |
+| --- | --- | --- |
+| `as: name` | `do`, `ask`, `llm`, `use` | Keep the step's value in a variable. |
+| `each: list` | `do`, `ask`, `llm` | Run once per item of a list variable. A text is split into lines. |
+| `where: {var: value}` | with `each` | Keep the items whose value matches, compared as text. |
+| `with: [vars]` | `ask`, `llm`, `use`, `end`, `wake` | Give variables to the step. |
+| `doubts: drop` | `ask` with `each` | Leave an unsure item out instead of making it a doubt. |
+| `margin: 0.15` | `ask` with `pick` | How far the top item must stand over the second. |
 
-## 5. Variables and templates
+`with` means: the shared state of an `ask` or `llm`, the inputs of a `use`, the values returned by an `end` or `wake`.
 
-- A variable comes from `inputs`, from an `as`, or from the runner: `item` (the current item, only inside `each`: a node without `each` that uses it is refused), `doubts` (one record per item set aside: `item`, `node`, `reason`, `confidence`) and `trigger` (the triggering message or watch check, `""` otherwise). `as` and `inputs` MUST NOT use these three names. Every variable a node uses MUST come from one of these; the validator only checks that each name is defined somewhere, not that it is set before it is used.
-- An `ask` stores its answer (a `pick`, the item it took). A `do` stores the `output` field of the tool result when the result is a JSON object that has one, otherwise the parsed JSON, otherwise the text. An `llm` stores an object with its schema fields, or a single string when it has no schema. A `use` stores the `with` values of the sub-habit's `end`, otherwise its message. A `check` stores nothing.
-- A tool result with an `error` field, or with a non-zero `exit_code` or `returncode`, is an error. A read terminal call (§7.7) that exits 1 with no output (grep found nothing) gives `""`; one whose status is that of `grep`, `egrep`, `fgrep`, `diff`, `cmp`, `test` or `[` (the last command, joined by pipes or `;` only), for which exit 1 means no match, differs or false, gives its output (`grep -c` prints `0`). A read terminal call that is one pipe (commands joined by `|` or `|&` only) MUST fail when a command before the last one fails, as with bash's `pipefail`; exit 1 of those same commands, the status of a writer whose reader stopped early (141: `| head`) and any status of `curl -w` (it prints `000` for a transfer that failed) are no failure. Here the host prints bash's own statuses (`PIPESTATUS`) on a last line after the pipe and takes that line off the value. A list (`;`, `&&`, `||`) keeps its last command's status. Hermes's terminal joins a command's errors to its output: a read whose errors must not become its value sends them to `2>/dev/null`.
-- After a node with `each`, its variable is a table: item → value. Inside a later `each`, `{kind}` is the current item's entry; outside, it is the whole table.
-- The *text* of a value: a string as is; null as `""`; a list of strings, one item per line; anything else as JSON, with a space after `,` and `:` (`true`, `1.0`, `{"a": 1}`). `where`, `equals`, `contains`, options and `then` keys compare texts.
-- A template is `{variable}`, `{variable.field}` or `{variable.0}` (a list index), with no expression and no filter. Templates are filled in the texts of `ask`, `llm`, `end` and `wake`, and in `do` arguments.
-- An argument that is exactly one template (`"{files}"`) receives the value itself, such as a list or a mapping. Anywhere else, and always in a terminal `command`, a value is inserted as its text. In the message of an `end` or `wake`, a mapping whose values are all plain (text, number, boolean) with no line break is written one `key: value` per line.
-- In the `command` of the `terminal` tool, each inserted value MUST be quoted as one shell argument, and MUST be refused if it contains `..` or a backtick, starts with `-` or contains a line break. A template in a terminal command MUST NOT be inside quotes or backticks (the shell finds a closing backtick before any quote; `$( )` holds a template as one quoted value): write `mv {item} ~/.Trash/`; the runner quotes each value. A value written by an `llm` node MUST NOT enter a terminal command. A terminal command MUST start in the same folder on every run (the host's home folder, unless the node sets `workdir`), so a habit does not depend on where the session happens to be. Inside `each`, a host MAY run read tools side by side; results keep the order of the items.
+## 5. Values and templates
 
-A runner MUST treat a missing value (an unset variable, a field or index that does not exist) as follows:
+- A variable comes from `inputs`, from an `as`, or from the runner. The runner sets three: `item` (the current
+  item, inside `each` only), `doubts` (the items set aside, each with its step, reason and confidence) and `trigger`
+  (the message that started the run, or `""`). `as` and `inputs` must not use these three names.
+- A `do` stores the `output` field of the tool result when it has one, else the parsed JSON, else the text.
+- After an `each`, the variable is a table: item to value. Inside a later `each`, `{kind}` is the current item's entry.
+- A template is `{variable}`, `{variable.field}` or `{variable.0}`. There is no expression and no filter.
+  Templates are filled in the texts of `ask`, `llm`, `end` and `wake`, and in `do` arguments.
+- In a terminal `command`, each value is quoted as one shell argument by the runner. Write `mv {item} ~/.Trash/`,
+  never `mv '{item}' ~/.Trash/`. A value that contains `..` or a backtick, starts with `-` or spans lines is refused.
+- A missing value stays as written in a text. In a `do` argument it is a tool error.
 
-| Where the value is missing | What happens |
-| --- | --- |
-| a text (`ask`, `llm`, `end`, `wake`) | the template stays as written |
-| a `do` argument | a tool error: the `error` exit or the fallback; inside `each`, the item becomes a doubt |
-| the variable of a `check` | the fallback |
-| the source of an `each`, or a source that is not a list or a text (a table, null, a number) | the fallback |
-| the `where` value of one item | the item is skipped; it is not a doubt |
-| a `with` name of an `ask` or `llm` | the state shows `name: (no value)` |
-| a `with` name of an `end`, `wake` or `use` | null |
+## 6. The four starts and the two outcomes
 
-## 6. Rules and safety checks
+| Start | In the file | Set off by | Where the result goes |
+| --- | --- | --- | --- |
+| called | no `trigger` | Hermes calls `habit_run` with the name | The reply to the call |
+| message | `trigger: message` | A user message asks for it | Done: it answers. Handed back: Hermes gets the rest |
+| schedule | `trigger: {every: 30m}` | A cron job (`hermes habits tick`) | Done: silence. Handed back: Hermes wakes |
+| skill | `trigger: skill` | Hermes loads the reflex's own skill | The skill's result gets one more field, `habits` |
 
-A graph that breaks a rule or a safety check MUST NOT run and MUST NOT be saved. Each issue names the rule, the node and the fix in one sentence, labelled `rule <n> (<name>)`, `format` (shape, names, variables) or `safety`:
+- `every` is a whole number then `m`, `h` or `d`. `{every: 1d, at: "21:00"}` runs at a time of day; `at` is 24-hour,
+  quoted, and goes with `1d` only.
+- A start on a skill takes no `inputs` and no `ask` or `llm` step. It runs once per session, in 10 seconds at most.
+- Hermes can also call any habit by name. Whether it then acts for real depends on its state (section 9).
+
+A run comes back in one of two ways:
+
+- **Done.** The run reached an `end` step and acted for real.
+- **Handed back.** The run reached a `wake` step, or something went wrong. It always lists what is left, and says
+  what Hermes should do: only that. In doubt a reflex does not guess.
+
+An unsure answer inside `each` puts the item in `doubts`. A later `each` skips it. An `end` reached with any doubt
+becomes a hand back: a doubt is never lost.
+
+## 7. Checks before a reflex runs
+
+A reflex that breaks a rule or a safety check does not run and is not saved. Each issue names the rule, the step and
+the fix:
 
 ```text
-rule 3 (no loop): "pause" goes back to "read". Repeat with "each" or with the trigger.
+rule 3 (no loop): "look" goes back to "look". Repeat with "each" or with the trigger.
 ```
 
-A host MUST validate before each `habit_run`, at each `habit_save`, when it loads habits, and in `hermes habits check <file>`. A saved habit that is invalid is skipped with a warning; its skill stays usable. The LLM SHOULD get three tries to fix a refused graph, then do the task without a habit.
+The runner checks when a reflex is run, when it is saved, when habits load, and in `hermes habits check <file>`.
 
-Before it validates a graph from the LLM (`habit_run`, `habit_save`), a host MAY fix the common slips that have one plain reading, and MUST then say each fix in the reply (`normalized`: one line per change) and save the fixed graph, so the file holds the canonical form and the version stays stable: `do` written as an object (`{tool: X, …}`, `{name: X, args|arguments|input|parameters: {…}}`, the tool_use and function-call shapes with `type` and `arguments` as JSON text, `{command: …}`, `{X: {…}}` or `{bash|terminal: "<command>"}`) becomes `do: X` with its `args` (and `read`, `as`, `next`, `error` found inside go back to the node); `tool:` on a node without a verb is `do:`; a shell command in `do` becomes `do: terminal, args: {command: …}`, and `terminal: <command>` loses its prefix, but a `do` that starts with a Hermes tool's name (`read_file ~/x`, `web search`) is refused with the form to write; a shell's name (`bash`, `sh`, `shell`, `zsh`, `execute`, `exec`, `run`, `run_command`, `run_terminal_cmd`, `run_shell`, `run_shell_command`, `shell_command`, `exec_command`, `terminal_exec`, `cmd`, `command`, `subprocess`) becomes `terminal`, unless its arguments hold `code` (free code, refused); `arguments`, or `command`, `path`, `url` or `query` on a `do` node (and `workdir`, `timeout`, `background` on a terminal one), go into `args` when they clash with none of its keys; a lone `cmd` or `script` of terminal is its `command`, and `[bash, -lc, line]` is `line`; `url` of `web_extract` becomes `urls: [url]`; `{name}` where a variable's name goes (`each`, `with`, `where`, a check's variable) loses its braces; `then` and `next` together on an `ask` (without `each`) or a `check` keep `then`, and `next` leads the answers `then` leaves out. Nothing else is guessed: a fix that would clash with a field already there is not made, and the graph is refused as written. A `do`, `llm` or `use` with `then` is refused with what to write instead: `next` when it works, `error` when it fails. Files read from disk are not normalized.
-
-A host that knows the tools Hermes registered (at `habit_save`, the tools of the session when it knows them) SHOULD refuse, at `habit_run` and `habit_save`, a `do` that names another tool, or that lacks an argument the tool's schema requires (with the arguments it takes), with the closest real names and where a shell command goes (`do: terminal, args: {command: …}`). A host that cannot tell checks no name: an MCP tool is not a guess.
-
-| # | Rule | A valid graph MUST… |
+| # | Rule | A valid reflex... |
 | --- | --- | --- |
-| 1 | no isolated node | reach every node from `start` through `next`, `then`, `error`, or the fallback (reachable from every node that is not `end` or `wake`); the fallback itself, required by rule 4, may stay out of reach |
-| 2 | no dead end | give every node except `end` and `wake` an exit, lead every exit to an existing node, and name an existing `start` |
-| 3 | no loop | never come back to a node by following exits; repeat with `each` or with the trigger |
-| 4 | a fallback | have `fallback`, naming a `wake` node |
-| 5 | one thing per node | hold one verb per node, one answer type per `ask`, and no tool in an `llm` |
-| 6 | no orphan answer | with `then`, map every answer of an `ask` (and nothing else except `unsure`); give a `check` both `yes` and `no`; give an `ask` with `each` only `next`, and a `pick` `next` (plus `unsure`) |
-| 7 | small | have 20 nodes at most and every limit at most its cap (§7.5); nest `use` 3 levels deep at most, caller included (enforced at run time: a deeper `use` takes its `error` exit) |
+| 1 | no isolated step | reaches every step from `start` |
+| 2 | no dead end | gives every step but `end` and `wake` an exit to a step that exists |
+| 3 | no loop | never comes back to a step; it repeats with `each` or with a start |
+| 4 | a fallback | names a `wake` step as `fallback` |
+| 5 | one thing per step | has one key per step, one answer type per `ask`, no tool in an `llm` |
+| 6 | no orphan answer | maps every answer of an `ask`, and both `yes` and `no` of a `check` |
+| 7 | small | has 20 steps at most and every limit under its cap |
 
-The four safety checks:
+Four safety checks:
 
-1. **No deleting program.** A host MUST refuse any command that names a deleting program (`rm`, `rmdir`, `shred`, `unlink`, `dd`, `find -delete`) anywhere in a terminal command, even behind `xargs`, `bash -c`, a path such as `/bin/rm`, or a brace or a glob the shell expands to one (`{r,}m`, `/bin/r[m]`), and check the filled command again before it runs; any free-code tool (`execute_code`, `delegate_task`); and any tool action that removes data (`skill_manage` `delete` or `remove_file`, `cronjob_manage` `remove`, `memory` `remove` or `delete`). This is a check on words: it cannot see a deletion inside another program (`python3 -c …`). Files go to the Trash: `mv … ~/.Trash/`.
-2. **Shorter watch budgets.** A watch (`trigger: {every: …}`) MUST NOT exceed 60 seconds and 20 tool calls per run, sub-habits included. These are also its defaults.
-3. **`read: true` only reads.** It MUST be refused unless the tool is a read tool (`web_extract`, `web_search`, `read_file`, `search_files`, `kanban_list`, `kanban_show`, `skill_view`), or the call is a terminal command whose every command (of its pipes, `;`, `&&`, `||`, `&` and lines, and inside its `$( )` and backticks) is a reader, the line read as a POSIX shell reads it (quotes, escapes, brace expansion: `{-o,f}` is `-o f`; a template is one quoted value):
-   - readers whatever their arguments: `ls`, `cat`, `head`, `grep`, `egrep`, `fgrep`, `wc`, `stat`, `cut`, `tr`, `jq`, `column`, `nl`, `rev`, `fold`, `fmt`, `expand`, `basename`, `dirname`, `realpath`, `readlink`, `pwd`, `whoami`, `uname`, `id`, `du`, `df`, `echo`, `test`, `[`, `true`, `false`, `ps`, `pgrep`, `pidof`, `uptime`, `free`, `vm_stat`, `sw_vers`, `md5`, `md5sum`, `shasum`, `sha256sum`, `diff`, `cmp`, `comm`, `ioreg`;
-   - readers without the options that make them write, every argument known before the run (no variable but `$HOME`, no substitution, no glob at the start of a word or in an option, which a file named `-o` or `-exec` could fill), GNU abbreviations of long options included (`--out` is `--output`): `find` (no `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`); `tail` (no `-f`, `-F`, `--follow`: it never ends); `curl` with a plain GET or HEAD (only `-s`, `-S`, `-L`, `-f`, `-I`, `-m`, `--connect-timeout`, `--retry`, `-A`, `-H`, `-w`, `-r`, `--compressed`, `-X GET` or `HEAD`, `-o /dev/null`; no `@file` or `{var}` after `-H` or `-w`, no `%output`; every other word a URL); `sort` (no `-o`, `--output`, `--compress-program`); `uniq` (one file at most: a second one is its output); `date` (no `-s`, `--set`; every operand a `+format`, or with BSD's `-j` the date to read); `sleep` (10 seconds at most); `hostname` (no name); `file` (no `-C`); `printf` (no `-v`); `env` (alone); `sed` (only `-n`, `-E`, `-r`, `-s`, `-u`, `-z`, `-e`; a script of `p`, `P`, `d`, `D`, `n`, `N`, `g`, `G`, `h`, `H`, `x`, `z`, `=`, `q`, `Q`, `l`, `y`, `s` with no `w` or `e` flag and no delimiter inside `[ ]`, addresses, `!` and blocks); `awk` (only `-F` and `-v`; no `system`, `|` or `@` in the program, and no `>` after its first `print`: a print to a file); `git` (`rev-parse`; `branch` and `tag` that list (no name unless `-l`); `remote` with `-v` at most; `config` with `--get…` or `--list`; global options `-C`, `--no-pager`, and `-c` with `color.*`, `core.quotepath` or `safe.directory` only; no `--output`, `--ext-diff`; never `log`, `show`, `diff`, `status`, `blame`, `ls-files`, `describe` or `shortlog`, which run programs a repository's own `.git/config` or `.gitattributes` can name: gpg, a textconv driver, `diff.external`, `core.fsmonitor`); `hermes logs [name]` (with `-n`, `--level`, `--session`, `--since`, `--component`; no `-f`); `hermes habits check <file>`, `hermes habits show <name>` (with `--json`) and `hermes habits list`; `systemctl` (`is-active`, `is-enabled`, `is-failed`, `status`, `show`, `list-units`, `list-timers`, with `--user`, `--no-pager`, `-q`, `-a`, `-l`, `-n`, `-p`, `-t`, `--state`, `--value` and the like; no `-H` or `-M`); `journalctl` (only options that choose what to print: `--user`, `-u`, `-n`, `--since`, `--until`, `-p`, `-g`, `-o`, `-b`, `-r`, `-q`, `--no-pager`…; no `--vacuum…`, `--rotate`, `--flush`, `-f`); `ssh` (only `-o` with `BatchMode`, `ConnectTimeout`, `ServerAliveInterval`, `ServerAliveCountMax`, `ConnectionAttempts`, `LogLevel`, `IdentitiesOnly`, `User` or `Port`, and `-p`, `-i`, `-q`, `-T`, `-n`; then the host and a remote command that is itself a read, with no variable; its first word may be `.local/bin/<reader>`, since the remote shell starts in the home folder);
-   - redirections only to `/dev/null`, between streams (`2>&1`, `>&2`) or from a file (`<`, `<<<`); a sed script, an awk program, a git `-c` value and a date operand hold no template. A template MAY stand in an ssh remote command, but never as its command: ssh joins its words and the remote shell reads them again, so the host MUST refuse, in any step, a value filled in an ssh command (its remote command, a `$( )` in it, its host) that is not one plain word of letters, digits, `/`, `_`, `.` and `-`.
+1. **Deleting.** Free-code tools (`execute_code`, `delegate_task`) and tool actions that remove data are always
+   refused. A deleting terminal command (`rm`, `rmdir`, `shred`, `unlink`, `dd`, `find -delete`) is accepted in a file
+   only under the setting `permissions: hermes`. It then runs only live, in a Hermes turn, for a habit that has your
+   yes given in a chat, and Hermes's own approval rules decide. A test run only plans it. Otherwise it is refused.
+2. **Watches.** A schedule start runs 60 seconds and 20 tool calls at most.
+3. **`read: true` only reads.** It is refused unless the tool is a read tool or the terminal command is made only
+   of readers. REFERENCE lists them.
+4. **No `llm` value as code.** Text written by an `llm` step may enter a terminal command only as one quoted operand,
+   under the setting `model_text: quoted`. It never takes the place of the program or of the code it runs. Under `never` it
+   does not enter a command at all.
 
-   The reference host also reads two command-line tools that are not standard, as readers on the same terms: `hc` (`ls` with `--all`, `--label`; `get <t>`; `read <t>` with `--lines`; `templates`; `server status`; `machine ls`; each with `--json`, nothing else) and `ob sync-status` (with `--path`, `--json`). This list grew after the first release of habits/0.1 (`hc`, `jq`, `ssh`, `sort`, `sed`, `awk`, `systemctl`, `ioreg`, `hermes logs`, `ob sync-status`, `2>/dev/null`…) and lost most of `git`: an older host refuses a habit that relies on a new reader, so machines that share habits SHOULD run the same version. A reader may be written as its path in a standard bin folder: `/bin`, `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin` or `$HOME/.local/bin` (`~/.local/bin/hc ls` is `hc ls`). A terminal read passes only `command`, `workdir` and `timeout` to the tool: any other argument (Hermes's `background`, `persist_on_release`, `notify`, `heartbeat`, `pty`) MUST be refused on a step that reads, and the host SHOULD drop it from a read's call, so a read ends with its call. Anything else is a write: an unknown command, a variable or another path as the command, an assignment, `xargs`, `eval`, `exec`, `source`, `.`, a heredoc, a process substitution, `$((…))`, `${x:-…}`, `$'…'`, a subshell or a group, a comment, an open quote. Hermes's own check of dangerous commands still applies to every call.
-4. **No `llm` value in a command.** An argument of a terminal `do` MUST NOT use a variable written by an `llm` node, nor `item` in an `each` over such a variable, nor the table such an `each` stores (its keys are the `llm`'s items), nor the item a `pick` took from either, nor `doubts` once such an `each` may doubt one of its items (an unsure answer, a failed call, an invalid `llm` answer). The runner MUST apply this check again at run time, to values passed through `use`, `item` included.
+A runner must also:
 
-## 7. Execution
+- take the same path every time it gets the same answers and the same tool results: a run has no randomness;
+- treat its own failure like the absence of the plugin: log it, stop the run, let Hermes go on;
+- go to the fallback when a budget runs out, a tool fails with no `error` exit, or the decision model does not answer.
 
-1. **Loop.** The runner starts at `start`, runs the node, follows one exit and stops at an `end` or a `wake`. An error without an `error` exit, an unsure answer without an `unsure` branch, an exhausted budget, a missing value where §5 says so, or no decision model answering ends the run on the fallback, with the reason.
-2. **Confidence.** Yes/no: `p` when `p ≥ 0.5` (the answer is yes), otherwise `1 − p` (no). Choice: the probability of the chosen option. Score: the model's `confidence` field, otherwise the probability of the chosen level. LLM fallback: its own figure, clamped to [0, 1]. The threshold is the node's `min_confidence`, otherwise the habit's, otherwise the host's setting (0.8). An answer below the threshold is unsure and stores nothing: after the `unsure` branch, the `as` variable is unset. An answer that is not one of the options, or a missing or malformed answer, counts as no answer: the host tries the next model. When none answers, the run ends on the fallback, for a whole `each` batch too (no item becomes a doubt).
-3. **Doubts.** An unsure answer in `each` puts the item in `doubts` (with the node, the reason and the confidence), unless the `ask` says `doubts: drop`. The item gets no entry and every later `each` skips it. A `do` or `llm` call that fails in `each` does the same. When every item fails, the node takes its `error` exit, or ends on the fallback if it has none; otherwise it takes `next`. An `end` reached with any doubt becomes a `wake` ("n doubts left"): a doubt is never lost.
-4. **Nodes.** `check`: `empty` is null, blank text, or an empty list or mapping; `equals` compares trimmed texts; `contains` looks for a substring of a text, an element of a list, or an answer of a table from `each`; `greater` compares numbers, a list or mapping counting as its length, and ends on the fallback when a side is not a number; `changed` compares with the value this node of this habit kept from an earlier run; the first value only sets that reference and is no, so a new watch never wakes anyone for what was already there. An empty value (as `empty` reads it) after a filled one, or the table of a `do` with `each` whose calls partly failed, is no and keeps the reference: a read that failed once is no change, nor is the good read after it (a value that really becomes empty is not seen either). Every empty value is one value: with no reference yet, or after an empty one, it is the reference, so a value that starts empty says yes on its first filled value. `do` calls the tool through the host's normal tool path. A habit never waits for an approval: a call the host would ask approval for MUST fail as a tool error, so the node takes `error` or the fallback (a doubt inside `each`), and the LLM does the action itself. `llm` makes one structured call per item, with no tools; an invalid answer takes `error`. `use` runs the sub-habit with the `with` variables as inputs, the same trigger and its caller's mode (§8); the sub-habit's `wake` takes `error`. The sub-habit's doubts become the caller's, whatever exit it takes: a later `each` skips those items, and the caller's `end` becomes a `wake` that hands them back (rule 3). A `use` whose `with` lacks an input of the sub-habit MUST take its `error` exit. A sub-habit spends its caller's budgets: it runs with the smaller of its own limits and what the caller has left.
-5. **Budgets.** A habit MAY set each limit to a positive whole number up to its cap; `questions` and `llm` MAY also be 0, none allowed, and a graph with an `ask` (or an `llm` node) under such a 0 is refused. Time is checked at every count; going over ends on the fallback. A host MAY impose a shorter time, for example inside a turn hook.
+## 8. A test run
 
-| Budget | What counts | Default | Cap | Watch |
-| --- | --- | --- | --- | --- |
-| `seconds` | wall time of the run | 120 | 600 | 60 (cap and default) |
-| `steps` | each node except `end` and `wake`; each item of an `each` | 200 | 1,000 | 200 |
-| `tools` | each tool call, planned calls included | 100 | 500 | 20 (cap and default) |
-| `questions` | each question sent to the S1 | 300 | 2,000 | 300 |
-| `llm` | each `llm` call | 5 | 20 | 5 |
+`habit_run` with `dry: true`, and `hermes habits run` without `--live`, run a reflex as a test:
 
-6. **Result.** `end` and `wake` return the status, the message, the reason, a report (each step, the doubts, the errors, the durations, the S1 used), their `with` values and the tools that ran (planned calls left out, a sub-habit's included). A host hands a run back to the LLM as a relay: `done` (true only when the run ended on an `end` and acted for real), `left` (at most 20 short lines of what is left to do or decide: the failing step, the doubts, the writes planned and not done) and `next` (one sentence: done, do not redo it; or handed back, with why, do only what is left), beside `status`, `message`, `values` and a bounded report. The message keeps 8,000 characters at most; the trace keeps 400 characters of output per step and 64 KB per run. When a run called a tool whose results can hold anyone's text (here `web_*`, `browser_*`, `mcp_*`, the tools Hermes wraps itself, and a terminal read of an agent's screen: `hc read` or `hc get`, also through a wrapper, a path or `ssh`; a `curl` or `wget` that may print what a server sent: anything but a `curl` that asks this machine, or sends every answer to `-o /dev/null` with a `-w` of numbers and the URL as written), the host MUST hand what the run brings back to the LLM (message, report, values, doubts, planned calls) as data, in the block the host uses for such tools (`<untrusted_tool_result source="habit_run">`), with any closing tag inside defused; planned calls go in a block of their own, one JSON object per line, so the content read cannot add one. Such a run MUST NOT end the turn with its own message in place of the LLM: that reply becomes the LLM's own in later turns (Hermes stores it so), outside any block.
-7. **Shadow run.** A `do` is a *read* when it has `read: true`, calls a read tool, or is a terminal command that passes safety check 3. In shadow, reads, `ask`, `check` and `llm` run for real; every other `do` call is only recorded as a planned write, and its value is null.
-8. **Determinism.** The runner has no randomness: the same graph with the same S1 answers and the same tool results MUST take the same path. Items run one after another, except the read tools a host runs side by side (§5), whose results keep the order of the items.
-9. **Containment.** A host MUST treat its own failure like the absence of the plugin: log it, stop the run, and let the LLM continue.
-10. **Dry run on request.** A host MAY let the LLM ask for a test run (`habit_run {…, dry: true}`, by name, scenario or file): the same checks; reads, `ask`, `check` and `llm` run; every other call, and every file an `end` would send, is only listed (`planned`, 20 lines at most). It is never recorded, never scored, and never moves the reference of a `check: changed`. It is done only when it ended and planned nothing.
+- Reads run for real: `read: true` steps, read tools, and terminal commands made only of readers.
+- `ask`, `check` and `llm` steps run. They use the decision model, so a test run may call a model.
+- Every other `do` is only planned: listed, not done. So is every file an `end` would send.
+- Nothing is recorded or scored, and the reference of a `check: changed` does not move.
+- A test run is done only if it ended and planned nothing.
 
-## 8. The three doors
+The dream and the learning of a habit use the same test run beside Hermes.
 
-A door is where a habit starts. Every saved habit has the *called* door; `trigger` adds the *message* door (`message`) or the *schedule* door (`{every: …}`). The YAML key stays `trigger`, and the kinds keep their names: one-off (called only), request (message), watch (schedule). Hosts MAY show the doors' names.
+## 9. The three states
 
-| Door (kind) | Trigger | Started by | Where the result goes |
-| --- | --- | --- | --- |
-| called (one-off) | none, or any | the LLM calls `habit_run` with a saved habit's name, or with a scenario or its file (a graph called once) | the tool result (§7.6); the host keeps the run's page on disk |
-| message (request) | `message` | `pre_llm_call`, once per turn: one S1 choice between "none" (first) and the shadow and active request habits, each described by its description and up to 3 literal paths or URL hosts its `do` nodes act on (the paths it writes to, or reads when it writes nowhere named; a folder it reads counts when it writes in it; never a URL's path or query), on the last message, threshold 0.7 (a message over 2,000 characters triggers nothing); then, for the habit picked, one S1 choice on the same message (below) | `end`: where the host can end a turn from this hook, the habit's message is the reply and no model call is made (not after a web read, §7.6); otherwise the report is added to the message with "already done, do not redo, confirm in one sentence". `wake`: the report and what is left to do. A message that names any saved habit MUST NOT trigger a habit |
-| schedule (watch) | `{every: …}` | a Hermes cron job whose script runs `hermes habits tick <name>` | `end`: `{"wakeAgent": false}`, no LLM. `wake`: `true` and the report, delivered by Hermes. A wake that a failed read caused (the run's last step is a read, §7.7, that failed, then fell back or took its `error` exit straight to a `wake`) is held, on a watch that checks more often than every 6 hours (a daily one wakes at once): only the 3rd such check in a row wakes the LLM, once, saying so (and that the watch is now retired, when that failure retired it); any other check starts the count again, and so does entering shadow (a new version, a reset), but a read that `changed` set aside (§7.4) leaves the count as it is. An `end` that doubts turned into a `wake`, or a `wake` the run reached right from a `check: {empty: doubts}` (its `no`), is held the same way when every doubt comes from a read call that ran and failed (an `each` read whose calls partly failed) and nothing was planned; a value refused before any call (§4) is no failure of the source, and wakes at once; the 3rd such check in a row says which step's calls failed. A write that failed wakes at once, and so do doubts from a decision (an `ask` under its threshold) |
+A habit that starts on a message, a schedule or a skill is in one of three states. You see them in `/habits`.
 
-**Confirmation.** Before a picked request habit runs, in shadow and active alike, the host asks the S1 one choice question on the message: 'What does this message ask about the saved task "<description> (acts on <paths>)"?', with four options: `run` (run it now as it is: any wording, typo or language; the message need not name every step), `changed` (run it differently: skip part of it, another folder, file or page, or another way, order or rule), `more` (run it and also do something else), `not_now` (do not run it, or run it later; a question the task answers is `run`). A habit whose `ask` or `llm` reads the message (`with: [trigger]`, or `{trigger}` in its question or instruction; or a `use` of a habit that does, as deep as `use` runs) takes what to act on from it: the task says "; the message names which one", `run` is "on the item the message names", `changed` drops "another folder, file or page", and `more` adds "or answer something else the message says"; such a habit runs on `run` at the host's `min_confidence` like any other, and only when a second question in the same call, 'Besides asking for the saved task, does this message say anything else that needs an answer or an action?', answers `nothing` at `min_confidence` or more; `other` (news, a reply or a confirmation about something else, another request or question), or a `nothing` less sure, sends the message to the LLM whole. A habit whose every `do` reads and whose ends send no file is described "(only reads <paths>, changes nothing)" instead of "(acts on <paths>)". In every case, only `run` at the host's `min_confidence` (0.8) or more runs the habit (a yes/no with a list of no cases made a fast decision model refuse plain requests); otherwise, or when the hook has too little time left to ask, nothing runs and nothing is counted, and the LLM handles the turn. A request habit's description SHOULD name its target and its way. A message that names a saved habit by its full name (any kind, any status; a quoted reply aside) triggers no habit, and nothing is asked.
+- **learning**: the reflex runs as a test beside Hermes. It never acts alone.
+- **automatic**: the reflex acts on its own when its start fires.
+- **resting**: it does nothing on its own.
 
-**Files.** An `end` MAY attach a file of the host's machine with a line of its template that is exactly `MEDIA:{var}` (a field or index allowed: `{found.files.0}`). The runner takes each such line out of the message and returns its value apart; the host adds it back, as `MEDIA:<resolved path>`, only when every node that sets `var` is a `do` that reads this machine (`terminal` with no `curl`, `ssh` or `hc`, `read_file`, `search_files`), the run called no tool whose results can hold anyone's text (§7.6), and the value (a text, or a list or table of exactly one) is an absolute or `~/` path to a regular file, links resolved, under a path written literally in the graph's `do` arguments (never the home folder or a folder above it), with no hidden folder or file on the way. A host MUST take every other `MEDIA:` directive out of what a habit hands to the LLM or the user (a page or a file the habit read could name one). A runner MUST NOT attach or send a file whose name looks like a secret, in any case, its name read after any backup suffix (`.bak`, `.old`, `.orig`, `.save`, `.backup`, `.copy`, `.tmp`, `.swp`, `.<digits>`, `~`) and both as given and with its links resolved (`.env` and `.env.*`, `*.env`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, with `_sk`, and their `.pub`, `*.pem`, `*.key` unless it is a folder or a zip (a Keynote deck), `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.ppk`, `auth.json`, or a name holding, with no letter right before or after it, `credential(s)`, `passwd`, `password(s)`, `secret(s)`, `token(s)`, `api key(s)` (`apikey`, `api_key`, `api-key`), `mdp` or `mot de passe`): an `end` that would attach one becomes a `wake` that says so, and a write that would send one (a `MEDIA:<path>` in any of its texts, the tag read in any case, after up to three quotes, backticks, `*` or `_`, its path quoted or not; in a terminal command that sends, `hermes send`, `curl`, `wget`, `scp`, `sftp`, `rsync`, `rclone`, `ssh`, `nc`, `socat`, `ftp`, `telnet`, `gh`, `mail` or `sendmail` written anywhere in it, any word that may name a file: a path, a name with an extension or a secret's whole name, the part after `=` or `@`, a short option's glued value such as `-fPATH`) fails, in a dry run as in a live one, so shadow plans what a live run would do. In shadow, a `MEDIA:<path>` line of the LLM's final reply counts as the planned send of that file (a planned call with a `MEDIA:<path>` argument, such as `hermes send -t telegram MEDIA:{item}`), each line once.
-
-An active habit runs before the LLM and acts. A habit in shadow runs dry, and the LLM does the task; a watch in shadow writes nothing, and when its run ends on a `wake` or planned a write, the host wakes the LLM with the report and the planned calls, so the LLM does the task as it would with no habit. A saved habit without a trigger has only the called door: it runs by `use` or by `habit_run` with its name.
-
-Status governs the called door too, for a habit that has another: acting uninvited is earned through every door, so `habit_run` by name runs a habit with a message or schedule door live only once it is active; in shadow or retired it runs dry and hands the whole task back to the LLM (no end text, no planned call: the LLM does the task its own way). A habit without a trigger runs live by name whatever its status, except a retired one, refused by name until `hermes habits reset` (it has no trigger, so retiring it would change nothing otherwise); so does a host's shipped example. Every such run is recorded, never counted. Also dry by name: a habit the host did not save (§9), until it is active, and a call with `dry: true` (§7.10); a sub-habit runs in its caller's mode, even when it is retired. A host MUST NOT run two runs of one habit at once: a request that finds its habit running goes to the LLM alone, and `habit_run` answers `busy`.
-
-A host MAY take 2 to 8 calls in one `habit_run` (here `habits: [{name, inputs} | {scenario | file, inputs}, …]`, with `dry` the only other key): it runs them one after another, in the order given, each with its own checks, lock and budgets, all within 300 seconds; one refused or handed back never stops the next, and the reply gives each call's `done`, `message`, `values`, `left` and `next`, and `done` for all.
-
-## 9. Lifecycle
-
-A saved habit is in shadow, active or retired; a one-off scenario has no status. Hosts MAY name the states on screen: learning (shadow), automatic (active), resting (retired). A saved habit without a trigger has no shadow phase: nothing compares it, so it runs live by name (shown as *called by name*) until it is retired; a habit with a trigger runs dry by name until it is active (§8). Status belongs to a version, the fingerprint of the graph and of the other files of the habit's `assets/` folder (sorted relative paths and contents; what the system, git or a run leaves there skipped: `.DS_Store`, `._` files, hidden folders, `__pycache__`; the host MAY bound the files and bytes it reads, here 50 files and their first megabyte); it also covers the version of each habit a `use` node names (a missing one counts as such), as deep as a run goes, and the habit's description, which the trigger matches requests against (a wider description is a habit that answers other requests). Here a version is the fingerprint of all but the description (12 characters, what it was before descriptions counted, kept when a host upgrades) followed by the description's (8). Any change to the graph, to such a file or to a habit it uses MUST send it back to shadow with fresh scores (a sub-habit runs in its caller's mode, so a write added to it would otherwise run live unmeasured). Only these thresholds and the user change a status; the LLM MUST NOT. A host SHOULD keep each status change with who made it, and trust an active status only when that record shows it (a status written into its store by other means goes back to shadow).
-
-| From → to | When |
+| Move | What moves it |
 | --- | --- |
-| saved → shadow | always, except below |
-| saved → active | a new read-only request habit (never measured: no run recorded under its name and no status but a first shadow; a save again or a repair keeps its scores, and its new version starts in shadow; every `do` a read, its sub-habits' too, and no end with a `MEDIA:{var}` line: a sent file cannot be taken back) saved during a turn whose user message, a quoted reply aside, asks to keep the task as a habit or to remember how to do it (one yes/no to the S1, at the host's `min_confidence`): it has nothing to undo, and spot checks measure it |
-| shadow → active | at least 12 counted runs of this version, and pooled agreement of at least 90 %; then, when the host waits for the user (here `promote: ask`, the default), the user's yes to that version. The habit stays in shadow, ready, and keeps learning until then. A host MUST bind the yes to the version the user was shown, as a compare-and-set: a yes to a version that is no longer the habit's, or no longer in shadow, is refused. "Not yet" asks again after half as many counted runs |
-| active → shadow (the user) | the user says the habit got it wrong: the last run it made on its own in that conversation counts as a disagreement, and the new scores start with it |
-| any → retired (the user) | the user puts it to rest |
-| active → shadow | a request habit's last 3 active runs ended on a `wake` that was not a failure, with no `end` in between (a spot check that ends counts as an end): a new shadow period of the same version, with fresh scores and the note "woke the model 3 times in a row". Watches are not concerned |
-| active → retired | agreement under 75 % over the last 20 counted runs of this version (shadow runs, spot checks and judged watch checks alike), or 2 spot checks in a row each under 75 %, or the last 3 active runs ended on the fallback (a run that no decision model answered, its sub-habits' included, is left out: it neither counts nor breaks the row) |
-| retired → shadow | the graph changes (written by the LLM or the user), the user tries it again, or `hermes habits reset` |
+| saved, then learning | A new reflex with a message or schedule start. A reflex copied in by hand. |
+| learning, then automatic | Enough compared runs that agree with Hermes, then your yes. `learning: auto`: no yes (a message or schedule habit, write steps included, or any ready dream draft; a dream draft with a deleting or approval-asking command always waits for your yes). |
+| saved, then automatic | A new message habit that only reads, saved because your message asked to keep the task. |
+| automatic, then learning | `/habits wrong`. Or a message habit that handed back 3 times in a row. |
+| any, then resting | You say rest. Or the rules: low agreement over the last runs, or 3 errors in a row. |
+| resting, then learning | A new version, `/habits try`, or `hermes habits reset`. |
 
-- **Agreement** is the number of planned writes the LLM also made, divided by the number of planned writes, both summed over the counted runs (not an average of percentages). A run counts when it was compared, planned at least one write, and no question of the run was answered by the LLM fallback. Extra writes by the LLM are shown, not counted.
-- **Read-only request habits.** A request habit whose every `do` is a read (§7.7), its sub-habits' too, plans no write: its shadow runs and spot checks that end are judged instead. After the LLM's reply, one judge call to the LLM gets the request, the habit's end message and the reply, and answers one boolean (does the message give the user what the reply gave: the same facts, nothing wrong or missing that matters) and a short reason. Each judged run counts as one planned write, matched when the judge agrees, whatever the host's judge setting. A run that woke, a turn with no reply and a judge that fails are not counted.
-- **Matching.** Two writes match when they use the same tool with equal arguments once normalized: spaces, quotes, `~` and the home path, trailing `/`, and a terminal line split into simple commands. The rest MAY go to one judge call to the LLM per comparison (on by default, shadow only).
-- **Watches** are measured by an LLM judge instead. Each judged check counts as one planned write, matched when the judge approves it. The host MUST judge every shadow check that would wake or write, 1 silent shadow check in 10 and 1 silent active check in 20, at random; a check that broke, or whose read failed, is an error, never judged.
-- **Spot checks.** A host SHOULD run 1 active request run in 10, at random, as a dry run while the LLM does the task, and compare the two; and every active run, while fewer than 3 counted runs of this version agree with the LLM on their own (matched writes at least 90 % of planned, or a judge that agrees): a habit saved active has none, a promoted one has its shadow runs. For a habit whose every `do` reads, a spot check leaves the answer to the LLM alone: a host SHOULD draw one only while the LLM is seen answering (here, a model reply in the last 10 minutes, any session), and run it active otherwise, so that a habit kept for an outage still answers then. A read-only habit's spot check asks a different question from its shadow runs: while it learns, the LLM's reply is the reference (does the habit give what the reply gave); once the user said yes to the habit, or it has agreed 3 times, the habit's own scope is (does the LLM's reply contradict the habit's answer, or show it wrong), so a wider reply, a value read seconds later or a hedge is no disagreement. A habit that became automatic without that yes (saved active on the user's ask, or promoted by the rules) is judged like a shadow run for its first 3 checks. A spot check measures; only the retire rule acts on it (and one that ends breaks a row of wakes).
-- **Repair.** When a run failed or left doubts (not a `wake` the graph planned), the host MAY ask the LLM to propose a repair to the user: what is wrong and what it would change. The LLM saves a new version only once the user agrees, or when the user asked for a fix.
-- **Status notes.** Each move keeps its reason; a host SHOULD show why a habit is in shadow or retired when a threshold or a person moved it there.
-- **Who decides.** Each move is recorded with who made it (the user, the thresholds, the host's bookkeeping, or the save that made the habit). The LLM MUST NOT approve a habit, nor undo or resume anything: a host SHOULD block the LLM's state commands and its writes to the host's ledger. A host SHOULD let the user undo their last move of the last 24 hours, only while the habit is still where that move put it, and pause every habit (no run, every watch silent) until they resume.
-- **Habits the host did not save.** A `reflex.yml` the host first finds without its own save (copied by hand, synced, cloned) MUST NOT act on its own before the user's yes, or, when the user set `promote: auto`, before the thresholds: it starts in shadow and runs dry when called by name, and a host SHOULD keep its description out of what it tells the LLM of its habits until then. Any change to a habit's files is a new version that practises again (above).
-- **Told retirements.** A host MUST tell the user of a retirement the thresholds made, once: the next reply to a user (a request turn, the direct answer included; not a cron job's turn, and it counts as told only once a reply that is not empty or `[SILENT]` went out) says in one line which habit retired, why, and how to bring it back (`hermes habits reset <name>`). A watch's wake tells its own retirement alone; a watch retired by a check that would stay silent wakes once to say so, since it never wakes again. A retirement a person made is not told.
+- Agreement is the share of planned writes that Hermes also made. REFERENCE has the numbers for each caution.
+- A state belongs to a version: the fingerprint of the reflex and of the other files in `assets/`.
+  Any change is a new version, in learning again.
+- Only you change a state. The guard reads only the model's calls that visibly concern the plugin's world (the
+  `hermes habits` command, its data and code folders, a habit's files, the settings). In a call that concerns the
+  plugin it refuses what it cannot read; any other call passes untouched. `HABITS_OFF` turns every hook off except
+  the guard. What it cannot see is a known limit, named in docs/SAFETY.md, section 6.
+- A reflex the dream made starts as a draft, not as a habit. Your yes saves it, with the start "called", and makes it
+  automatic. REFERENCE tells the life of a draft.
 
-## 10. Example
+## 10. A whole example
 
-The demo habit tidies the Downloads folder on macOS (`/Applications`, `~/.Trash`). It is the shipped example `examples/tidy-downloads`.
+The shipped example `examples/tidy-downloads` sorts the Downloads folder on macOS.
 
 ```yaml
 spec: habits/0.1
-trigger: message                # runs when the user's message asks for it, once the user has said yes
+trigger: message                # runs when the user's message asks for it (it answers on its own after the user's yes)
 start: list
 fallback: help                  # every run that goes wrong ends here
 min_confidence: 0.8
 nodes:
-  # Read-only steps: they also run while the habit is learning (in shadow).
-  list: {do: terminal, read: true, args: {command: "ls -p ~/Downloads | grep -v /"}, as: files, next: apps}
+  # Read-only steps: they also run while the habit is learning.
+  # 40 files at most: each file costs one step per each step (four), and a run has 200 steps by default.
+  list:
+    do: terminal
+    read: true
+    args: {command: "ls -p ~/Downloads | grep -v / | head -n 40"}
+    as: files
+    next: apps
   apps: {do: terminal, read: true, args: {command: "ls /Applications"}, as: apps, next: classify}
-  classify:                     # one question per file, in one S1 call; kind becomes a table file -> answer
+  classify:                     # one question per file, in one call; kind becomes a table file -> answer
     ask: "What type of file is this?"
-    choice: [installer, image, document, archive, other]   # "other" last: the S1 leans to the first option
+    choice: [installer, image, document, archive, other]   # "other" last: the model leans to the first option
     each: files
     as: kind
     next: move
-  move:                         # a write, only planned in shadow; {item} and {kind} are shell-quoted
+  move:                         # a write, only planned in a test; {item} and {kind} are shell-quoted
     do: terminal
     each: files
     args: {command: "mkdir -p ~/Downloads/{kind} && mv -n ~/Downloads/{item} ~/Downloads/{kind}/"}
@@ -231,8 +258,10 @@ nodes:
     args: {command: "mv -n ~/Downloads/installer/{item} ~/.Trash/"}
     next: doubts
   doubts: {check: {empty: doubts}, then: {yes: done, no: help}}
-  done:   {end: "Files sorted by type."}
-  help:   {wake: "I sorted what I could. Some files are left to decide: the report lists them."}
+  done:   {end: "Files sorted by type. 40 files at most per run: run it again for the rest."}
+  help:
+    wake: "I sorted what I could (40 files at most per run). Some files are left to decide: the report lists them."
 ```
 
-When every answer is confident and every move succeeds, the run ends on `done`. An unsure file or a failed move becomes a doubt: `doubts` then leads to `help`, which wakes the LLM with the files left to decide.
+When every answer is confident and every move works, the run ends on `done`. An unsure file or a failed move becomes a
+doubt. Then `doubts` leads to `help`, which hands the task back with the files that are left.

@@ -28,18 +28,25 @@ def terminal(ctx) -> list[str]:
 
 # ---- the shape of the call: refused whole, nothing runs ------------------------------------------------------
 
-@pytest.mark.parametrize("entries", [[], [{"name": "a"}], [{"name": f"h{i}"} for i in range(9)], "x", {"name": "a"}])
-def test_habits_takes_2_to_8_entries(setup, entries):
+@pytest.mark.parametrize("entries", [[], [{"name": f"h{i}"} for i in range(9)], "x", {"name": "a"}])
+def test_habits_takes_1_to_8_entries(setup, entries):
     ctx, habits = setup
     ctx.calls.clear()
     reply = run(habits, habits=entries)
     assert reply["status"] == "refused" and reply["done"] is False and ctx.calls == []
-    assert "habits: 2 to 8 entries" in reply["issues"][0]
+    assert "habits: 1 to 8 entries" in reply["issues"][0]
+
+
+def test_a_list_of_one_reflex_runs(setup):
+    """The real-model trial of 11 November: `habits: [one]` was refused at the schema, one more model call."""
+    ctx, habits = setup
+    reply = run(habits, habits=[{"scenario": echo("a")}])
+    assert reply["done"] is True and [r["message"] for r in reply["results"]] == ["a"]
 
 
 @pytest.mark.parametrize("entry, says", [
-    ({"name": "a", "scenario": DEMO}, "give one of name, scenario or file"),
-    ({}, "give one of name, scenario or file"),
+    ({"name": "a", "scenario": DEMO}, "give one of name, reflex or file"),
+    ({}, "give one of name, reflex or file"),
     ({"habits": [{"name": "a"}, {"name": "b"}]}, "no nesting"),
     ({"name": "a", "dry": True}, "dry goes at the top level"),
     ({"name": "a", "message": "hi"}, "unknown key message"),
@@ -233,4 +240,4 @@ def test_the_tool_and_the_prompt_teach_habits(setup):
     assert tools.RUN_FORM_HABITS in tools.RUN_DESCRIPTION
     assert cockpit.PROMPT_WHEN_SEVERAL in cockpit.PROMPT_WHEN
     schema = tools.RUN_SCHEMA["parameters"]["properties"]["habits"]
-    assert schema["type"] == "array" and schema["minItems"] == 2 and schema["maxItems"] == 8
+    assert schema["type"] == "array" and schema["minItems"] == 1 and schema["maxItems"] == 8

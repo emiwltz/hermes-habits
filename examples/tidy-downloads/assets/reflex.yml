@@ -7,7 +7,8 @@ fallback: help                  # every run that goes wrong ends here
 min_confidence: 0.8
 nodes:
   # Read-only steps: they also run while the habit is learning.
-  list: {do: terminal, read: true, args: {command: "ls -p ~/Downloads | grep -v /"}, as: files, next: apps}
+  # 40 files at most: each file costs one step per each node (four), and a run has 200 steps by default.
+  list: {do: terminal, read: true, args: {command: "ls -p ~/Downloads | grep -v / | head -n 40"}, as: files, next: apps}
   apps: {do: terminal, read: true, args: {command: "ls /Applications"}, as: apps, next: classify}
   classify:                     # one question per file, in one decision model call; kind becomes a table file -> answer
     ask: "What type of file is this?"
@@ -35,5 +36,5 @@ nodes:
     args: {command: "mv -n ~/Downloads/installer/{item} ~/.Trash/"}
     next: doubts
   doubts: {check: {empty: doubts}, then: {yes: done, no: help}}
-  done:   {end: "Files sorted by type."}
-  help:   {wake: "I sorted what I could. Some files are left to decide: the report lists them."}
+  done:   {end: "Files sorted by type. 40 files at most per run: run it again for the rest."}
+  help:   {wake: "I sorted what I could (40 files at most per run). Some files are left to decide: the report lists them."}

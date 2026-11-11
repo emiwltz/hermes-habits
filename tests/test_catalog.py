@@ -110,7 +110,7 @@ def test_a_graph_that_cannot_be_read_has_no_kind(tmp_path):
 def test_a_habit_whose_start_is_a_list_stays_listed_and_refused(tmp_path):
     path = skill(tmp_path, "tidying", graph=DEMO.replace("start: scan", "start: [scan]"))
     habit = catalog.read(path / "assets" / "reflex.yml", "tidying", "d", "skill")
-    assert not habit.valid and "format: start must be the name of a node." in habit.issues
+    assert not habit.valid and "format: start must be the name of a step." in habit.issues
 
 
 def test_a_check_that_crashes_keeps_the_habit_listed(tmp_path, monkeypatch):
@@ -121,7 +121,7 @@ def test_a_check_that_crashes_keeps_the_habit_listed(tmp_path, monkeypatch):
         raise TypeError("unhashable")
     monkeypatch.setattr(catalog.graph, "validate", boom)
     habit = catalog.read(path / "assets" / "reflex.yml", "tidying", "d", "skill")
-    assert not habit.valid and habit.issues == ["format: the graph could not be checked (TypeError)"]
+    assert not habit.valid and habit.issues == ["format: the reflex could not be checked (TypeError)"]
 
 
 def test_a_habit_that_still_declares_an_event_is_invalid_with_no_kind(tmp_path):
@@ -138,8 +138,8 @@ def test_a_habit_with_its_graph_alone_keeps_the_version_it_had(tmp_path, monkeyp
     # DEMO's version before helper files, then before descriptions counted: its first 12 characters.
     assert catalog.read(path, "triage", "d", "skill").version[:12] == "fc9e42872269"
     assert {h.name: h.version[:12] for h in catalog.examples()} == {
-        "check-links": "888abdac64c9", "hacker-news-digest": "309aa4cfdcfb", "hermes-health": "548d7f1d2c2d",
-        "summarize-articles": "2da2465e306a", "tidy-downloads": "ab2144000dd1", "watch-hermes-releases": "f39884296f73"}
+        "check-links": "888abdac64c9", "disk-space": "d6d81d55a4ef", "hacker-news-digest": "309aa4cfdcfb", "hermes-health": "ddb359a08a86",
+        "summarize-articles": "2da2465e306a", "tidy-downloads": "d3735ca3b21a", "watch-hermes-releases": "f39884296f73"}
 
 
 def test_a_helper_file_in_assets_is_part_of_the_version(tmp_path, monkeypatch):

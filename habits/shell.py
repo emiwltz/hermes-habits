@@ -20,7 +20,7 @@ WORDS = 256  # words one word may become by brace expansion
 # Readers that no option or argument turns into a writer.
 PURE = {"ls", "cat", "head", "grep", "egrep", "fgrep", "wc", "stat", "cut", "tr", "jq", "column", "nl", "rev",
         "fold", "fmt", "expand", "basename", "dirname", "realpath", "readlink", "pwd", "whoami", "uname", "id", "du",
-        "df", "echo", "test", "[", "true", "false", "ps", "pgrep", "pidof", "uptime", "free", "vm_stat",
+        "df", "echo", "true", "false", "ps", "pgrep", "pidof", "uptime", "free", "vm_stat",
         "sw_vers", "md5", "md5sum", "shasum", "sha256sum", "diff", "cmp", "comm", "ioreg"}
 FIND_WRITES = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
 # curl only reads with these options: a plain GET or HEAD, nothing written, nothing sent.
@@ -30,11 +30,66 @@ CURL_READ = {"-s", "-S", "-L", "-f", "-I", "-sS", "-sL", "-fsS", "-fsSL", "-sSL"
              "-w", "--write-out", "-r", "--range", "-X", "--request", "-o", "--output"}
 CURL_VALUE = {"-m", "--max-time", "--connect-timeout", "--retry", "-A", "--user-agent", "-H", "--header", "-w",
               "--write-out", "-r", "--range", "-X", "--request", "-o", "--output"}
-# Only git commands that run no program a repository's own .git/config or .gitattributes can name: log and show
-# run gpg (log.showSignature) and textconv drivers, diff runs diff.external, status, ls-files and blame run
-# core.fsmonitor. Such a .git can come with any folder (an archive, a synced vault), so those are writes.
+# git sub-commands that print and change nothing, each with rules of its own (a listing form, a --get).
 GIT_READS = {"rev-parse", "branch", "remote", "tag", "config"}
 GIT_KEYS = re.compile(r"^(?:color\.[\w.-]+|core\.quotepath|safe\.directory)=", re.I)  # -c keys that change a display
+# git sub-commands that only look, a developer's most common gestures: each takes only the options listed for it
+# (an option written --name=value, a cluster of its one-letter ones, a number). Any other option is a write: it
+# could write a file (--output), run a program the line names (--ext-diff, --textconv, a pager, gpg for
+# --show-signature or a %G in a format) or be one only a later git knows. With them git takes no -c at all (an
+# alias, a pager and an external diff are settings). A repository's own .git/config can still name a program these
+# run (core.fsmonitor for status, diff.external or a textconv driver for diff, gpg for log.showSignature): it runs
+# the same when Hermes types the line itself, which is where a reflex or the dream takes such a line from.
+_GIT_REVS = {"--all", "--branches", "--tags", "--remotes", "--merges", "--no-merges", "--first-parent", "--reverse",
+             "--date-order", "--topo-order", "--author-date-order", "--left-right", "--cherry-pick", "--cherry-mark",
+             "--boundary", "--no-walk", "--full-history", "--simplify-by-decoration", "--ancestry-path", "--not", "-i",
+             "--regexp-ignore-case", "-E", "--extended-regexp", "-F", "--fixed-strings", "--all-match", "--invert-grep",
+             "-g", "--walk-reflogs", "-n"}
+_GIT_REV_VALUES = {"--max-count", "--skip", "--since", "--after", "--until", "--before", "--author", "--committer",
+                   "--grep", "--min-parents", "--max-parents", "--branches", "--tags", "--remotes", "--glob", "--exclude"}
+_GIT_SHOWN = {"--oneline", "--graph", "--decorate", "--no-decorate", "--abbrev-commit", "--no-abbrev-commit",
+              "--relative-date", "--parents", "--children", "--source", "--no-notes", "--no-mailmap", "--use-mailmap",
+              "--no-show-signature", "--follow", "--pretty", "--color", "--no-color", "--abbrev"}
+_GIT_SHOWN_VALUES = {"--format", "--pretty", "--date", "--decorate", "--decorate-refs", "--decorate-refs-exclude",
+                     "--abbrev", "--color", "--encoding", "--diff-merges"}
+_GIT_DIFF = {"-p", "-u", "--patch", "-s", "--no-patch", "--stat", "--numstat", "--shortstat", "--summary", "--name-only",
+             "--name-status", "--raw", "--patch-with-stat", "--patch-with-raw", "--compact-summary", "--dirstat",
+             "--cumulative", "--check", "--cached", "--staged", "--merge-base", "-z", "-R", "-w", "-b", "-a", "--text",
+             "--ignore-all-space", "--ignore-space-change", "--ignore-space-at-eol", "--ignore-blank-lines",
+             "--ignore-cr-at-eol", "--minimal", "--patience", "--histogram", "--word-diff", "--color-words", "--color",
+             "--no-color", "--color-moved", "--no-renames", "-M", "-C", "-B", "-D", "--find-renames", "--find-copies",
+             "--find-copies-harder", "--irreversible-delete", "--full-index", "--binary", "--abbrev", "--no-ext-diff",
+             "--no-textconv", "--exit-code", "--quiet", "-q", "--function-context", "-W", "--no-prefix", "--relative",
+             "--no-relative", "--pickaxe-all", "--pickaxe-regex", "--ignore-submodules", "--submodule", "-S", "-G", "-U"}
+_GIT_DIFF_VALUES = {"--stat", "--diff-filter", "--unified", "--word-diff", "--word-diff-regex", "--color", "--abbrev",
+                    "--diff-algorithm", "--inter-hunk-context", "--relative", "--src-prefix", "--dst-prefix",
+                    "--line-prefix", "--ignore-submodules", "--submodule", "--find-renames", "--find-copies",
+                    "--find-object", "--dirstat", "--color-moved", "--color-moved-ws", "--ws-error-highlight", "--anchored"}
+_GIT_DIFF_SHORT = r"-U\d+|-[MCB]\d+%?|-[SG].+|-\d+|-n\d+|-L.*"
+GIT_LOOKS = {  # sub-command: (its options, its options that take =value, its other short forms)
+    "status": ({"-s", "--short", "-b", "--branch", "--porcelain", "--long", "-v", "-vv", "--verbose", "-u",
+                "--untracked-files", "--ignored", "-z", "--show-stash", "--ahead-behind", "--no-ahead-behind",
+                "--renames", "--no-renames", "--find-renames", "--column", "--no-column", "--ignore-submodules"},
+               {"--porcelain", "--untracked-files", "--ignored", "--find-renames", "--column", "--ignore-submodules"},
+               r"-u(?:no|all|normal)|-M\d+%?"),
+    "log": (_GIT_REVS | _GIT_SHOWN | _GIT_DIFF | {"-L"}, _GIT_REV_VALUES | _GIT_SHOWN_VALUES | _GIT_DIFF_VALUES,
+            _GIT_DIFF_SHORT),
+    "show": (_GIT_REVS | _GIT_SHOWN | _GIT_DIFF, _GIT_REV_VALUES | _GIT_SHOWN_VALUES | _GIT_DIFF_VALUES, _GIT_DIFF_SHORT),
+    "diff": (_GIT_DIFF, _GIT_DIFF_VALUES, r"-U\d+|-[MCB]\d+%?|-[SG].+"),
+    "describe": ({"--tags", "--all", "--long", "--always", "--contains", "--exact-match", "--first-parent", "--debug",
+                  "--dirty", "--broken"}, {"--dirty", "--broken", "--abbrev", "--candidates", "--match", "--exclude"}, ""),
+    "ls-files": ({"-c", "--cached", "-d", "--deleted", "-m", "--modified", "-o", "--others", "-i", "--ignored", "-s",
+                  "--stage", "-u", "--unmerged", "-k", "--killed", "-z", "-t", "-v", "-f", "--full-name", "--directory",
+                  "--no-empty-directory", "--exclude-standard", "--error-unmatch", "--recurse-submodules", "--abbrev",
+                  "--debug", "--eol", "--deduplicate", "--sparse", "-x", "--exclude"},
+                 {"--abbrev", "--format", "--exclude", "--exclude-per-directory", "--with-tree"}, ""),
+    "blame": ({"-b", "--root", "--show-stats", "-l", "-t", "-s", "-n", "--show-number", "-f", "--show-name", "-p",
+               "--porcelain", "--line-porcelain", "--incremental", "-c", "-e", "--show-email", "-w", "-M", "-C",
+               "--first-parent", "--color-lines", "--color-by-age", "--minimal", "--progress", "--no-progress", "-L",
+               "--reverse"}, {"--abbrev", "--date", "--since", "--encoding", "--ignore-rev"}, r"-[MC]\d+|-L.+"),
+    "shortlog": (_GIT_REVS | {"-s", "--summary", "--numbered", "-e", "--email", "-c", "--committer", "-w"},
+                 _GIT_REV_VALUES | {"--format", "--group"}, r"-w[\d,]+|-\d+|-n\d+"),
+}
 # hc 0.1.18: the verbs that only print, with the options their --help lists (--json goes anywhere). Every other
 # verb types, sends, runs, kills, labels or waits. read --lines N may scroll an idle full-screen app, then restore it.
 HC_READS = {"ls": {"--all", "--label"}, "get": set(), "read": {"--lines"}, "templates": set(),
@@ -267,7 +322,15 @@ def _marked(line: str) -> str:
 
 
 def _lex(line: str, i: int = 0, close: bool = False):
-    """Words and operators ("2>" keeps its fd) of a line. With close, it reads a $( ) and stops after its )."""
+    """Words and operators ("2>" keeps its fd) of a line. With close, it reads a $( ) and stops after its ). A line
+    nested so deep that Python gives up is a line the reader cannot read."""
+    try:
+        return _lex_line(line, i, close)
+    except RecursionError:
+        raise Unknown("a line nested too deep") from None
+
+
+def _lex_line(line: str, i: int = 0, close: bool = False):
     tokens, chars, names, subs, started, depth = [], [], [], [], False, 0
 
     def end():
@@ -487,6 +550,11 @@ def _commands(line: str, with_input: bool = False):
         literal = not target.names and not target.subs
         if op in ("<<", "<<-"):
             raise Unknown("a heredoc (<<)")
+        if op in ("<", "<>", "<<<") or op in (">", ">>", ">|", "&>", "&>>"):
+            # bash opens a connection for /dev/tcp/host/port and /dev/udp/host/port; a target no one can read may be one
+            if target.text.startswith(("/dev/tcp/", "/dev/udp/")) or target.text[:1] == EXPANSION:
+                raise Unknown("a redirection to /dev/tcp or /dev/udp, or to a path built at run time, can open a "
+                              "connection")
         if op in (">", ">>", ">|", "&>", "&>>"):
             writes |= not (literal and target.text == "/dev/null")
         elif op == ">&":
@@ -562,6 +630,8 @@ def _why(words, writes, subs, depth) -> str:
     rule = RULES.get(head)
     if rule is None:
         return _stranger(head)
+    if head in ("test", "["):  # its operands are compared, never run: a variable is fine unless it is read as arithmetic
+        return "" if _test([w.text for w in args], depth) else WHY[head]
     # Every argument of a reader with options that write must be known now: a $X could hold -o.
     loose = next((w for w in args if not w.fixed), None)
     if loose is not None:
@@ -630,10 +700,15 @@ WHY = {  # what makes each reader with rules a write, when its rule refuses it
     "tail": "tail -f, -F or --follow never ends: read the end with tail -n", "sort": "sort -o writes a file", "uniq": "uniq with two files writes the second",
     "date": "date with an operand sets the clock: write date +%F", "hostname": "hostname with a name sets it",
     "sleep": "sleep longer than 10 s", "file": "file -C writes a magic file", "env": "env with a command runs it",
-    "printf": "printf -v sets a variable", "sed": "sed beyond printing: -i, -f, and w, e, a, i, c, r or labels",
+    "printf": "printf -v sets a variable",
+    "test": "test or [ with -v, -R, or an operand of -eq, -lt… that is not a plain number: bash reads it as arithmetic "
+            "and runs a substitution in it",
+    "[": "test or [ with -v, -R, or an operand of -eq, -lt… that is not a plain number: bash reads it as arithmetic "
+         "and runs a substitution in it", "sed": "sed beyond printing: -i, -f, and w, e, a, i, c, r or labels",
     "awk": "awk with -f, system(), a pipe, @load or a print > file",
-    "git": "git beyond rev-parse, branch, tag, remote -v and config --get: log, show, diff, status and blame run "
-           "programs a repository's own .git/config can name",
+    "git": "git beyond status, log, diff, show, blame, describe, ls-files, shortlog, rev-parse, listing branch and "
+           "tag, remote -v and config --get, with the options that only choose what to print (written --name=value): "
+           "no -c, --output, --ext-diff, --textconv, --show-signature, %G in a format, pager or option of another kind",
     "hc": "hc beyond ls (--all, --label), get <t>, read <t> (--lines), templates, server status and machine ls, "
           "each with --json",
     "ssh": "ssh with options other than -o Key=value (BatchMode, ConnectTimeout…), -p, -i, -q, -T, -n",
@@ -935,23 +1010,56 @@ def _awk(args, depth):
 
 
 def _git(args, depth):
-    i = 0
+    i, set_on_the_line = 0, False
     while i < len(args) and args[i].startswith("-"):
-        if args[i] == "--no-pager":
+        if args[i] in ("--no-pager", "--no-optional-locks"):
             i += 1
             continue
         if args[i] not in ("-C", "-c") or i + 1 >= len(args):
-            return False
-        if args[i] == "-c" and not (GIT_KEYS.match(args[i + 1]) and _program(args[i + 1])):
-            return False  # -c diff.external=…, core.pager=… and the like run commands
+            return False  # --paginate, -p, --exec-path, --git-dir…: a pager or another git
+        if args[i] == "-c":
+            if not (GIT_KEYS.match(args[i + 1]) and _program(args[i + 1])):
+                return False  # -c diff.external=…, core.pager=…, alias.x=… and the like run commands
+            set_on_the_line = True
         i += 2
-    if i >= len(args) or args[i] not in GIT_READS:
+    if i >= len(args):
         return False
     sub, rest = args[i], args[i + 1:]
+    if sub in GIT_LOOKS:
+        return not set_on_the_line and _git_look(sub, rest)
+    if sub not in GIT_READS:
+        return False
     if any(word.startswith("--output") or _abbrev(word, "--output", "--ext-diff") for word in rest):
         return False
     rule = {"branch": _git_branch, "tag": _git_tag, "remote": _git_remote, "config": _git_config}.get(sub)
     return rule(rest) if rule else True
+
+
+def _git_look(sub: str, rest: list) -> bool:
+    """Every option of a git status, log, diff, show, describe, ls-files, blame or shortlog is one of GIT_LOOKS. A
+    word that starts with no dash is a revision or a path, which only chooses what is shown; so is every word after
+    --. An option's value written apart (-n 5, -S word) is such a word; one that starts with a dash is read as an
+    option, and refused unless it is listed. A format is refused when it holds %G (git runs gpg for it) or a
+    template (its value is not known now)."""
+    flags, values, shorts = GIT_LOOKS[sub]
+    for word in rest:
+        if word == "--":
+            return True
+        if not word.startswith("-") or word == "-":
+            continue
+        name, equals, value = word.partition("=")
+        if word in flags:
+            continue
+        if equals and name in values:
+            if name in ("--format", "--pretty") and (not _program(value) or "%G" in value):
+                return False
+            continue
+        if shorts and re.fullmatch(shorts, word):
+            continue
+        if not word.startswith("--") and len(word) > 2 and all("-" + letter in flags for letter in word[1:]):
+            continue  # -sb, -co: a cluster of its one-letter options
+        return False
+    return True
 
 
 def _listing(rest, flags, values, listing=("-l", "--list")) -> bool:
@@ -1095,6 +1203,22 @@ def _ssh_key(value: str) -> bool:
     return key.strip().lower() in SSH_KEYS and _program(text)  # ProxyCommand, LocalCommand… run commands here
 
 
-RULES = {"find": _find, "tail": _tail, "curl": _curl, "sort": _sort, "uniq": _uniq, "date": _date, "hostname": _hostname,
+ARITHMETIC = {"-eq", "-ne", "-lt", "-le", "-gt", "-ge"}
+
+
+def _test(texts: list, depth: int) -> bool:
+    """test and [ read files and compare, but bash 4.3+ reads the operand of -v, -R and of -eq, -ne, -lt, -le, -gt,
+    -ge as an arithmetic expression, and a subscript there (a[$(cmd)]) runs the command, however it is quoted."""
+    if any(t in ("-v", "-R") or "$(" in t or "`" in t for t in texts):
+        return False
+    if ARITHMETIC & set(texts):
+        number = re.compile(r"[+-]?\d+")
+        for i, t in enumerate(texts):
+            if t in ARITHMETIC and not all(0 <= j < len(texts) and number.fullmatch(texts[j]) for j in (i - 1, i + 1)):
+                return False
+    return True
+
+
+RULES = {"test": _test, "[": _test, "find": _find, "tail": _tail, "curl": _curl, "sort": _sort, "uniq": _uniq, "date": _date, "hostname": _hostname,
          "sleep": _sleep, "file": _file, "env": _env, "printf": _printf, "sed": _sed, "awk": _awk, "git": _git, "hc": _hc,
          "ssh": _ssh_read, "systemctl": _systemctl, "journalctl": _journalctl, "hermes": _hermes, "ob": _ob}

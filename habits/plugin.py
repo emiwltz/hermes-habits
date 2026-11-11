@@ -1,10 +1,10 @@
-"""Wire Habits into Hermes: two tools, six hooks, /habits, `hermes habits`, two skills.
+"""Wire Habits into Hermes: two tools, seven hooks, /habits, `hermes habits`, two skills.
 
 Every Hermes import is lazy, inside a function, so the module also loads in
 tests and in `hermes plugins validate`. Every entry point catches its own
 errors: the worst case is Hermes without the plugin.
 
-The Habits class keeps the plumbing (settings, ledger, locks, a habit's tool calls, the S1) and mixes in
+The Habits class keeps the plumbing (settings, ledger, locks, a habit's tool calls, the decision model) and mixes in
 one module per part: tools (habit_run, habit_save), watch (cron checks), trigger (request habits), guard (a
 habit's own files, a new habit through habit_save only, no self-approval), display (`hermes habits`, the pages)
 and cockpit (/habits, its decisions and verbs, the prompt section).
@@ -29,10 +29,12 @@ try:
 except ImportError:  # Windows: one process at a time is all we can promise
     fcntl = None
 
-from . import catalog, deciders, ledger as ledgers, runner
+from . import catalog, deciders, graph, ledger as ledgers, runner
 from .cockpit import PROMPT_CHARS, Cockpit
 from .display import Display
 from .guard import Guard
+from .nursery import Dream
+from .practice import Practice
 from .tools import RUN_SCHEMA, SAVE_SCHEMA, Tools, enabled_tools, outside
 from .trigger import Trigger
 from .texts import say
@@ -42,11 +44,12 @@ logger = logging.getLogger(__name__)
 
 TOOLSET = "habits"
 ROOT = Path(__file__).resolve().parent.parent
-# The shipped skills, as habits:habits and habits:writing-habits: when to pass the baton, and how to write a reflex.
+# The shipped skills, as habits:habits and habits:writing-habits: when to hand work to a reflex, and how to write one.
 SKILLS = (("habits", "When to call a reflex (habit_run) and read its reply"),
-          ("writing-habits", "Write Habits graphs: format, rules, examples"))
+          ("writing-habits", "Write Habits reflexes: format, rules, examples"))
 
-HOOKS = ("pre_llm_call", "pre_tool_call", "post_tool_call", "post_llm_call", "post_api_request", "on_session_finalize")
+HOOKS = ("pre_llm_call", "pre_tool_call", "post_tool_call", "post_llm_call", "post_api_request", "on_session_finalize",
+         "transform_tool_result")
 OFF = "HABITS_OFF"
 OFF_SECONDS = 600  # the off file counts this long after its last touch: a bench that died never leaves habits off
 # A process that ends waits this long at most for its turns' comparisons: one judge call at its cap, then the
@@ -54,12 +57,27 @@ OFF_SECONDS = 600  # the off file counts this long after its last touch: a bench
 LINGER = deciders.LLM_TIMEOUT + 15
 
 DEFAULTS = {
-    "backend": "auto", "clef_model": "clef-flash", "min_confidence": 0.8, "trigger_confidence": 0.7, "promote_runs": 12,
-    "promote_agreement": 0.9, "retire_window": 20, "retire_agreement": 0.75, "spot_check": 0.1, "judge": True,
-    "direct": True, "promote": "ask", "language": "en",
+    "learning": "suggest", "caution": "normal", "dream": "daily", "decision_model": "auto",
+    "permissions": "hermes", "model_text": "quoted", "language": "en",
+    # Hidden overrides, not in config_schema; None = not set. A number the user set wins over the caution row.
+    "promote": None, "backend": None, "min_confidence": None, "trigger_confidence": None,
+    "promote_runs": None, "promote_agreement": None, "retire_window": None, "retire_agreement": None,
+    "spot_check": None, "judge": True, "direct": True,
 }
-# A value outside these falls back on the default: a typo never turns the yes off.
-CHOICES = {"backend": ("auto", "jev", "clef", "llm"), "clef_model": deciders.CLEF_MODELS, "promote": ("ask", "auto"), "language": ("en", "fr")}
+# A value outside these falls back on the default (a typo never turns the yes off), except the three in STRICT.
+SPELLINGS = {("learning", "practise"): "practice"}  # the British spelling of a value, still accepted
+CHOICES = {
+    "learning": ("off", "suggest", "practice", "auto"), "caution": ("relaxed", "normal", "strict"),
+    "dream": ("daily", "manual"), "decision_model": ("auto", "jev", "hermes"),
+    "permissions": ("hermes", "strict"), "model_text": ("quoted", "never"), "language": ("en", "fr"),
+    "promote": ("ask", "auto"), "backend": ("auto", "jev", "llm"),
+}
+# The three safety switches: a value they do not know (a typo, a YAML off / no / false) is the strict side, never the
+# permissive default, and is said once in the log.
+STRICT = {"permissions": "strict", "model_text": "never", "dream": "manual"}
+NUMBERS = {"min_confidence": float, "trigger_confidence": float, "promote_runs": int, "promote_agreement": float,
+           "retire_window": int, "retire_agreement": float, "spot_check": float}  # set by the user: wins; else the caution row
+BACKEND_OF = {"auto": "auto", "jev": "jev", "hermes": "llm"}  # decision_model -> the name deciders.build knows
 
 
 def strict(schema):
@@ -89,14 +107,32 @@ def _warn_once(key: str, message: str, *args):
         logger.warning(message, *args)
 
 
-def refused(name: str, args: dict) -> str | None:
-    """Why a habit may not make this call: a habit never does what the model could not do itself."""
+def reachable() -> bool:
+    """Whether Hermes can put a flagged command to someone, or applies its own unattended rule, from here: a chat
+    (CLI, gateway, ask) or a cron, `-q` or unattended-platform mode whose configured answer decides. Where it has
+    none, Hermes's own check lets everything through, so the answer is no: fails closed, also when Hermes's
+    private API cannot be read (risk 6.5: never a default that lets a flagged command run unseen)."""
+    try:
+        from tools.approval import _presence, _unattended_contexts
+        _, is_cli, is_gateway, is_ask = _presence()
+        return bool(is_cli or is_gateway or is_ask or _unattended_contexts())
+    except Exception:
+        return False
+
+
+def refused(name: str, args: dict, *, approved: bool = False) -> str | None:
+    """Why a habit may not make this call: a habit never does what the model could not do itself. approved: the
+    user said yes to this habit and it runs inside a Hermes turn (permissions: hermes), so a command Hermes would
+    ask about is left to Hermes's own approval, which asks, refuses or lets through as it does for the model; if
+    nobody could be asked from here, the command is refused all the same."""
     enabled = enabled_tools()
     if enabled and name not in enabled:
         return f"{name} is not enabled in this Hermes session"
     if name == "terminal":
-        reason = dangerous(args.get("command"))
-        if reason:
+        command = args.get("command")
+        reason = dangerous(command) or ("a command that deletes files" if approved and isinstance(command, str)
+                                        and graph._deletes(command) else None)
+        if reason and not (approved and reachable()):
             return f"Hermes would ask approval for this command ({reason})"
     try:  # other plugins' pre_tool_call guards see the call as if the model made it
         from hermes_cli.plugins import get_pre_tool_call_directive as ask
@@ -106,7 +142,7 @@ def refused(name: str, args: dict) -> str | None:
     directive, message = None, None
     if ask is not None:
         try:  # fails closed: a veto may hide behind the error, so the step goes back to the model
-            directive, message = _directive(ask, name, args)
+            directive, message = _directive(ask, name, guard_view(name, args))
         except Exception as exc:
             _warn_once("guards-failed", "habits: other plugins' guards failed, steps refused: %s", exc)
             return f"other plugins' guards could not be asked ({type(exc).__name__})"
@@ -114,6 +150,15 @@ def refused(name: str, args: dict) -> str | None:
         verb = "blocks" if directive == "block" else "asks approval for"
         return f"a Hermes guard {verb} {name}" + (f": {message}" if message else "")
     return None
+
+
+def guard_view(name: str, args: dict) -> dict:
+    """What other plugins' guards are asked about: the command the reflex wrote, without the status line the runner
+    adds to a one-pipe read (its words, "habits-pipe" among them, would make a guard refuse an innocent command)."""
+    command = args.get("command")
+    if name == "terminal" and isinstance(command, str) and command.endswith(runner.PIPE_LINE):
+        return {**args, "command": command.removesuffix(runner.PIPE_LINE)}
+    return args
 
 
 def _directive(ask, name: str, args: dict) -> tuple:
@@ -159,7 +204,7 @@ def dangerous(command) -> str | None:
     return None
 
 
-class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
+class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit, Dream, Practice):
     """The plugin's state between calls: settings, ledger, pending shadow turns."""
 
     def __init__(self, ctx, home: Path | None = None):
@@ -174,16 +219,27 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
         self.guard = threading.Lock()
         self.refusals: dict[str, list[float]] = {}  # session -> when the guard refused a new habit: stop after 2 in 10 min
         self.workers: list = []  # the threads a turn left working: a comparison
+        # the dream and its practice
+        self.practising: dict[str, dict] = {}  # draft key -> its row, refreshed from the ledger at most every 60 s
+        self.practising_at: float | None = None  # monotonic; None: not read yet
+        self.turn_keys: dict[str, list[str]] = {}  # session -> the keys seen in the turn that is running
+        self.last_practice: dict[str, float] = {}  # draft key -> monotonic time of its last comparison
+        self.practised_turn: dict[str, set] = {}  # session -> the draft keys already counted in the turn that is running
+        self.dream_checked: float | None = None  # monotonic: when this process last looked at the daily rule
+        self.loaded: set = set()
+        self.platforms: dict[str, str] = {}  # session -> platform, 500 at most
 
     # ---- plumbing -------------------------------------------------------
 
-    def off(self) -> bool:
+    def off(self, file: bool = True) -> bool:
         """Habits steps aside, its tools apart: HABITS_OFF is set, to measure Hermes without habits. Hermes 0.23
         runs a `hermes -z` turn in its gateway and the plugin in its plugin host, which the variable does not
         reach: a file named off in the plugin's folder, touched in the last 10 minutes, does the same for every
         session (the bench uses it)."""
         if os.environ.get(OFF):
             return True
+        if not file:
+            return False
         try:
             return abs(time.time() - (self.home() / "off").stat().st_mtime) < OFF_SECONDS
         except Exception:  # no file, or no plugin folder
@@ -196,11 +252,14 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
         except Exception:  # no plugin folder
             return False
 
-    def hook(self, callback):
-        """The hook, doing nothing while Habits is off."""
+    def hook(self, callback, file: bool = True):
+        """The hook, doing nothing while Habits is off. The guard (file=False) never steps aside: neither HABITS_OFF
+        nor the off file switches it off. A model can start a `hermes` with the variable set and can write the
+        file, and a switch within its reach must not open the way to the ledger; with Habits off, no habit runs and
+        nothing is counted, and a habit's state is still the user's alone."""
         @functools.wraps(callback)
         def hooked(*args, **kwargs):
-            return None if self.off() else callback(*args, **kwargs)
+            return None if file and self.off() else callback(*args, **kwargs)
         return hooked
 
     def background(self, work, *args):
@@ -226,23 +285,66 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
                 thread.join(max(0.0, deadline - time.monotonic()))
         return None
 
-    def setting(self, key):
-        default = DEFAULTS[key]
+    def asked(self, key):
+        """What the user set for `key`, or None when nothing is set (the plugin's own default then applies)."""
         try:
-            value = self.ctx.get_config(key, default)
+            return self.ctx.get_config(key, None)
         except Exception:
+            return None
+
+    def setting(self, key):
+        if key in NUMBERS:  # a number the user set wins; else the caution row says
+            kind = NUMBERS[key]
+            try:
+                value = self.asked(key)
+                if value is not None and not isinstance(value, bool):
+                    return kind(value)
+            except (TypeError, ValueError):
+                pass
+            return self.caution()[key]
+        if key == "learning":  # unset: an old `promote: auto` still means learning = auto
+            value = self.choice(key)
+            if self.asked(key) is None and self.choice("promote", "ask") == "auto":
+                _warn_once("promote", "habits: the old setting promote: auto is read as learning: auto")
+                return "auto"
+            return value
+        if key == "promote":  # the old name, now derived: auto exactly when learning is auto
+            return "auto" if self.setting("learning") == "auto" else "ask"
+        if key == "decision_model":  # unset: an old `backend` still picks the model (llm is the Hermes model)
+            if self.asked(key) is None:
+                old = self.choice("backend", "auto")
+                return {"jev": "jev", "llm": "hermes"}.get(old, "auto")
+            return self.choice(key)
+        if key == "backend":
+            return BACKEND_OF[self.setting("decision_model")]
+        default = DEFAULTS[key]
+        if isinstance(default, bool):  # a word it does not know keeps the default: never a feature off by a typo
+            value = self.asked(key)
+            if value is None:
+                return default
+            said = str(value).strip().lower() if not isinstance(value, bool) else value
+            return value if isinstance(value, bool) else True if said in ("1", "true", "yes", "on") else \
+                False if said in ("0", "false", "no", "off") else default
+        return self.choice(key)
+
+    def choice(self, key, default=None):
+        """A setting of a closed list: a value outside it (a typo) is the default."""
+        default = DEFAULTS[key] if default is None else default
+        value = self.asked(key)
+        if value is None:
             return default
-        try:
-            if isinstance(default, bool):  # a word it does not know keeps the default: never a feature off by a typo
-                said = str(value).strip().lower() if not isinstance(value, bool) else value
-                return value if isinstance(value, bool) else True if said in ("1", "true", "yes", "on") else \
-                    False if said in ("0", "false", "no", "off") else default
-            if key in CHOICES:
-                value = "off" if value is False else str(value).strip().lower()  # YAML 1.1 reads a bare off as false
-                return value if value in CHOICES[key] else default
-            return type(default)(value)
-        except (TypeError, ValueError):
-            return default
+        value = "off" if value is False else str(value).strip().lower()  # YAML 1.1 reads a bare off as false
+        value = SPELLINGS.get((key, value), value)
+        if value in CHOICES[key]:
+            return value
+        if key in STRICT:
+            _warn_once(f"strict-{key}-{value}", "habits: the setting %s does not know %r; it is read as %s", key, value, STRICT[key])
+            return STRICT[key]
+        return default
+
+    def caution(self) -> dict:
+        """The numbers of the caution row the user picked (2.9)."""
+        return ledgers.CAUTION[self.setting("caution")]
 
     def home(self) -> Path:
         if self._home is not None:
@@ -257,10 +359,55 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
         return self._ledger
 
     def rules(self) -> ledgers.Rules:
-        return ledgers.Rules(
-            promote_runs=self.setting("promote_runs"), promote_agreement=self.setting("promote_agreement"),
-            retire_window=self.setting("retire_window"), retire_agreement=self.setting("retire_agreement"),
-            promote=self.setting("promote"))  # anything but auto waits for the yes
+        """The caution row, learning, and the numbers the user set by hand, which win over the row."""
+        return ledgers.rules_for(self.setting("caution"), self.setting("learning"),
+                                 {k: self.setting(k) for k in NUMBERS if self.asked(k) is not None})
+
+    def yes_given(self, habit) -> bool:
+        """The user's own yes: this version is automatic and its last move there was the user's, in a chat. The
+        rules' promotion is none, and a terminal is the model's too (ledger.YES), so neither counts."""
+        if habit is None:
+            return False
+        try:
+            row = self.ledger.info(habit.name)
+            if not row or row.get("status") != "active" or row.get("version") != habit.version:
+                return False
+            last = self.ledger.history(habit.name, 1)
+            return bool(last) and (last[0]["version"], last[0]["to"]) == (habit.version, "active") \
+                and last[0]["by"] in ledgers.YES
+        except Exception as exc:  # a ledger that cannot say: no yes
+            logger.warning("habits: could not read the yes of %s: %s", getattr(habit, "name", "?"), exc)
+            return False
+
+    def flagged(self, habit, _depth: int = 0, _seen: frozenset = frozenset()) -> list[str]:
+        """Every command of the reflex that Hermes would ask about or that deletes, uncut, in step order: what the
+        yes card shows so the yes is informed. habit: a saved habit, or the reflex of a draft. A reflex it
+        calls (a `use` step) runs under the same yes: its commands come too, as `name: command` (as many levels as a
+        run goes)."""
+        found = []
+        graph_ = habit if isinstance(habit, dict) else getattr(habit, "graph", None) or {}
+        nodes = graph_.get("nodes") if isinstance(graph_, dict) else None
+        for node in (nodes or {}).values():
+            if not isinstance(node, dict):
+                continue
+            args = node.get("args") if isinstance(node.get("args"), dict) else {}
+            command = args.get("command") if node.get("do") == "terminal" else None
+            if isinstance(command, str) and command not in found and (dangerous(command) or graph._deletes(command)):
+                found.append(command)
+            called = node.get("use")
+            if isinstance(called, str) and called not in _seen and _depth + 1 < runner.MAX_DEPTH:
+                sub = catalog.find(called)
+                if sub is not None and sub.valid:
+                    for inner in self.flagged(sub, _depth + 1, _seen | {called}):
+                        line = f"{called}: {inner}"
+                        if line not in found:
+                            found.append(line)
+        return found
+
+    def allowances(self) -> dict:
+        """What the switches let a graph hold, for the early checks (habit_save, a one-off run, `check`)."""
+        return {"allow_llm_in_command": self.setting("model_text") == "quoted",
+                "allow_delete": self.setting("permissions") == "hermes"}
 
     def untold(self, names=None, take=True) -> list[tuple[str, str]]:
         """The retirements to tell now; a ledger that cannot say keeps them for a later reply or wake."""
@@ -327,12 +474,13 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
         return parsed
 
     def decider(self) -> deciders.Chain:
-        clef = deciders.make_clef(self.secret("CLOUDFLARE_API_TOKEN"), self.secret("CLOUDFLARE_ACCOUNT_ID"),
-                                  self.setting("clef_model"))
-        return deciders.build(self.setting("backend"), self.secret("TYPESAFE_API_KEY"), self.complete, clef)
+        # decision_model hermes asks Hermes's model alone: no question goes to Jev. The old backend: llm still keeps
+        # Jev behind it.
+        alone = self.setting("decision_model") == "hermes" and self.asked("decision_model") is not None
+        return deciders.build(self.setting("backend"), None if alone else self.secret("TYPESAFE_API_KEY"), self.complete)
 
-    def tool(self, name: str, args: dict) -> str:
-        refusal = refused(name, args or {})
+    def tool(self, name: str, args: dict, approved: bool = False) -> str:
+        refusal = refused(name, args or {}, approved=approved)
         if refusal:
             return json.dumps({"error": f"{refusal}; the habit leaves it to the model"})
         return self.ctx.dispatch_tool(name, args)
@@ -345,18 +493,26 @@ class Habits(Tools, Watch, Trigger, Guard, Display, Cockpit):
 
     def run(self, habit: catalog.Habit | None, scenario: dict, dry: bool, inputs=None, trigger="",
             max_seconds=None, keep=True, within: Path | None = None, memory: dict | None = None,
-            own: Path | None = None) -> runner.Result:
+            own: Path | None = None, turn: bool = False) -> runner.Result:
         """keep: False for a measurement, which reads the memory of check: changed and never moves it. within: a
         measurement's folder (resolved): terminal commands start there and no write leaves it, but to run a script
         of own (the habit's assets/). memory: a
-        measurement's own references for check: changed, moved in place, instead of the ledger's."""
+        measurement's own references for check: changed, moved in place, instead of the ledger's. turn: started
+        inside a Hermes turn (habit_run): only then, and only for a habit with the user's yes, may Hermes's own
+        approval rules decide a flagged or deleting command (permissions: hermes, 0.30)."""
         if "min_confidence" not in scenario:
             scenario = {**scenario, "min_confidence": self.setting("min_confidence")}
         if memory is None:
             memory = self.ledger.memory(habit.name) if habit else {}
-        env = runner.Env(tool=self.tool, decider=self.decider(), llm=self.complete, habits=self.subhabit,
-                         memory=memory, dry=dry, max_seconds=max_seconds,
-                         workdir=str(within) if within else "~",  # else each backend's own home
+        approved = bool(not dry and turn and habit is not None and self.setting("permissions") == "hermes"
+                        and self.yes_given(habit))
+        # A reflex the dream learned, called in a turn, starts where Hermes is (it was made of what Hermes did there);
+        # any other reflex starts in the backend's home, the same from a chat, a cron job or a test.
+        here = bool(turn and habit is not None and not dry and (self.ledger.info(habit.name) or {}).get("origin") == "learned")
+        env = runner.Env(tool=functools.partial(self.tool, approved=approved), decider=self.decider(),
+                         llm=self.complete, habits=self.subhabit, memory=memory, dry=dry, max_seconds=max_seconds,
+                         deleting=approved, llm_in_commands=self.setting("model_text") == "quoted",
+                         workdir=str(within) if within else (None if here else "~"),  # else each backend's own home
                          writes=functools.partial(outside, within, own=own) if within else None)
         result = runner.run(scenario, env, inputs, trigger)
         if habit and keep and env.memory:
@@ -401,11 +557,17 @@ def register(ctx) -> None:
     habits = Habits(ctx)
     ctx.register_tool(name="habit_run", toolset=TOOLSET, schema=RUN_SCHEMA, handler=habits.tool_run, emoji="🔁")
     ctx.register_tool(name="habit_save", toolset=TOOLSET, schema=SAVE_SCHEMA, handler=habits.tool_save, emoji="🔁")
-    for name in HOOKS:  # HABITS_OFF turns them all off, the tools stay
-        ctx.register_hook(name, habits.hook(getattr(habits, name if name.startswith("on_") else f"on_{name}")))
+    for name in HOOKS:  # HABITS_OFF turns every hook except the guard off, the tools stay
+        try:
+            ctx.register_hook(name, habits.hook(getattr(habits, name if name.startswith("on_") else f"on_{name}"),
+                                                        file=name != "pre_tool_call"))
+        except Exception as exc:
+            if name != "transform_tool_result":  # a Hermes older than the hook: the start on a skill is simply off
+                raise
+            _warn_once("transform", f"habits: this Hermes has no transform_tool_result hook: {exc}")
     ctx.register_command("habits", habits.command, description=say("menu", habits.lang()))
-    ctx.register_cli_command("habits", "Habits: list, show, view, check, run, promote, pause, resume, undo, "
-                             "tick, retire, reset, cleanup", habits.cli_setup, habits.cli_handle)
+    ctx.register_cli_command("habits", "Habits: list, show, view, check, run, dream, yes, pause, resume, undo, "
+                             "tick, rest, reset, cleanup", habits.cli_setup, habits.cli_handle)
     if hasattr(ctx, "register_system_prompt_section"):  # an older Hermes has none
         ctx.register_system_prompt_section("habits", habits.prompt, max_chars=PROMPT_CHARS)
     else:

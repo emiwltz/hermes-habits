@@ -49,9 +49,9 @@ def frontmatter(path: Path) -> dict:
     return data
 
 
-def test_the_six_examples_are_shipped():
+def test_the_seven_examples_are_shipped():
     assert [p.name for p in EXAMPLES] == [
-        "check-links", "hacker-news-digest", "hermes-health", "summarize-articles", "tidy-downloads",
+        "check-links", "disk-space", "hacker-news-digest", "hermes-health", "summarize-articles", "tidy-downloads",
         "watch-hermes-releases"]
 
 
@@ -86,12 +86,12 @@ def test_the_catalog_finds_every_example_valid():
     assert all(habit.valid and habit.origin == "example" for habit in found.values())
     assert found["watch-hermes-releases"].kind == "watch"
     assert found["tidy-downloads"].kind == found["hermes-health"].kind == "request"
-    assert found["check-links"].kind == found["summarize-articles"].kind == "one-off"
+    assert found["check-links"].kind == found["summarize-articles"].kind == found["disk-space"].kind == "one-off"
 
 
 def test_the_writing_guide_has_its_frontmatter():
     meta = frontmatter(GUIDE)
-    assert meta == {"name": "writing-habits", "description": "Write Habits graphs: format, rules, examples"}
+    assert meta == {"name": "writing-habits", "description": "Write Habits reflexes: format, rules, examples"}
     assert len(meta["description"]) <= 60
 
 
@@ -154,7 +154,7 @@ def test_the_guide_drafts_never_use_a_guarded_name():
         drafts = [s for s in spans if "/tmp/" in s]
         assert not [s for s in drafts if re.search(r"(?i)(habit\.yaml|reflex\.yml|skill\.md)", s)], path.parent.name
     loop = GUIDE.read_text(encoding="utf-8")
-    assert "/tmp/<name>-draft/graph.yaml" in loop and "/tmp/<name>-draft/procedure.md" in loop
+    assert "/tmp/<name>-draft/draft.yaml" in loop and "/tmp/<name>-draft/procedure.md" in loop
 
 
 def test_the_guides_teach_no_learning_loop():
@@ -306,8 +306,20 @@ def test_hermes_health_reads_the_gateway_file_hermes_writes(tmp_path, state, fou
     ("running", 10, True), ("running", 0, False), ("stopped", 10, False),
 ])
 def test_hermes_health_finds_a_frozen_gateway_file(tmp_path, state, minutes_old, stale):
-    path = gateway_file(tmp_path, {"gateway_state": state}, minutes_old)
+    path = gateway_file(tmp_path, {"gateway_state": state, "pid": os.getpid()}, minutes_old)  # a process that is there
     assert bash(HEALTH["nodes"]["frozen"]["args"]["command"], tmp_path) == (str(path) if stale else "")
+
+
+def dead_pid():
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid  # a process that has ended: its number is free
+
+
+def test_hermes_health_is_quiet_when_the_gateway_file_says_running_but_its_process_is_gone(tmp_path):
+    # A gateway killed or lost in a reboot leaves its file saying running forever: that is no machine in trouble.
+    gateway_file(tmp_path, {"gateway_state": "running", "pid": dead_pid()}, 600)
+    assert bash(HEALTH["nodes"]["frozen"]["args"]["command"], tmp_path) == ""
 
 
 def test_hermes_health_counts_only_a_model_call_that_failed_for_good(tmp_path):
@@ -373,10 +385,11 @@ def test_hermes_health_gives_a_verdict_in_a_profile_or_another_home(tmp_path):
     assert bash(disk, tmp_path, hermes_home=tmp_path / ".hermes").isdigit()
     profile = tmp_path / ".hermes" / "profiles" / "work"
     profile.mkdir(parents=True)
-    used = bash(disk, tmp_path, hermes_home=profile)
-    assert used.isdigit()
+    assert bash(disk, tmp_path, hermes_home=profile).isdigit()
     assert bash(disk, tmp_path, hermes_home=tmp_path / "elsewhere").isdigit()  # a container's home, not created
-    result, _ = health_run({**HEALTHY, "df -Pk": used})
+    # The verdict is read on a stand-in number, as in the tests above: the real read is a number in every home, and
+    # which number is this machine's disk (over 89% full it rightly ends on "needs attention").
+    result, _ = health_run()
     assert (result.status, result.node, result.failed) == ("end", "healthy", False)
     assert result.message.splitlines()[-1] == READ
 
@@ -507,12 +520,12 @@ def test_check_links_probe_is_a_read_that_prints_one_word_per_link():
     assert not graph.validate(links) and not graph.drafting(links)
 
 
-def test_the_readme_habit_is_the_shipped_check_links_without_comments():
-    shipped = (ROOT / "examples" / "check-links" / "assets" / "reflex.yml").read_text(encoding="utf-8")
+def test_the_readme_habit_is_the_shipped_disk_space_without_comments():
+    shipped = (ROOT / "examples" / "disk-space" / "assets" / "reflex.yml").read_text(encoding="utf-8")
     bare = "\n".join(re.sub(r"\s+#.*$|^#.*$", "", line).rstrip() for line in shipped.splitlines())
     bare = "\n".join(line for line in bare.splitlines() if line) + "\n"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    at = readme.index("This is `examples/check-links`")
+    at = readme.index("This is `examples/disk-space`")
     block = readme[readme.index("```yaml\n", at) + 8:readme.index("```", readme.index("```yaml\n", at) + 8)]
     assert block == bare
 
@@ -532,3 +545,44 @@ def test_a_check_is_named_by_what_yes_means():
     for name, node in nodes.items():
         if name.endswith("_ok"):
             assert not node["then"]["yes"].endswith("_attention"), name
+
+
+def test_tidy_downloads_reads_40_files_at_most_so_a_big_folder_stays_within_the_budget():
+    # Seen: 300 files cost 4 steps each, past the 200 steps of a run, and the habit handed back having done nothing.
+    tidy = graph.load((ROOT / "examples" / "tidy-downloads" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
+    assert "head -n 40" in tidy["nodes"]["list"]["args"]["command"]
+    assert "40 files at most" in tidy["nodes"]["done"]["end"] and "40 files at most" in tidy["nodes"]["help"]["wake"]
+
+    def tool(name, args):
+        command = args["command"]
+        if command.startswith("ls -p"):  # the real list, cut where the command cuts it
+            names = [f"file{i}.pdf" for i in range(300)]
+            return json.dumps({"output": "\n".join(names[:40] if "head -n 40" in command else names), "exit_code": 0})
+        return json.dumps({"output": "Safari.app", "exit_code": 0})
+
+    answers = lambda question, state: ("document", 0.9) if question.kind == "choice" else ("no", 0.9)
+    env = runner.Env(tool=tool, decider=deciders.Chain([deciders.Fake(answers)]), clock=lambda: 0.0, dry=True)
+    result = runner.run(tidy, env)
+    assert (result.status, result.node) == ("end", "done")
+    assert len(result.planned) == 40
+
+
+def test_disk_space_is_one_read_started_by_a_call_and_runs_dry():
+    spec = graph.load((ROOT / "examples" / "disk-space" / "assets" / "reflex.yml").read_text(encoding="utf-8"))
+    assert "trigger" not in spec and "inputs" not in spec  # started by a call, nothing to give
+    reads = [n for n in spec["nodes"].values() if "do" in n]
+    assert len(reads) == 1 and runner._reads(reads[0]) and reads[0]["args"]["command"].startswith("df -h ~")
+    assert [n for n in spec["nodes"].values() if "ask" in n or "llm" in n or "use" in n] == []
+    table = "Filesystem Size Used Avail Capacity\n/dev/disk3s1 460Gi 300Gi 150Gi 67%"
+
+    def tool(name, args):
+        tool.commands.append(args["command"])
+        return json.dumps({"output": table, "exit_code": 0})
+    tool.commands = []
+
+    def nobody(question, state):
+        raise AssertionError("disk-space asked the decision model")
+    env = runner.Env(tool=tool, decider=deciders.Chain([deciders.Fake(nobody)]), clock=lambda: 0.0)
+    result = runner.run(spec, env)
+    assert (result.status, result.failed) == ("end", False) and "67%" in result.message
+    assert len(tool.commands) == 1 and result.counts["questions"] == result.counts["llm"] == 0

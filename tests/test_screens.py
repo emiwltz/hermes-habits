@@ -62,7 +62,7 @@ def test_no_hermes_model_is_said_once_with_what_to_do():
         said = str(exc)
     assert "llm: llm:" not in said and "AuxiliaryClientUnavailable" not in said
     assert "no Hermes model is set up" in said and "hermes model" in said
-    assert "TYPESAFE_API_KEY" in said and "CLOUDFLARE_API_TOKEN" in said and "CLOUDFLARE_ACCOUNT_ID" in said
+    assert "TYPESAFE_API_KEY" in said
 
     def broken(*_, **__):
         raise TimeoutError()
@@ -251,7 +251,7 @@ def test_a_card_and_a_page_never_say_one_off():
               {"name": "hermes-health", "kind": "request", "status": "shadow", "origin": "example", "summary": {}}):
         plain = view.static(d) + view.gallery([d]).split("<script>", 1)[0]
         assert "one-off" not in plain and "learning" not in plain, plain
-    assert "example · called by name" in view.static({"name": "hermes-health", "kind": "request", "origin": "example"})
+    assert "example · called" in view.static({"name": "hermes-health", "kind": "request", "origin": "example"})
     gallery = (ROOT / "view" / "gallery.html").read_text(encoding="utf-8")
     assert "cap(d.kind" not in gallery and "Watch checks" not in gallery
     template = (ROOT / "view" / "template.html").read_text(encoding="utf-8")
@@ -267,7 +267,7 @@ def test_a_page_says_run_once_only_for_a_graph_drawn_for_one_run():
         script = (f"const D = {{origin: {json.dumps(origin)}, kind: 'one-off'}}, oneoff = true, "
                   f"once = D.origin === 'one-off';\n{trigger}\nconsole.log(trigger(undefined))")
         shown.append(subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True).stdout.strip())
-    assert shown == ["run once", "called by name", "called by name"]
+    assert shown == ["run once", "called", "called"]
 
 
 def test_a_replay_keeps_the_habits_origin(setup, capsys):

@@ -10,7 +10,7 @@ macOS only: it reads `/Applications` and moves installers to `~/.Trash`.
 The slow way: what you do by hand when the habit does not run. These are the same commands as
 `assets/reflex.yml`, in the same order, so that the comparison while learning finds each step.
 
-1. List the files: `ls -p ~/Downloads | grep -v /`
+1. List the files, 40 at most per run (run it again for the rest): `ls -p ~/Downloads | grep -v / | head -n 40`
 2. List the installed applications: `ls /Applications`
 3. For each file, choose its type: installer, image, document, archive or other.
 4. Move each file into the folder of its type, never over a file already there:

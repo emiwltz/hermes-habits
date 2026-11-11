@@ -12,6 +12,7 @@ import difflib
 import fnmatch
 import json
 import re
+import shlex
 from dataclasses import dataclass
 
 from . import deciders, shell
@@ -67,11 +68,11 @@ ALLOWED = {
     "wake": {"wake", "with"},
 }
 RULES = {
-    1: "no isolated node",
+    1: "no isolated step",
     2: "no dead end",
     3: "no loop",
     4: "a fallback",
-    5: "one thing per node",
+    5: "one thing per step",
     6: "no orphan answer",
     7: "small",
 }
@@ -159,7 +160,7 @@ def normalize(habit) -> tuple:
 
 
 def _unsure_in_then(node: dict) -> bool:
-    """unsure: <node> beside a question that is no pick: its then's unsure (with next, every answer goes on to
+    """unsure: <step> beside a question that is no pick: its then's unsure (with next, every answer goes on to
     next). Not with each, whose unsure items are doubts, nor when then already holds another unsure."""
     target, then = node.get("unsure"), node.get("then")
     if not isinstance(target, str) or "pick" in node or "each" in node:
@@ -421,13 +422,21 @@ def limits(habit: dict) -> dict:
     return effective
 
 
+def starts_on_skill(habit: dict) -> bool:
+    """It starts when its own skill is loaded (trigger: skill)."""
+    return isinstance(habit, dict) and habit.get("trigger") == "skill"
+
+
 def is_watch(habit: dict) -> bool:
     trigger = habit.get("trigger")
     return isinstance(trigger, dict) and "every" in trigger
 
 
-def validate(habit: dict) -> list[Issue]:
-    """Every reason the graph is refused; an empty list means it may run."""
+def validate(habit: dict, *, allow_llm_in_command: bool = False, allow_delete: bool = False) -> list[Issue]:
+    """Every reason the graph is refused; an empty list means it may run. allow_llm_in_command (model_text: quoted):
+    a value an llm wrote may fill one operand of a terminal command, never a code position (the operand rule, which
+    holds whatever this says). allow_delete (permissions: hermes): a deleting command written in the graph is not
+    refused here; the run decides."""
     issues: list[Issue] = []
 
     def add(rule, node, message):
@@ -437,14 +446,14 @@ def validate(habit: dict) -> list[Issue]:
         add("format", "", f'spec must be "{SPEC}"')
     nodes = habit.get("nodes")
     if not isinstance(nodes, dict) or not nodes:
-        add("format", "", "nodes must be a non-empty mapping of named nodes")
+        add("format", "", "nodes must be a non-empty mapping of named steps")
         return issues
 
     _check_header(habit, add)
     kinds = {}
     for name, node in nodes.items():
         if not isinstance(name, str) or not NODE_NAME.match(name):
-            add("format", str(name), f'node name "{name}" must use a-z, 0-9, _ or -, 40 characters at most')
+            add("format", str(name), f'step name "{name}" must use a-z, 0-9, _ or -, 40 characters at most')
             continue
         if not isinstance(node, dict):
             add("format", name, f'"{name}" must be a mapping')
@@ -458,7 +467,7 @@ def validate(habit: dict) -> list[Issue]:
         kinds[name] = kind
         extra = set(node) - ALLOWED[kind]
         if kind == "llm" and extra & {"args", "tools", "read"}:
-            add(5, name, f'"{name}" is an llm node: it thinks but uses no tool. Put the tool in a do node.')
+            add(5, name, f'"{name}" is an llm step: it thinks but uses no tool. Put the tool in a do step.')
             extra -= {"args", "tools", "read"}
         if kind in ("do", "llm", "use") and "then" in extra:  # a do read as a question: yes is next, no is error
             add("format", name, f'"{name}" ({kind}) has no then: it goes to next when it works, to error when it fails')
@@ -467,23 +476,30 @@ def validate(habit: dict) -> list[Issue]:
             add("format", name, f'"{name}" ({kind}) does not take {", ".join(sorted(extra))}')
         _check_node(name, kind, node, add)
     own = habit.get("limits") if isinstance(habit.get("limits"), dict) else {}
-    for key, verb, does in (("llm", "llm", "is an llm node"), ("questions", "ask", "asks one")):
+    for key, verb, does in (("llm", "llm", "is an llm step"), ("questions", "ask", "asks one")):
         if type(own.get(key)) is int and own[key] == 0:  # a run would always end on its fallback there
             for name in [n for n, k in kinds.items() if k == verb]:
-                add("format", name, f'limit {key} is 0, but "{name}" {does}: raise the limit, or leave the node out')
+                add("format", name, f'limit {key} is 0, but "{name}" {does}: raise the limit, or leave the step out')
 
+    if starts_on_skill(habit):  # it runs inside a tool result: no inputs to give, no decision model to ask
+        if habit.get("inputs"):
+            add("format", "", "a reflex that starts when its skill is loaded takes no inputs: nobody could give them")
+        for name in [n for n, k in kinds.items() if k in ("ask", "llm")]:
+            add("format", name, f'"{name}" is {"an llm" if kinds[name] == "llm" else "an ask"} step: a reflex '
+                                'that starts when its skill is loaded has no decision model to ask. Use check, or '
+                                'start it another way')
     _check_graph(habit, nodes, kinds, add)
     if len(nodes) > MAX_NODES:
-        add(7, "", f"{len(nodes)} nodes, {MAX_NODES} at most: split the graph with use")
+        add(7, "", f"{len(nodes)} steps, {MAX_NODES} at most: split the reflex with use")
     _check_variables(habit, nodes, kinds, add)
-    _check_safety(habit, nodes, kinds, add)
+    _check_safety(habit, nodes, kinds, add, allow_llm_in_command, allow_delete)
     order = {"format": 0, "safety": 9}
     return sorted(issues, key=lambda issue: order.get(issue.rule, int(issue.rule) if issue.rule.isdigit() else 8))
 
 
 def _check_header(habit, add):
     trigger = habit.get("trigger")
-    if trigger is not None and trigger != "message":
+    if trigger is not None and trigger not in ("message", "skill"):
         if isinstance(trigger, dict) and "every" in trigger and set(trigger) <= {"every", "at"}:
             every = trigger["every"]
             if not isinstance(every, str) or not EVERY.match(every):
@@ -501,10 +517,10 @@ def _check_header(habit, add):
             add("format", "", "trigger {event: …} is no longer supported: check on a schedule with {every: 30m}, "
                               "or leave trigger out to run the habit by name")
         else:
-            add("format", "", 'trigger is "message", {every: 30m} or {every: 1d, at: "21:00"}')
+            add("format", "", 'trigger is "message", "skill", {every: 30m} or {every: 1d, at: "21:00"}')
     for key in ("start", "fallback"):
         if key in habit and not isinstance(habit[key], str):
-            add("format", "", f"{key} must be the name of a node")
+            add("format", "", f"{key} must be the name of a step")
     inputs = habit.get("inputs", [])
     if isinstance(inputs, dict):
         given = ", ".join(f"{k}: {v}" for k, v in list(inputs.items())[:3])
@@ -563,11 +579,11 @@ def _check_node(name, kind, node, add):
         add("format", name, f'"{name}": use then or next, not both')
     for key in ("next", "error", "unsure"):
         if key in node and not isinstance(node[key], str):
-            add(2, name, f'"{name}": {key} must be the name of a node')
+            add(2, name, f'"{name}": {key} must be the name of a step')
     if isinstance(node.get("then"), dict):
         for answer, target in node["then"].items():
             if not isinstance(target, str):
-                add(2, name, f'"{name}": the exit of "{answer}" must be the name of a node')
+                add(2, name, f'"{name}": the exit of "{answer}" must be the name of a step')
 
     if kind == "ask":
         _check_ask(name, node, add)
@@ -599,7 +615,7 @@ def _check_ask(name, node, add):
         _check_pick(name, node, add)
     else:
         for key, why in (("margin", "margin goes with pick only"),
-                         ("unsure", "unsure: <node> goes with pick only; elsewhere write then: {unsure: <node>}")):
+                         ("unsure", "unsure: <step> goes with pick only; elsewhere write then: {unsure: <step>}")):
             if key in node:
                 add("format", name, f'"{name}": {why}')
     answers = options(node)
@@ -621,12 +637,12 @@ def _check_ask(name, node, add):
             first = next(iter(then.values()), "…") if isinstance(then, dict) else "…"
             var = node.get("as") if isinstance(node.get("as"), str) else "answer"
             add(6, name, f'"{name}" uses each: it can only have next, one answer per item. Write next: {first}, '
-                         f'and filter in that node with where: {{{var}: {answers[0] if answers else "yes"}}}')
+                         f'and filter in that step with where: {{{var}: {answers[0] if answers else "yes"}}}')
         return
     if then is None:
         return
     if not isinstance(then, dict):
-        add("format", name, f'"{name}": then maps each answer to a node')
+        add("format", name, f'"{name}": then maps each answer to a step')
         return
     keys = {str(k) for k in then}
     for answer in answers:
@@ -644,10 +660,10 @@ def _check_pick(name, node, add):
     if "each" in node:
         add("format", name, f'"{name}" picks one item of its list in one question: no each (each asks one per item)')
     if "then" in node:
-        add("format", name, f'"{name}" picks one item: next goes on with it, unsure: <node> when it takes none '
+        add("format", name, f'"{name}" picks one item: next goes on with it, unsure: <step> when it takes none '
                             "(no then)")
     if not isinstance(node.get("next"), str):
-        add(2, name, f'"{name}" needs next: the node that goes on with the item picked')
+        add(2, name, f'"{name}" needs next: the step that goes on with the item picked')
     margin = node.get("margin", 0.15)
     if not isinstance(margin, (int, float)) or isinstance(margin, bool) or not 0 <= margin <= 1:
         add("format", name, f'"{name}": margin must be between 0 and 1 (how far the top item stands over the second)')
@@ -675,9 +691,9 @@ def _check_check(name, node, add):
 def _check_graph(habit, nodes, kinds, add):
     start, fallback = habit.get("start"), habit.get("fallback")
     if fallback is None:
-        add(4, "", 'add "fallback": the wake node that receives every error and every doubt')
+        add(4, "", 'add "fallback": the wake step that receives every error and every doubt')
     elif isinstance(fallback, str) and kinds.get(fallback) != "wake":
-        add(4, str(fallback), f'fallback "{fallback}" must be a wake node')
+        add(4, str(fallback), f'fallback "{fallback}" must be a wake step')
     if not isinstance(fallback, str):
         fallback = None  # _check_header already said a fallback is the name of a node
 
@@ -690,12 +706,12 @@ def _check_graph(habit, nodes, kinds, add):
             add(2, name, f'"{name}" is a dead end: give it next or then')
 
     if start is None:
-        add("format", "", 'add "start": the name of the first node')
+        add("format", "", 'add "start": the name of the first step')
         return
     if not isinstance(start, str):
         return  # _check_header already said start is the name of a node
     if start not in nodes:
-        add(2, "", f'start "{start}" is not a node')
+        add(2, "", f'start "{start}" is not a step')
         return
 
     seen, stack = set(), [start]
@@ -793,7 +809,7 @@ def _check_variables(habit, nodes, kinds, add):
             elif bare:
                 add("format", name, f'"{name}" uses "{variable}": write the variable name without braces: {bare.group(1)}')
             else:
-                add("format", name, f'"{name}" uses "{variable}", which no node defines. Add as: {variable}, or list it in inputs.')
+                add("format", name, f'"{name}" uses "{variable}", which no step defines. Add as: {variable}, or list it in inputs.')
         if "item" in used and "each" not in node:
             add("format", name, f'"{name}" uses item outside each: item is each element of a list, so add each: <list>')
 
@@ -822,11 +838,91 @@ def _braced(word: str, limit: int = 256) -> list[str]:
     return done
 
 
+ANSI_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+                "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _ansi_c(text: str, i: int) -> tuple[str, int]:
+    """Decode the body of a $'…' string that starts at text[i] (just after the opening quote), as bash does:
+    (the decoded text, the index after the closing quote). A ValueError when it cannot be decoded."""
+    out = []
+    while i < len(text):
+        c = text[i]
+        if c == "'":
+            return "".join(out), i + 1
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        i += 1
+        if i >= len(text):
+            break
+        c = text[i]
+        if c in ANSI_ESCAPES:
+            out.append(ANSI_ESCAPES[c])
+            i += 1
+        elif c in "01234567":
+            digits = re.match(r"[0-7]{1,3}", text[i:]).group(0)
+            out.append(chr(int(digits, 8) % 256))
+            i += len(digits)
+        elif c in "xuU":
+            digits = re.match(r"[0-9a-fA-F]{1,%d}" % {"x": 2, "u": 4, "U": 8}[c], text[i + 1:])
+            if not digits:
+                raise ValueError("cannot decode $'...'")
+            out.append(chr(int(digits.group(0), 16)))  # a ValueError past the last code point
+            i += 1 + len(digits.group(0))
+        elif c == "c":
+            if i + 1 >= len(text):
+                raise ValueError("cannot decode $'...'")
+            out.append(chr(ord(text[i + 1]) & 0x1f))
+            i += 2
+        else:
+            out.append("\\" + c)  # an escape bash leaves as it is
+            i += 1
+    raise ValueError("unterminated $'...'")
+
+
+def _unquote_dollar(command: str) -> str:
+    """The command as the shell reads it before splitting: a backslash before a newline removed (it joins the two
+    lines), an unquoted $'…' decoded to a single-quoted string (so r$'m' is rm) and an unquoted $"…" read as "…".
+    A ValueError for a $'…' that cannot be decoded."""
+    out, i = [], 0
+    while i < len(command):
+        c = command[i]
+        if c == "\\":
+            if command[i + 1:i + 2] != "\n":
+                out.append(command[i:i + 2])
+            i += 2
+        elif c == "'":
+            end = command.find("'", i + 1)
+            end = len(command) if end < 0 else end + 1
+            out.append(command[i:end])
+            i = end
+        elif c == '"':
+            j = i + 1
+            while j < len(command) and command[j] != '"':
+                j += 2 if command[j] == "\\" else 1
+            span = command[i:j + 1]
+            out.append(re.sub(r"\\\n", "", span))  # a continuation inside double quotes is joined too
+            i = j + 1
+        elif command.startswith("$'", i):
+            text, i = _ansi_c(command, i + 2)
+            out.append("'" + text.replace("'", "") + "'")
+        elif command.startswith('$"', i):
+            i += 1  # the quote that follows starts an ordinary double-quoted span
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def _words(command: str) -> list[str]:
-    """Every word of a command as a shell runs it, paths cut to their last part: quotes and backslashes
-    removed (\\rm, r''m and "r"m are rm) and braces expanded. Quoted, a brace or a glob is only text."""
+    """Every word of a command as a shell runs it, in lower case (a Mac's disk ignores case), paths cut to their
+    last part: line continuations joined, $'…' decoded, quotes and backslashes removed (\\rm, r''m and "r"m are rm)
+    and braces expanded. Quoted, a brace or a glob is only text. ; & | < > and ( ) separate words."""
+    command = _unquote_dollar(command).lower()
     literal = QUOTED.sub(lambda m: re.sub(r"[{},*?\[\]]", "_", m.group(0)), command)
-    words = [re.sub(r"[\"'\\]", "", word) for word in re.split(r"[\s;&|()`$]+", literal) if word]
+    words = [re.sub(r"[\"'\\]", "", word) for word in re.split(r"[\s;&|<>()`$]+", literal) if word]
     return [each.rsplit("/", 1)[-1] for word in words for each in _braced(word)]
 
 
@@ -836,7 +932,7 @@ def _deletes(command: str) -> bool:
     try:
         words = set(_words(command))
     except ValueError:
-        return True  # a brace expansion too long to check
+        return True  # a brace expansion too long to check, or a $'…' that cannot be decoded
     globbed = any(fnmatch.fnmatchcase(name, word.replace("[^", "[!")) for word in words
                   if GLOB.search(word) and word.strip("*") for name in DELETE_COMMANDS)
     return bool(DELETE_COMMANDS & words) or globbed or {"find", "-delete"} <= words
@@ -881,9 +977,250 @@ def _quoted_templates(command: str) -> list[tuple]:
     return found
 
 
-def _check_safety(habit, nodes, kinds, add):
+# A value an llm wrote (model_text: quoted), or text read from outside (a page, a server, a screen), may fill a template of
+# a terminal command ONLY in a command whose program is on a short list of programs that treat that argument as data, and
+# only in an operand after the program's options. Everything else is refused: a list of what is code cannot be finished, a
+# list of what is data can. Whatever the switches say for a value from outside.
+RISKY = re.compile(r"(?<![\w-])(rm|rmdir|shred|unlink|dd|chmod|chown|kill|pkill|sudo|truncate)(?![\w-])|\|\s*(ba|z)?sh\b")
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "time", "fi", "done", "esac", "case",
+            "in", "select", "coproc"}  # shell words that leave the next word to be the program
+SEPARATORS = {"|", "||", "&", "&&", ";", ";;", "|&"}
+PIPES = {"|", "|&"}
+# program -> (letters its one-letter options may use, none of which takes a value, and its long options)
+DATA_PROGRAMS = {
+    "mv": ("fivnu", ()), "cp": ("rRpvfinaHLP", ()), "mkdir": ("pv", ()), "touch": ("acm", ()), "ln": ("sfnvi", ()),
+    "open": ("", ()), "echo": ("neE", ()), "printf": ("", ()), "say": ("", ()), "cat": ("nbsA", ()),
+    "head": ("qv", ()), "tail": ("qv", ()), "wc": ("lwcm", ()), "ls": ("1aAlhtRdF", ()),
+    "grep": ("FcqinvwxrRlLhHosEIa", ()),
+    "jq": ("rcesnRSMCaj", ("--raw-output", "--compact-output", "--slurp", "--null-input", "--exit-status",
+                           "--raw-input", "--sort-keys", "--monochrome-output", "--join-output", "--ascii-output")),
+    "terminal-notifier": ("", ()),
+    "curl": ("sSLfIikvgG46", ("--silent", "--show-error", "--location", "--fail", "--head", "--include", "--insecure",
+                              "--compressed", "--globoff")),  # the value is the URL; -K, -o, -T… are not no-value flags
+    "wget": ("qvck", ("--quiet", "--no-verbose")),
+    "find": ("", ()),  # only the starting paths, before the first -test or -action: -name {x} and -exec {x} are not data
+}
+NOTIFIER_TEXT = {"-message", "-title", "-subtitle", "-sound", "-group"}  # terminal-notifier: -execute and -open start programs
+JQ_VALUE_OPTIONS = {"--arg", "--argjson"}  # NAME VALUE: the value is data, the one safe way to hand text to jq
+# What a value-carrying line may feed through a pipe: filters that only read what they are given.
+FILTERS = {"head", "tail", "wc", "sort", "uniq", "cut", "tr", "tee", "pbcopy", "cat", "grep", "sed", "awk", "jq", "tac",
+           "rev", "nl", "fold", "column", "paste", "tee"}
+DATA_FILES = {".txt", ".md", ".log", ".csv", ".tsv", ".json", ".jsonl", ".org", ".rst"}  # where a printed value may be written
+REDIRECT = re.compile(r"^(?:&?>>?|>\||<>|>&|<&|<)$")
+
+# Tools whose results can hold anyone's text (Hermes wraps them too), by the start of their name. The one list for
+# both rules: such a value never enters a command (from_outside), and a run that called one reaches the model as
+# data, never as a direct answer (tools.read_outside).
+UNTRUSTED_TOOLS = ("web_", "browser_", "mcp_", "x_search", "session_search", "feishu_doc_read", "read_terminal",
+                   "vision_analyze", "video_analyze")
+OUTSIDE_PROGRAMS = ("curl", "wget", "http", "https", "xh", "gh", "fetch", "aria2c", "ssh", "nc", "ncat", "netcat", "lynx",
+                    "w3m", "dig", "nslookup", "host", "whois", "scp", "sftp", "rsync", "rclone", "telnet", "socat")
+OUTSIDE = re.compile(r"(?<![\w.-])(?:%s)(?![\w.-])|(?<![\w.-])hc\b.*?(?<![\w.-])(?:read|get)(?![\w.-])|"
+                     r"(?<![\w.-])ls-remote(?![\w.-])|urllib|urlopen" % "|".join(OUTSIDE_PROGRAMS), re.S)
+
+
+def from_outside(node) -> bool:
+    """Whether a do step's output can hold text anyone wrote: a web, browser or MCP tool, a tool that returns other
+    people's text, or a terminal line that may print what a server sent or an agent's screen (the program read after
+    quote removal: c''url is curl). A value read back from a file a download wrote is not followed."""
+    tool = node.get("do") if isinstance(node, dict) else None
+    if not isinstance(tool, str):
+        return False
+    if tool.startswith(UNTRUSTED_TOOLS):
+        return True
+    args = node.get("args") if isinstance(node.get("args"), dict) else {}
+    command = args.get("command")
+    if tool != "terminal" or not isinstance(command, str):
+        return False
+    return bool(OUTSIDE.search(command)) or bool(OUTSIDE.search(re.sub(r"[\"'\\]", "", command)))
+
+
+def _split_lines(command: str) -> list:
+    """The command cut at each newline outside quotes: a newline ends a command as ; does."""
+    lines, current, quote, i = [], [], None, 0
+    while i < len(command):
+        c = command[i]
+        if c == "\\" and quote != "'" and i + 1 < len(command):
+            current.append(command[i:i + 2])
+            i += 2
+            continue
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "\n":
+            lines.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(c)
+        i += 1
+    lines.append("".join(current))
+    return lines
+
+
+WHERE_SHORT = ("mv, cp, mkdir, touch, ln, open, echo, printf, say, cat, head, tail, wc, ls, find (a starting path), grep, "
+               "curl and wget (the URL), jq (the VALUE of --arg NAME VALUE, with a fixed program), terminal-notifier "
+               "(-message, -title)")
+
+
+def _code_position(command: str, tainted: set) -> str:
+    """Where in a terminal command a value written by an llm (or read from a tool's output) may NOT go, or "": every
+    command that holds it must be on the short list of programs that read an argument as data, with the value in an
+    operand after the options; a line this check cannot read is refused (fails closed)."""
+    holds = [t for t in sorted(tainted) if re.search(r"\{%s[.}]" % re.escape(t), command)]
+    if not holds:
+        return ""
+    if RISKY.search(_unquote_dollar(command).lower()) or _deletes(command):
+        return "in a command that deletes, changes rights or may destroy something"
+    if re.search(r"\$\(|\$\{|[()`]|<\(|>\(", re.sub(r"'[^']*'", "''", command)):
+        return "inside a substitution, a group or a subshell, which this check does not follow"
+
+    def has(word):
+        return any(re.search(r"\{%s[.}]" % re.escape(t), word) for t in holds)
+    separators = SEPARATORS | {"(", ")"}
+    for part in _split_lines(command):
+        try:
+            lexer = shlex.shlex(part, posix=False, punctuation_chars=True)
+            lexer.whitespace_split = True
+            words = list(lexer)
+        except ValueError:
+            return "in a command this check cannot read"
+        segments, current = [], []  # (words, the separator that ends it)
+        for word in words + [";"]:
+            if word in separators or set(word) <= set("|&;()"):
+                segments.append((current, word))
+                current = []
+            else:
+                current.append(word)
+        fed = False  # an earlier segment of this pipeline holds the value: what follows is fed by it
+        for words, ending in segments:
+            found = _segment_position(words, has, fed)
+            if found:
+                return found
+            fed = ending in PIPES and (fed or any(has(w) for w in words))
+    return ""
+
+
+def _segment_position(line: list, has, fed: bool) -> str:
+    while line and line[0] in KEYWORDS:  # if, then, do, !, time -p…: the program is the word after
+        line = line[1:]
+        if line and line[0] == "-p":
+            line = line[1:]
+    if not line:
+        return ""
+    # Redirections out: a value is never the file one reads or writes; a printed value is written only to a data file.
+    words, i = [], 0
+    holding = any(has(w) for w in line)
+    while i < len(line):
+        word = line[i]
+        if REDIRECT.match(word) or re.fullmatch(r"\d+", word) and i + 1 < len(line) and REDIRECT.match(line[i + 1]):
+            if not REDIRECT.match(word):
+                i += 1
+                continue
+            target = line[i + 1] if i + 1 < len(line) else ""
+            if has(target):
+                return "as the file a redirection reads or writes"
+            if ">" in word and target != "/dev/null" and not re.fullmatch(r"\d+|-", target) and (holding or fed):
+                if not _data_file(target):
+                    return f"in a line that writes to {target}, which is not a plain data file ({', '.join(sorted(DATA_FILES))})"
+            i += 2
+            continue
+        words.append(word)
+        i += 1
+    while words and re.fullmatch(r"[A-Za-z_]\w*=.*", words[0]):
+        if has(words[0]):
+            return "in a variable set before a command"
+        words = words[1:]
+    if not words:
+        return ""
+    program = words[0]
+    if fed and not holding:
+        if program not in FILTERS:
+            return f'in a line that pipes it into "{program}", which may run what it reads (a pipe takes only: ' \
+                   f'{", ".join(sorted(FILTERS))})'
+        if program == "tee":
+            for target in (w for w in words[1:] if not w.startswith("-")):
+                if not _data_file(target):
+                    return f"in a line that writes to {target}, which is not a plain data file"
+        return ""
+    if not holding:
+        return ""
+    if has(program):
+        return "as the program of a command"
+    if program not in DATA_PROGRAMS:
+        return f'in "{program}", which does not read its arguments as plain data'
+    return _operand_position(program, words[1:], has)
+
+
+def _data_file(path: str) -> bool:
+    path = path.strip("'")
+    parts = path.split("/")
+    if any(c in path for c in "$*?[") or "~" in path[1:] or path.startswith("~") and not path.startswith("~/"):
+        return False
+    if any(p.startswith(".") and p not in ("", ".", "..") for p in parts):
+        return False
+    return any(path.lower().endswith(ext) for ext in DATA_FILES)
+
+
+def _operand_position(program: str, args: list, has) -> str:
+    letters, longs = DATA_PROGRAMS[program]
+    where = f'in "{program}"'
+    if program == "terminal-notifier":
+        i = 0
+        while i < len(args):
+            word = args[i]
+            if has(word):
+                return f'{where}, anywhere but the value of -message, -title, -subtitle, -sound or -group'
+            if word.startswith("-"):
+                if i + 1 < len(args) and has(args[i + 1]) and word not in NOTIFIER_TEXT:
+                    return f'{where}, as the value of {word}, which can start a program'
+                i += 2
+            else:
+                i += 1
+        return ""
+    if program == "find":
+        for k, word in enumerate(args):
+            if word.startswith(("-", "!", "(")):
+                return f'{where}, after the first test or action ("{word}"): only the starting paths hold it' \
+                    if any(has(w) for w in args[k:]) else ""
+        return ""
+    ended = False  # after --, every word is an operand
+    operands, i = 0, 0
+    while i < len(args):
+        word = args[i]
+        if not ended and word == "--":
+            ended = True
+        elif not ended and word.startswith("-") and len(word) > 1:
+            if has(word):
+                return f'{where}, in an option ("{word}"): a value goes after the options'
+            if program == "jq" and word in JQ_VALUE_OPTIONS:
+                if i + 1 < len(args) and has(args[i + 1]):
+                    return f'{where}, as the name of {word}: only the value may hold it'
+                i += 3  # the NAME VALUE pair: the value may hold it
+                continue
+            if not (word in longs or (letters and re.fullmatch(r"-[%s]+" % re.escape(letters), word))):
+                if i + 1 < len(args) and has(args[i + 1]):
+                    return f'{where}, right after the option {word}, which may take it as its value'
+        else:
+            if has(word):
+                if program == "jq" and operands == 0:
+                    return f"as the program of {program}: its program must be fixed text"
+                if program == "printf" and operands == 0:
+                    return "as the format of printf: the format must be fixed text"
+            operands += 1
+        i += 1
+    return ""
+
+
+def _check_safety(habit, nodes, kinds, add, allow_llm_in_command=False, allow_delete=False):
     defined = _defined(habit, nodes, kinds)
     llm_values = {nodes[name]["as"] for name, kind in kinds.items() if kind == "llm" and isinstance(nodes[name].get("as"), str)}
+    # Text read from outside (a page, an MCP server, a screen) may be anyone's, and what a called reflex returns may hold
+    # that or an llm's, the caller cannot see which: neither is ever code, whatever the switches say. (They may still
+    # fill a plain operand, as the quoted switch lets an llm's value: it is the code positions that close.)
+    called = {nodes[name]["as"] for name, kind in kinds.items() if kind in ("use",) or (kind == "do" and from_outside(
+        nodes[name])) if isinstance(nodes[name].get("as"), str)}
     # An item picked from a list an llm wrote is that llm's text too, and so is a table an each built over one (its
     # keys are the llm's items, which a pick then takes), and doubts once such an each may doubt one of its items:
     # however many steps deep.
@@ -898,6 +1235,13 @@ def _check_safety(habit, nodes, kinds, add):
         if derived <= llm_values:
             break
         llm_values |= derived
+    for _ in kinds:  # a table an each or a pick took out of a called reflex's value is its text too
+        more = {nodes[name]["as"] for name, kind in kinds.items() if isinstance(nodes[name].get("as"), str)
+                and any(isinstance(nodes[name].get(key), str) and nodes[name][key].split(".")[0] in called
+                        for key in sources.get(kind, ()))}
+        if more <= called:
+            break
+        called |= more
     for name, kind in kinds.items():
         node = nodes[name]
         if kind != "do":
@@ -929,7 +1273,7 @@ def _check_safety(habit, nodes, kinds, add):
                 else:
                     add("format", name, f'"{name}" quotes {template}: the engine already shell-quotes every value. '
                                         f'Write {template} without quotes around it.')
-        if isinstance(command, str) and _deletes(command):
+        if isinstance(command, str) and not allow_delete and _deletes(command):
             add("safety", name, f'"{name}" deletes files. Habits never delete: move to the Trash instead (mv … ~/.Trash/).')
         # Read as it will be once its literal {word}s are split ({''word}): that one fix is said on its own.
         split = re.sub(r"\{(%s)([.}])" % "|".join(map(re.escape, sorted(_literal(node, defined)))), r"{''\1\2",
@@ -946,15 +1290,30 @@ def _check_safety(habit, nodes, kinds, add):
                                 f'({", ".join(sorted(READ_TOOLS))}): leave it off this {tool} step')
         elif node.get("read") is True and tool == "terminal" and cause:
             add("safety", name, f'"{name}" is marked read: true but may write: {cause}. Read commands: ls, cat, '
-                                "grep, find, sort, uniq, jq, awk, sed -n, curl GET, git branch/rev-parse, hc ls/get/read, "
+                                "grep, find, sort, uniq, jq, awk, sed -n, curl GET, git status/log/diff/show/branch, "
+                                "hc ls/get/read, "
                                 "systemctl is-active, ssh host '<read>', with no redirection but to /dev/null "
                                 "(the full list: skill habits:writing-habits)")
         each = node.get("each").split(".")[0] if isinstance(node.get("each"), str) else None
         tainted = llm_values | ({"item"} if each in llm_values else set())
+        code_only = (called - llm_values) | ({"item"} if each in called and each not in llm_values else set())
+        if tool == "terminal" and (tainted | code_only) & _references(args) and not tainted & _references(args):
+            where = _code_position(command, code_only) if isinstance(command, str) else ""
+            if where:
+                value = sorted(code_only & _references(args))[0]
+                add("safety", name, f'"{name}" puts a value read from outside or returned by a called reflex {where}. '
+                                    f"Such a value may go only into an operand, after the options, of: {WHERE_SHORT}. ({value})")
         if tool == "terminal" and tainted & _references(args):
             value = sorted(tainted & _references(args))[0]
-            add("safety", name, f'"{name}" puts a value written by an llm node into a terminal command. Use it in a '
-                                f'message, or write the file with do: write_file, args: {{path: …, content: "{{{value}…}}"}}')
+            if not allow_llm_in_command:
+                add("safety", name, f'"{name}" puts a value written by an llm step into a terminal command. Use it in a '
+                                    f'message, or write the file with do: write_file, args: {{path: …, content: "{{{value}…}}"}}')
+            elif isinstance(command, str):
+                where = _code_position(command, tainted | code_only)
+                if where:
+                    add("safety", name, f'"{name}" puts a value written by an llm step {where}. Such a value may go only '
+                                        f"into an operand, after the options, of: {WHERE_SHORT}; or write the file with "
+                                        f'do: write_file, args: {{path: …, content: "{{{value}…}}"}}')
     if is_watch(habit):
         own = habit.get("limits") if isinstance(habit.get("limits"), dict) else {}
         for key, cap in WATCH_CAPS.items():

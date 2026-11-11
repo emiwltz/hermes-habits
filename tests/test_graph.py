@@ -119,12 +119,12 @@ def test_broken_draft_breaks_six_things():
 
 def test_messages_match_the_specification():
     found = messages(graph.load(BROKEN))
-    assert 'rule 1 (no isolated node): "cleanup" cannot be reached from start "fetch".' in found
+    assert 'rule 1 (no isolated step): "cleanup" cannot be reached from start "fetch".' in found
     assert 'rule 3 (no loop): "pause" goes back to "fetch". Repeat with "each" or with the trigger.' in found
     assert 'rule 6 (no orphan answer): option "wait" of "decider" leads nowhere. Add it to "then".' in found
 
 
-# Rule 1: no isolated node.
+# Rule 1: no isolated step.
 def test_unreachable_node():
     assert rules(small(lost={"end": "Never."})) == {"1"}
 
@@ -171,7 +171,7 @@ def test_fallback_must_be_wake():
 @pytest.mark.parametrize("value", [[], ["look"], {}, {"look": 1}, 5])
 def test_a_start_or_fallback_that_is_no_name_is_a_format_issue(key, value):
     found = messages({**small(), key: value})  # never a crash: a habit cannot vanish from the catalog
-    assert f"format: {key} must be the name of a node." in found
+    assert f"format: {key} must be the name of a step." in found
 
 
 ODD = [None, 5, [], ["a"], {}, {"a": 1}, ""]
@@ -202,7 +202,7 @@ def test_a_read_with_a_key_that_is_no_text_is_refused_not_a_crash():
     habit = small(look={"do": "terminal", "read": True, "args": {"command": "ls", 1: "x"}, "next": "done"})
     assert any("a read takes only command" in m and "1" in m for m in messages(habit))
 
-# Rule 5: one thing per node.
+# Rule 5: one thing per step.
 def test_two_verbs():
     assert "5" in rules(small(done={"end": "Done.", "wake": "Also?"}))
 
@@ -258,7 +258,7 @@ def test_a_limit_of_zero_forbids_llm_calls_or_questions():
 def test_a_node_its_limit_of_zero_forbids_is_refused():
     habit = {**small(look={"llm": "Summarize.", "with": ["trigger"], "as": "summary", "next": "done"}),
              "trigger": "message", "limits": {"llm": 0}}
-    assert any('limit llm is 0, but "look" is an llm node' in m for m in messages(habit))
+    assert any('limit llm is 0, but "look" is an llm step' in m for m in messages(habit))
     habit = {**small(look={"ask": "Ready?", "yes_no": True, "then": {"yes": "done", "no": "help"}}),
              "limits": {"questions": 0}}
     assert any('limit questions is 0, but "look" asks one' in m for m in messages(habit))
@@ -271,7 +271,7 @@ def test_wrong_spec():
 
 def test_undefined_variable():
     habit = small(done={"end": "Found {count} files."})
-    assert any('uses "count", which no node defines' in m for m in messages(habit))
+    assert any('uses "count", which no step defines' in m for m in messages(habit))
 
 
 def test_inputs_define_variables():
@@ -490,6 +490,32 @@ def test_a_tool_name_that_is_not_a_name_is_refused_without_a_crash(tool):
 def test_quotes_and_escapes_inside_a_word_do_not_hide_a_deletion(command):
     habit = small(look={"do": "terminal", "args": {"command": command}, "next": "done"})
     assert "safety" in rules(habit)
+
+
+BYPASSES = ["RM -rf ~/x", "/bin/RM x", "Rm x", "rm>/dev/null x", "find . -delete>/dev/null", "FIND . -DELETE",
+            "r$'m' x", "$'\\x72m' x", "$'\\162m' x", "r\\\nm x", "r$\"m\" x", "$'\\x' x", "$'rm x",
+            "cat<x;rm x"]
+
+
+@pytest.mark.parametrize("command", BYPASSES)
+def test_deletes_sees_case_redirections_ansi_c_quotes_and_continuations(command):
+    assert graph._deletes(command)
+
+
+@pytest.mark.parametrize("command", ["grep 'foo$' file", "awk '{print $1}' f", "printf $'a\\tb\\n'",
+                                     "ls ~/Downloads > out.txt", "grep -c 'a$' < in.txt"])
+def test_deletes_leaves_dollars_quotes_and_redirections_alone(command):
+    assert not graph._deletes(command)
+
+
+def test_deletes_still_counts_any_word_even_quoted():
+    assert graph._deletes('echo "do not rm this"')  # by design: any word counts
+
+
+@pytest.mark.parametrize("command", ["RM -rf ~/x", "rm>/dev/null x", "r$'m' x"])
+def test_validate_refuses_a_hidden_deleting_program(command):
+    habit = small(look={"do": "terminal", "args": {"command": command}, "next": "done"})
+    assert rules(habit) == {"safety"}
 
 
 @pytest.mark.parametrize("command", [
@@ -849,7 +875,7 @@ def test_an_ask_with_each_and_then_is_told_how_to_branch_per_item():
     habit = small(k={"ask": "Is it a project note?", "yes_no": True, "each": "files", "as": "proj",
                      "then": {"yes": "done", "no": "help"}})
     habit["nodes"]["look"]["next"] = "k"
-    assert any("Write next: done, and filter in that node with where: {proj: yes}" in m for m in messages(habit))
+    assert any("Write next: done, and filter in that step with where: {proj: yes}" in m for m in messages(habit))
 
 
 def test_an_llm_value_bound_for_a_file_is_pointed_to_write_file():
@@ -945,11 +971,11 @@ def test_a_pick_is_valid_with_next_and_unsure():
     ({"next": None}, "needs next"),
     ({"yes_no": True}, "exactly one answer type"),
     ({"pick": "{files}x"}, "pick names the list"),
-    ({"pick": "nothing_here"}, 'uses "nothing_here", which no node defines'),
+    ({"pick": "nothing_here"}, 'uses "nothing_here", which no step defines'),
     ({"margin": 1.5}, "margin must be between 0 and 1"),
     ({"margin": True}, "margin must be between 0 and 1"),
     ({"unsure": "nowhere"}, 'leads to "nowhere", which does not exist'),
-    ({"unsure": 3}, "unsure must be the name of a node"),
+    ({"unsure": 3}, "unsure must be the name of a step"),
     ({"doubts": "drop"}, "doubts: drop"),
 ])
 def test_a_pick_is_refused_when_written_wrong(change, found):
@@ -957,8 +983,8 @@ def test_a_pick_is_refused_when_written_wrong(change, found):
     assert any(found in issue for issue in issues), issues
 
 
-# T4 wrote unsure: <node> beside the then of two yes/no and choice questions. That is
-# then: {unsure: <node>}, and normalize says so.
+# T4 wrote unsure: <step> beside the then of two yes/no and choice questions. That is
+# then: {unsure: <step>}, and normalize says so.
 @pytest.mark.parametrize("node, then", [
     ({"ask": "Ready?", "yes_no": True, "then": {"yes": "done", "no": "help"}, "unsure": "help"},
      {"yes": "done", "no": "help", "unsure": "help"}),
@@ -985,7 +1011,8 @@ def test_unsure_is_left_for_the_validator_when_it_cannot_be_moved_for_sure(node)
 
 
 def test_a_read_with_a_template_inside_a_substitution_is_valid():
-    command = "test $(date +%s) -lt $(jq -r '.t/1000|floor+1200' ~/hc/get-{item}.json) && echo recent || echo old"
+    # (-lt would be refused: test reads its operands as arithmetic, where a substitution's output could run a command)
+    command = "test $(date +%F) = $(jq -r '.day' ~/hc/get-{item}.json) && echo recent || echo old"
     habit = small(age={"do": "terminal", "read": True, "each": "files", "args": {"command": command}, "as": "fresh",
                        "next": "done"})
     habit["nodes"]["look"]["next"] = "age"
@@ -1015,7 +1042,7 @@ def test_a_pick_over_an_llm_list_cannot_put_its_item_in_a_command():
                   send={"do": "terminal", "args": {"command": "hermes send -t telegram MEDIA:{chosen}"}, "next": "done"})
     habit["start"] = "words"
     del habit["nodes"]["look"]
-    assert any("a value written by an llm node" in m for m in messages(habit))
+    assert any("a value written by an llm step" in m for m in messages(habit))
 
 
 @pytest.mark.parametrize("table", [
@@ -1032,9 +1059,9 @@ def test_a_pick_over_a_table_built_on_an_llm_list_cannot_put_its_item_in_a_comma
                   kind=table,
                   pick={"ask": "Which note does the request ask for?", "pick": "kind", "as": "chosen", "next": "send"},
                   send={"do": "terminal", "args": {"command": "hermes send -t telegram MEDIA:{chosen}"}, "next": "done"})
-    assert any("a value written by an llm node" in m for m in messages(habit))
+    assert any("a value written by an llm step" in m for m in messages(habit))
     habit["nodes"]["send"]["args"]["command"] = "echo {kind}"  # the whole table shows its keys too
-    assert any("a value written by an llm node" in m for m in messages(habit))
+    assert any("a value written by an llm step" in m for m in messages(habit))
 
 
 # The second rule 4 route: an item an each over llm text doubts is that text, now in doubts. An each
@@ -1051,7 +1078,7 @@ def test_a_pick_over_a_table_built_on_an_llm_list_cannot_put_its_item_in_a_comma
 def test_a_doubt_of_an_each_over_llm_text_cannot_enter_a_command(kind, send):
     habit = small(look={"llm": "List the files the page names.", "schema": {"files": "list"}, "as": "words",
                         "next": "kind"}, kind=kind, send=send)
-    assert any("a value written by an llm node" in m for m in messages(habit))
+    assert any("a value written by an llm step" in m for m in messages(habit))
     habit["nodes"]["send"] = {"do": "write_file", "each": "doubts", "args": {"path": "~/notes/doubts.md",
                                                                           "content": "{item.item}"}, "next": "done"}
     assert messages(habit) == []  # in a file or a message it is only text

@@ -18,12 +18,52 @@ TEMPLATE = VIEW / "template.html"
 GALLERY = VIEW / "gallery.html"
 TOKEN = "/*HABITS_DATA*/null"
 STATIC = "<!--HABITS_STATIC-->"
-VERBS = ("ask", "check", "do", "llm", "use", "end", "wake")
+VERBS = graph.VERBS
 # The ledger's states and a run's outcomes in the README's words (the pages' scripts keep the same two maps).
 STATES = {"active": "automatic", "shadow": "learning", "retired": "resting", "live": "called by name",
           "one-off": "run once"}
 OUTCOMES = {"end": "done", "wake": "handed back"}
-KINDS = {"request": "request", "watch": "scheduled"}  # a habit with no trigger: its state says "called by name"
+FTITLE = '<span id="ftitle">~/reflexes</span>'  # the frame's title in both templates; the script rewrites it, the plain page needs it too
+MARK = ('<span class="mark"><svg viewBox="0 0 66 20" aria-hidden="true"><path class="d" d="M9 2 16 9 9 16 2 9Z"/>'
+        '<path class="w" d="M16 9h6"/><rect class="s" x="22" y="4" width="10" height="10"/><path class="w" d="M32 9h6"/>'
+        '<circle class="r" cx="44" cy="9" r="5.5"/></svg>Habits</span>')  # the mark of the film, as in both templates
+
+
+def start(trigger) -> str:
+    """How a reflex starts, in the contract's words: called, message, schedule · every 1d, skill."""
+    if trigger is None:
+        return "called"
+    if trigger in ("message", "skill"):
+        return str(trigger)
+    if isinstance(trigger, dict) and isinstance(trigger.get("every"), str):
+        return f"schedule · every {trigger['every']}" + (f" at {trigger['at']}" if trigger.get("at") else "")
+    return json.dumps(trigger, ensure_ascii=False, default=str)  # a start it does not know, as written
+
+
+def _start_of(data: dict) -> str:
+    habit = data.get("habit")
+    return start(habit.get("trigger") if isinstance(habit, dict) else None)
+
+
+def cut(text: str, n: int) -> str:
+    """At most n characters, cut at a word and marked with "…"."""
+    text = " ".join(text.split())
+    if len(text) <= n:
+        return text
+    head = text[:n]
+    if text[n] != " " and " " in head[n // 2:]:
+        head = head[:head.rindex(" ")]
+    return head.rstrip(" ,;:.-") + "…"
+
+
+def check_words(rule) -> str:
+    """A check as words: {greater: [disk, 89]} is "disk greater than 89", {empty: gateway} is "empty gateway"."""
+    if not isinstance(rule, dict) or len(rule) != 1:
+        return str(rule)
+    (op, value), = rule.items()
+    if isinstance(value, list) and len(value) == 2:
+        return f"{value[0]} {({'greater': 'greater than'}).get(op, op)} {value[1]}"
+    return f"{op} {value}"
 
 
 def shown(status) -> str:
@@ -31,11 +71,11 @@ def shown(status) -> str:
 
 
 def head(data: dict) -> str:
-    """Its state and its kind in the README's words: "learning · request", "called by name"."""
-    if data.get("origin") == "example":  # an example never learns: it runs when called by name
-        return "example · called by name"
-    kind = KINDS.get(str(data.get("kind") or ""), "")
-    return " · ".join(x for x in (shown(data.get("status")), kind) if x)
+    """Its state and how it starts in the README's words: "learning · message", "example · schedule · every 1d"."""
+    if data.get("origin") == "example":  # an example never learns: it runs when asked for
+        return f"example · {_start_of(data)}"
+    state, how = shown(data.get("status")), _start_of(data)
+    return " · ".join(x for x in ([how] if data.get("status") == "live" else [state, how]) if x)  # "called by name" is the start already
 
 
 def blob(data) -> str:
@@ -53,7 +93,7 @@ def _tokens(n) -> str:
 
 
 def plural(n, word: str) -> str:
-    """1 wake, 2 wakes, 0 wakes."""
+    """1 check, 2 checks, 0 checks."""
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
@@ -61,7 +101,7 @@ def facts(data: dict) -> list[str]:
     """The numbers of a habit in a few short lines: agreement, gain in time and tokens, runs."""
     s, lines = data.get("summary") or {}, []
     if data.get("kind") == "watch":
-        lines.append(f"{plural(s.get('runs', 0), 'check')} · {plural(s.get('woke', 0), 'wake')}")
+        lines.append(f"{plural(s.get('runs', 0), 'check')} · {s.get('woke', 0)} handed back")
     elif data.get("kind") == "one-off":  # run by name, always live: nothing to compare
         if data.get("origin") != "one-off" and "runs" in s:  # a saved habit, not a scenario run once nor a replay
             lines.append(f"called by name, never compared · {plural(s.get('runs', 0), 'run')}")
@@ -81,7 +121,10 @@ def static(data: dict) -> str:
     e = html.escape
     run = data.get("run") or {}
     nodes = (data.get("habit") or {}).get("nodes") or {}
-    parts = [f"<h1>{e(str(data.get('name') or 'Habit'))}</h1>",
+    name = str(data.get("name") or "Habit")
+    label = "The reflex" if not run else "Run · " + ("handed back" if run.get("status") == "wake" or run.get("failed") else "done")
+    parts = [f"<div class='top'><span class='lab{' hand' if 'handed' in label else ''}'>{e(label)}</span></div>",
+             f"<div class='titles'><h1>{e(name)}</h1></div>",
              f"<p class='desc'>{e(str(data.get('description') or ''))}</p>",
              f"<p><b>{e(head(data))}</b></p>"]
     parts += [f"<p>{e(line)}</p>" for line in (facts(data) if data.get("origin") != "example" else [])]
@@ -105,10 +148,12 @@ def static(data: dict) -> str:
         node = nodes[name]
         if isinstance(node, dict):
             verb = next((v for v in VERBS if v in node), "")
-            rows.append(f"<li><b>{e(str(name))}</b> · {e(verb)} · {e(str(node.get(verb, ''))[:160])}</li>")
+            what = check_words(node["check"]) if verb == "check" else str(node.get(verb, ""))
+            rows.append(f"<li><b>{e(str(name))}</b> · {e(verb)} · {e(cut(what, 160))}</li>")
     if rows:
-        parts.append(f"<h2>Graph: {len(rows)} nodes</h2><ul>{''.join(rows)}</ul>")
+        parts.append(f"<h2>Reflex: {plural(len(rows), 'step')}</h2><ul>{''.join(rows)}</ul>")
     parts.append("<p class='dim'>Open this file in a browser for the interactive diagram and its replay.</p>")
+    parts.append(f"<footer class='foot'><span>Generated {e(str(data.get('generated') or ''))} by hermes habits view</span>{MARK}</footer>")
     return "".join(parts)
 
 
@@ -116,6 +161,7 @@ def page(data: dict) -> str:
     """The template with the data inlined, and its plain summary."""
     data = {**data, "generated": data.get("generated") or time.strftime("%Y-%m-%d %H:%M")}
     text = TEMPLATE.read_text(encoding="utf-8")
+    text = text.replace(FTITLE, f'<span id="ftitle">~/reflexes/{html.escape(str(data.get("name") or ""))}</span>', 1)
     return text.replace(STATIC, static(data), 1).replace(TOKEN, blob(data), 1)
 
 
@@ -129,9 +175,11 @@ def gallery(items: list[dict]) -> str:
                 f"<br><span class='dim'>{e(str(d.get('description') or ''))}</span>{lines}</p>")
     mine = [d for d in items if d.get("origin") != "example"]
     examples = [d for d in items if d.get("origin") == "example"]
-    plain = (f"<h1>Habits</h1><p>{len(mine)} habits of your own</p>" + "".join(card(d) for d in mine)
+    plain = ("<div class='top'><span class='lab'>All habits</span></div><h1>Your habits</h1>"
+             f"<p>{plural(len(mine), 'habit')} of your own</p>" + "".join(card(d) for d in mine)
              + (f"<h2>Examples shipped with the plugin</h2>" + "".join(card(d) for d in examples) if examples else "")
-             + "<p class='dim'>Open this file in a browser for the cards and each habit's diagram.</p>")
+             + "<p class='dim'>Open this file in a browser for the cards and each habit's diagram.</p>"
+             + f"<footer class='foot'><span>Generated {time.strftime('%Y-%m-%d %H:%M')} by hermes habits view</span>{MARK}</footer>")
     data = {"generated": time.strftime("%Y-%m-%d %H:%M"), "habits": items,
             "template": TEMPLATE.read_text(encoding="utf-8").replace(STATIC, "", 1)}
     text = GALLERY.read_text(encoding="utf-8")
