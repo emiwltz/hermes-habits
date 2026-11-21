@@ -30,8 +30,9 @@ class Local:
         return self.home + word[1:] if word == "~" or word.startswith("~/") else word
 
     def environment(self) -> dict:
-        """The variables its commands run with; os.getenv in a reflex reads the same."""
-        return {**os.environ, "HOME": self.home, **self.env}
+        """The variables its commands run with; os.getenv in a reflex reads the same. git is told not to refresh its
+        index behind a read (status and diff would otherwise write .git/index)."""
+        return {**os.environ, "HOME": self.home, "GIT_OPTIONAL_LOCKS": "0", **self.env}
 
     def reads_only(self, argv: list) -> str:
         """"" when the command only reads, else why it is not a read."""

@@ -18,6 +18,11 @@ systemctl --user is-active x | systemctl status x --no-pager -n 20 | journalctl 
 journalctl -b -1 -p err | docker ps -a --format {{.Names}} | docker logs --tail 50 x | kubectl get pods -n ns -o json
 hermes logs agent --since 30m -n 5000 | hermes --version | crontab -l | pmset -g batt | vcgencmd measure_temp
 python3 --version | node -v | java -version | /usr/bin/ls -la | /bin/cat x
+journalctl -n20 -u x | journalctl --lines=20 | journalctl --boot=-1 -p err | date --iso-8601=seconds | date --iso-8601
+git branch --color=always -a | git config user.email | git config --global user.name | tree -aL 2 x
+lsof -nP -iTCP -sTCP:LISTEN | lsof -i | ss -tlnp | ss -tulpn state listening | netstat -an | printenv HOME
+ping -c1 example.com | ip addr | ip -br a | ip route show | ip -4 addr show dev eth0 | ip route get 1.1.1.1
+curl -s --max-redirs 3 https://a | curl -s localhost:8080/health | curl -sN --no-progress-meter https://a
 """
 NOT_READS = [
     # programs that are not readers at all
@@ -46,6 +51,24 @@ NOT_READS = [
     ("curl -K cfg https://a", "curl -K"), ("curl -T f https://a", "curl -T"), ("curl", "no URL"),
     ("curl -w %output{/tmp/x}hi https://a", "writes a file"), ("curl --url gopher://h:1/_x https://a", "http and https only"),
     ("curl -D headers https://a", "curl -D"), ("curl -c jar https://a", "curl -c"),
+    # an option whose value is optional never hides the next word
+    ("journalctl -n --vacuum-files=1", "journalctl --vacuum-files"), ("journalctl --boot --rotate", "journalctl --rotate"),
+    ("journalctl --lines --vacuum-time=1s", "journalctl --vacuum-time"), ("lsof -i -Db", "lsof -D"),
+    ("date --iso-8601 --set=2001-01-01", "date --set"), ("git branch --color --unset-upstream", "git branch --unset-upstream"),
+    ("git branch --color --edit-description", "git branch --edit-description"),
+    # BSD date sets the clock from a value unless -j; tree reads a bundle its own way
+    ("date -f %s 0", "sets the clock"), ("date -v +1d 0101000070", "sets the clock"),
+    ("tree -Lo 2 out.txt", "takes its value in the next word"),
+    # a scheme with one slash is a scheme too, and curl guesses one from a host name
+    ("curl gopher:/127.0.0.1:6379/_x", "http and https only"), ("curl dict:/h/info", "http and https only"),
+    ("curl --url telnet:/h:1", "http and https only"), ("curl ftp.example.com/f", "http and https only"),
+    ("curl FILE:/etc/passwd", "http and https only"),
+    # programs that run or fetch another one behind an innocent word
+    ("arch -arm64 /bin/rm x", "arch is not known"), ("go --version", "go is not known"),
+    ("cargo --version", "cargo is not known"), ("git log --show-signature", "git --show-signature"),
+    ("git log --format=%G?", "runs gpg"), ("ss -K dst 1.2.3.4", "ss -K"), ("ss -D out", "ss -D"),
+    ("ip addr add 1.2.3.4 dev eth0", "ip reads only"), ("ip -b file", "ip reads only"),
+    ("ip link set eth0 down", "ip reads only"), ("ip a a 1.2.3.4 dev x", "ip reads only"), ("ping -c50 x", "never ends"),
     # git: what changes something, and what can write a file or run a program, however it is spelt
     ("git push", "git push is not listed"), ("git commit -m x", "git commit"), ("git grep -n TODO", "git grep"),
     ("git grep --open=evil x", "git --open"), ("git log --outp=x", "git --outp"), ("git show --ext", "git --ext"),
@@ -61,7 +84,7 @@ NOT_READS = [
     # a subcommand hidden behind an option, and subcommands that change something
     ("pip --log list uninstall x", "pip runs code"), ("docker -l info context create x", "the subcommand comes first"),
     ("kubectl -n get delete pod x", "the subcommand comes first"), ("npm --prefix ls install", "npm runs code"),
-    ("go env -w GOFLAGS=x", "go runs code"), ("cargo metadata --config build.rustc=x", "cargo runs code"),
+    ("go env -w GOFLAGS=x", "go is not known"), ("cargo metadata --config build.rustc=x", "cargo is not known"),
     ("systemctl restart x", "systemctl restart"), ("systemctl -H host status x", "the subcommand comes first"),
     ("systemctl status x -H host", "systemctl status -H"), ("docker rm x", "docker rm"),
     ("docker logs -f x", "never ends"), ("docker logs -tf x", "never ends"), ("kubectl get pods -w", "never ends"),
