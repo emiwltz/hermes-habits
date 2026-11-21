@@ -8,7 +8,7 @@ process of its own: it touches the world only through `rx`, and every call to `r
     rx.read(path)               the text of a file
     rx.write(path, text)        write a file                      only planned in a dry run
     rx.ask(question, options)   a closed question for the small model; what it is unsure of goes up
-    rx.up(question)             one precise question for the big model: the run freezes, then carries on
+    rx.up(question, options)    one precise question for the big model: the run freezes, then carries on
 
 A run ends in one of three ways: done (the reflex returned), asks (it is frozen on a question; `resume` carries on
 with the answer) or stopped (something went wrong: the reason, and what was done before).
@@ -59,6 +59,7 @@ LENT = {
                                                         "digits", "hexdigits", "punctuation", "whitespace")},
 }
 TAIL = "\n\nimport rx\n__reflex_inputs__ = dict(__reflex_inputs__)\n{call}\n"
+READY = ("re", "json", "math", "datetime", "collections", "itertools", "functools", "os")  # there without an import
 
 
 @dataclass
@@ -123,6 +124,35 @@ def describe(source: str) -> dict:
     return {"doc": doc.strip(), "inputs": inputs, "rx": takes_rx, "open": args.kwarg is not None}
 
 
+def _prepared(source: str) -> tuple:
+    """(the code the sandbox runs, how many lines it adds before the author's first line).
+
+    The everyday modules the reflex did not bind itself are imported for it: a forgotten `import re` is not worth a
+    failed run. The import is one line put first; after a `from __future__` import, which must stay first, it goes
+    on that same line instead and adds none."""
+    tree = ast.parse(source)
+    bound = set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound |= {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            bound |= {n.id for target in targets for n in ast.walk(target) if isinstance(n, ast.Name)}
+    names = [("os.path" if name == "os" else name) for name in READY if name not in bound]
+    ready = "import " + ", ".join(names) if names else "pass"
+    code = _first_of(source)
+    future = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "__future__"]
+    if not future:
+        return ready + "\n" + code, 1
+    lines = code.split("\n")
+    at, col = future[-1].end_lineno - 1, future[-1].end_col_offset
+    row = lines[at].encode()
+    lines[at] = (row[:col] + b"; " + ready.encode() + row[col:]).decode()
+    return "\n".join(lines), 0
+
+
 def _first_of(source: str) -> str:
     """next(x for x in ...) as Python means it. The sandbox builds a generator expression as a list, which next()
     refuses: the expression is wrapped in iter(), in place, so every line keeps its number."""
@@ -163,7 +193,8 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
     except Refused as exc:
         return job.stopped(str(exc))
     call = "reflex(rx, **__reflex_inputs__)" if about["rx"] else "reflex(**__reflex_inputs__)"
-    return job.start(_first_of(source) + TAIL.format(call=call), given)
+    code, job.shift = _prepared(source)
+    return job.start(code + TAIL.format(call=call), given)
 
 
 def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
@@ -177,6 +208,7 @@ def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
         return Outcome("stopped", reason=f"this run cannot be carried on: {exc}")
     job = _Run(host, decider, meta["dry"], meta["limits"], meta["min_confidence"])
     job.effects, job.planned, job.printed, job.spent = meta["effects"], meta["planned"], meta["output"], meta["ms"]
+    job.shift = meta.get("shift", 0)
     return job.carry_on(snapshot, meta["pending"], answer, state)
 
 
@@ -237,6 +269,7 @@ class _Run:
         self.effects, self.planned, self.printed, self.spent = [], [], "", 0
         self.began = time.monotonic()
         self.last_error = ""
+        self.shift = 0  # lines the engine put before the author's first one
 
     # ---- the three ends ---------------------------------------------------------------------------------------
 
@@ -296,6 +329,7 @@ class _Run:
                 continue
             except _Pause as pause:
                 head = json.dumps({"dry": self.dry, "limits": self.limits, "min_confidence": self.min_confidence,
+                                   "shift": self.shift,
                                    "effects": self.effects, "planned": self.planned, "output": self.printed,
                                    "ms": self.ms(), "pending": {**pause.pending, "asks": pause.asks}}, default=str)
                 return self.outcome("asks", asks=pause.asks, state=MARK + head.encode() + b"\n" + snap.dump())
@@ -334,7 +368,7 @@ class _Run:
             frames = [f for f in exc.traceback() if f.function_name != "<module>"]
         except Exception:  # an error with no frames to show
             frames = []
-        line = f" (line {frames[-1].line} of the reflex)" if frames else ""
+        line = f" (line {frames[-1].line - self.shift} of the reflex)" if frames else ""
         return f"{text}{line}"
 
     # ---- the verbs --------------------------------------------------------------------------------------------
@@ -531,16 +565,24 @@ class _Run:
                           "items": items, "unsure": [_key(i) for i in unsure]}, asks)
         return _answers(sure, items, many, yes_no)
 
-    def rx_up(self, question, **context):
-        """One precise question for the big model. The run freezes; it carries on with the answer."""
+    def rx_up(self, question, options=None, **context):
+        """One precise question for the big model. The run freezes; it carries on with the answer.
+        With options the answer is one of them; without, it is whatever the big model gives."""
         question = _text("up", "question", question)
+        choices = None if options is None else [str(o) for o in options]
+        if choices is not None and (len(choices) < 2 or len(set(choices)) != len(choices)):
+            raise _Raise(ValueError("rx.up: options are at least two different answers"))
         self.note("up", question, time.monotonic())
-        raise _Pause({"verb": "up"}, {"question": question, **context})
+        raise _Pause({"verb": "up", "options": choices},
+                     {"question": question, **({"options": choices} if choices else {}), **context})
 
     def answered(self, pending: dict, answer):
         """The value the frozen call gives back, from the answer; Refused when it does not fit the question."""
         if pending["verb"] == "up":
-            return answer
+            choices = pending.get("options")
+            if choices and str(answer).strip() not in choices:
+                raise Refused(f"{answer!r} is not one of {', '.join(choices)}")
+            return str(answer).strip() if choices else answer
         options, unsure = pending["options"], pending["unsure"]
         if not isinstance(answer, dict):
             if len(unsure) != 1:

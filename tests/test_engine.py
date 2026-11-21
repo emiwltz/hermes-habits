@@ -366,3 +366,40 @@ def test_the_journal_says_which_reads_left_the_machine():
 def test_the_environment_stays_outside(host):
     outcome = run(reflex("import os\nreturn [os.getenv('SECRET_KEY'), os.getenv('HOME')]"), {}, host)
     assert outcome.result == [None, "/home/me"]
+
+
+def test_the_everyday_modules_are_there_without_an_import(host):
+    outcome = run(reflex("""
+found = re.findall(r"\\d+", "a1b22")
+return [found, json.dumps({"n": math.floor(2.5)}), os.path.basename("/a/b.txt"), collections.Counter("aab")["a"]]
+"""), {}, host)
+    assert outcome.result == [["1", "22"], '{"n": 2}', "b.txt", 2]
+
+
+def test_a_name_the_reflex_binds_itself_is_left_alone(host):
+    source = "import os.path\nre = 'mine'\njson = 3\n\ndef reflex(rx):\n    return [re, json, os.path.basename('/a/b')]\n"
+    assert run(source, {}, host).result == ["mine", 3, "b"]
+
+
+def test_line_numbers_are_those_of_the_source_the_author_wrote(host):
+    source = "import re\n\ndef reflex(rx):\n    x = 1\n    return {}['missing']\n"
+    assert run(source, {}, host).reason == "KeyError: missing (line 5 of the reflex)"
+
+
+def test_a_future_import_stays_first_and_lines_stay_true(host):
+    source = ("from __future__ import annotations  # as some write it\n\n"
+              "def reflex(rx, n: int = 2) -> dict:\n    found = re.findall('a', 'aa')\n    return {}['missing']\n")
+    assert run(source, {}, host).reason == "KeyError: missing (line 5 of the reflex)"
+
+
+def test_an_error_after_a_resume_still_names_the_authors_line(host):
+    asked = run(reflex("answer = rx.up('Which?')\nreturn {}[answer]"), {}, host)
+    assert resume(asked.state, "nope", host).reason == "KeyError: nope (line 3 of the reflex)"
+
+
+def test_up_with_options_takes_only_one_of_them(host):
+    asked = run(reflex("return rx.up('Which part?', ['major', 'minor'], commits=['a', 'b'])"), {}, host)
+    assert asked.asks == {"question": "Which part?", "options": ["major", "minor"], "commits": ["a", "b"]}
+    again = resume(asked.state, "the minor one", host)
+    assert again.status == "asks" and again.asks["error"] == "'the minor one' is not one of major, minor"
+    assert resume(asked.state, " minor ", host).result == "minor"

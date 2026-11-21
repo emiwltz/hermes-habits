@@ -21,5 +21,8 @@ reflex = "reflexes.cli:main"
 [tool.setuptools]
 packages = ["reflexes"]
 
+[tool.setuptools.package-data]
+reflexes = ["GUIDE.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,4 +1,4 @@
-"""The command line: reflex list | show | run | test | answer.
+"""The command line: reflex list | show | run | test | answer | guide.
 
 What it prints is written for the model that called it: the answer first, then only what it needs to trust it or to
 carry on. Exit code: 0 done, 3 asks (a question waits), 1 stopped, 2 a call that could not start.
@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 from . import decide, engine, store
 from .host import Local
@@ -18,18 +20,24 @@ reflex show <name>                    one reflex's source
 reflex run <name|file.py> [k=v ...]   run it
 reflex test <name|file.py> [k=v ...]  dry run: reads and questions happen, changes are only listed
 reflex answer <id> <answer>           carry on a run that asked
+reflex guide                          how to write a reflex
 Add --json to run, test and answer for the whole result as JSON."""
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="reflex", usage=USAGE, add_help=True)
-    parser.add_argument("command", choices=["list", "show", "run", "test", "answer"])
+    parser.add_argument("command", choices=["list", "show", "run", "test", "answer", "guide"])
     parser.add_argument("target", nargs="?")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "list":
         return _list()
+    if args.command == "guide":
+        print((Path(__file__).parent / "GUIDE.md").read_text(encoding="utf-8").rstrip())
+        print("\nA reflex is a file <name>.py in " + " or ".join(str(f) for f in store.folders())
+              + f". Try it with `{_me()} test <name>` (a dry run), then `{_me()} run <name>`.")
+        return 0
     if not args.target:
         return _fail(f"reflex {args.command} needs a {'run id' if args.command == 'answer' else 'reflex name'}")
     if args.command == "answer":
@@ -88,11 +96,16 @@ def _answer(run_id: str, text: str, as_json: bool) -> int:
     if state is None:
         return _fail(f"no run {run_id} waits for an answer (a question is kept one day, and answered once)")
     if not text.strip():
-        return _fail("give the answer: reflex answer <id> '<answer>'")
+        return _fail(f"give the answer: {_me()} answer <id> '<answer>'")
     outcome = engine.resume(state, _value(text), Local(), decider=decide.from_env())
     if not (outcome.status == "asks" and outcome.state == state):  # anything but the same question again
         store.drop(run_id)
     return _report(outcome, as_json, run_id if outcome.state == state else None)
+
+
+def _me() -> str:
+    """How this command is called here, for the hints it prints (a host that wraps it says so in REFLEX_COMMAND)."""
+    return os.environ.get("REFLEX_COMMAND") or "reflex"
 
 
 def _fail(message: str) -> int:
@@ -106,7 +119,7 @@ def _report(outcome, as_json: bool, run_id: str | None = None) -> int:
     if as_json:
         data = outcome.to_dict()
         if run_id:
-            data["answer_with"] = f"reflex answer {run_id} '<answer>'"
+            data["answer_with"] = f"{_me()} answer {run_id} '<answer>'"
         print(json.dumps(data, ensure_ascii=False, default=str))
     else:
         print(_tilde(render(outcome, run_id)))
@@ -148,7 +161,7 @@ def render(outcome, run_id: str | None = None) -> str:
             form = "{" + ", ".join(f'"{e["item"]}": "…"' for e in about[:2]) + (", …}" if len(about) > 2 else "}")
         else:
             form = "<one option>" if options else "<your answer>"
-        lines.append(f"answer with: reflex answer {run_id} '{form}'")
+        lines.append(f"answer with: {_me()} answer {run_id} '{form}'")
         if outcome.dry:
             lines.append("(dry run: nothing was changed so far)")
     else:
