@@ -17,6 +17,7 @@ Commands arrive as a list of words and run without a shell, so there is no pipe,
 from __future__ import annotations
 
 import os
+import re
 
 # Folders a program may be named from by its full path; anywhere else, ./ls is not ls.
 SYSTEM = ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin", "/opt/homebrew/bin",
@@ -178,6 +179,7 @@ CURL_VALUED = {"-m", "--max-time", "-A", "--user-agent", "-H", "--header", "-r",
                "--max-filesize"}
 CURL_BUNDLE = set("sSLfIik46gN")
 CURL_GUESSED = ("ftp.", "dict.", "ldap.", "imap.", "smtp.", "pop3.")  # with no scheme, curl guesses one from these
+CURL_HOST = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?([/?#][\x21-\x7e]*)?$")
 IP = {"addr": {"show", "list", "ls"}, "link": {"show", "list", "ls"}, "route": {"show", "list", "ls", "get"},
       "neigh": {"show", "list", "ls"}, "rule": {"show", "list", "ls"}}
 IP_NAMES = {"a": "addr", "address": "addr", "l": "link", "r": "route", "n": "neigh", "neighbor": "neigh",
@@ -320,8 +322,11 @@ def _curl(args: list) -> str:
     while i < len(args):
         word = args[i]
         if word in ("-w", "--write-out"):
-            if "%output" in "".join(args[i + 1:i + 2]) or "%{output" in "".join(args[i + 1:i + 2]):
+            form = "".join(args[i + 1:i + 2])
+            if "%output" in form or "%{output" in form:
                 return "curl -w with %output writes a file"
+            if form.startswith("@"):  # the format is read from a file or from the input: it may say %output
+                return "curl -w @file takes its format from somewhere this table cannot read"
             i += 2
         elif word == "--url":
             urls += args[i + 1:i + 2]
@@ -349,9 +354,10 @@ def _curl(args: list) -> str:
         low = url.lower()
         if low.startswith(("http://", "https://")):
             continue
-        scheme = low.split(":", 1)[0] if ":" in low else ""
-        if (scheme and low[len(scheme) + 1:len(scheme) + 2] == "/") or low.startswith(CURL_GUESSED):
-            return f"curl reads http and https only, not {url[:40]}"  # gopher:/host is a scheme too, with one slash
+        # no scheme: a plain host, with a port and a path if any. Anything else could be read by curl as another
+        # scheme (gopher:/host with one slash, a@dict.host with a user before a host it guesses the scheme from)
+        if not CURL_HOST.match(low) or low.startswith(CURL_GUESSED):
+            return f"curl reads http and https only, not {url[:40]}"
     return ""
 
 

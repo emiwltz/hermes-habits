@@ -86,8 +86,17 @@ keeps its number, and a rewrite that does not parse is dropped):
   sandbox builds a generator expression as a whole list, so `any(install(rx, n) for n in names)` ran `rx.do` for
   every name. That one was a real fault: changes Python would never have made.
 - `next()` of `map`, `filter`, `zip`, `enumerate` or `reversed`, which are lists in the sandbox.
-- a method handed over where a function is expected (`key=str.lower`, `key=counts.get`, `map(str.strip, lines)`):
-  the sandbox has no such value.
+- a method handed over where a function is expected (`sorted(key=str.lower)`, `max(key=counts.get)`,
+  `map(str.strip, lines)`): the sandbox has no such value.
+
+A rewrite is a claim that the new text means what the old one meant, and the first version of this one claimed too
+much. A review that ran 155 sources through CPython and the engine side by side showed it: every `key=` argument
+was taken for a function, even `dict(key=cfg.name)`; a search drained an iterator the author went on using; a
+variable named `iter` broke it. It is now narrow on purpose. A search stops where Python stops, through a small
+iterator of the engine's own that ends once the item is found. Only the `key` of `sorted`, `min`, `max`, `.sort`
+and `groupby` is a function. A name the author gave another meaning, anywhere, is left alone, and so is
+`f"{x=}"`, which shows its own text. One difference is known and kept: in `next(search, default)` the default is
+computed after the search, not before.
 
 Three builtins answered wrongly without an error, which is the worst kind. `hasattr` was always False on a text, a
 list or a dict; `round(2.675, 2)` gave 2.68; `datetime.strptime` forgot a lone `%H` and refused a time without a
@@ -114,6 +123,10 @@ reading it, and the program read that word as another option: `journalctl -n --v
 option never takes the next word now. The same round took out `arch` (on macOS it runs a program) and `go`, `cargo`
 and `rustc` (their `--version` can download a toolchain), and closed `curl gopher:/host`, a scheme with one slash.
 
+A third round found two more ways around `curl`, both closed: `-w @file` took its format, `%output{...}` and
+all, from a file the table could not read; and `a@dict.host` put a user name in front of a host from which curl
+guesses another protocol. A URL with no scheme is now a plain host, a port and a path, or it is refused.
+
 What stays: a program's own caches. `git diff` may refresh the stat data of `.git/index`, `kubectl` writes its
 discovery cache. Nothing the user made changes, but "changes nothing" is true of their files, not of every byte.
 
@@ -126,7 +139,10 @@ The engine knows nothing of its host but a few members: run a command, read and 
 only reads, how many commands it takes at once, its folder, its home and the environment it gives.
 `reflexes/host.py` is the local one: it stops a command past 8 MB of output and reads regular files only, so
 nothing a reflex reads can fill the memory or wait forever. A run that asked carries on in the folder it started
-in, wherever its answer is given. A probe ran the engine inside
+in, wherever its answer is given. A command runs in its caller's own group of processes: a caller that gives up
+(Ctrl-C, a kill) stops it too, and the run ends "stopped: interrupted" with what it had done; a command that is
+late is killed with whatever it started. A caller that is killed outright with no chance to clean up leaves a
+running command to finish: nothing here can prevent that. A probe ran the engine inside
 Hermes's own Python (3.14) with Hermes's terminal tool as the host: the `hermes-health` example made its six reads
 through Hermes and gave its verdict in 2.5 s, with no model. Hermes runs the commands of one task in one shell, so
 its host takes one command at a time.

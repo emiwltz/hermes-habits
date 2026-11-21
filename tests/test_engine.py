@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from conftest import FakeHost, decider
@@ -761,3 +763,129 @@ def test_what_the_sandbox_lacks_is_said_as_it_is(host, body, said):
 def test_helpers_of_the_host_can_be_called_thousands_of_times(host):
     outcome = run(reflex("import shlex\nreturn len([shlex.quote('a b') for _ in range(3000)])"), {}, host)
     assert outcome.result == 3000
+
+
+# ---- what a third review found, each kept as a test -----------------------------------------------------------
+
+def test_a_search_leaves_a_shared_iterator_just_after_what_it_found(host):
+    outcome = run(reflex("""
+lines = iter(["skip", "# head", "a", "b"])
+head = next(line for line in lines if line.startswith("#"))
+for line in lines:
+    rx.do(["echo", line])
+numbers = iter(range(10))
+return [head, any(n > 2 for n in numbers), list(numbers)[:2], next(n for n in itertools.count(1) if n * n > 500)]
+"""), {}, host)
+    assert outcome.result == ["# head", True, [4, 5], 23], outcome.reason
+    assert host.ran == [["echo", "a"], ["echo", "b"]]
+
+
+def test_a_function_made_in_a_search_keeps_the_item_it_was_made_for(host):
+    assert run(reflex("made = next(lambda: x for x in [1, 2, 3])\nreturn made()"), {}, host).result == 1
+
+
+def test_names_the_author_gave_another_meaning_are_left_alone(host):
+    outcome = run("""
+def put(key, value):
+    return f"{key}={value}"
+
+class Day:
+    def strptime(self, text):
+        return "mine:" + text
+
+def reflex(rx, iter=2):
+    when = datetime.date(2024, 1, 2)
+    dict = {"a": 2, "b": 1}
+    found = [next(x for x in [10, 20] if x > 10) for iter in range(iter)]
+    return [put(key=when.year, value=1), sorted(dict, key=dict.get), found, Day().strptime("x"),
+            {"key": when.month}["key"]]
+""", {}, host)
+    assert outcome.result == ["2024=1", ["b", "a"], [20, 20], "mine:x", 1], outcome.reason
+    again = run("def reflex(rx):\n    next = lambda found: 'mine'\n    return next(x for x in [1])\n", {}, host)
+    assert again.result == "mine"
+
+
+def test_the_owner_of_a_method_handed_over_is_read_once_as_python_reads_it(host):
+    outcome = run(reflex("""
+tables = [{"b": 1, "a": 2}, {"b": 9, "a": 0}]
+pick = iter(tables)
+counts = {"x": 2, "y": 1}
+first = sorted(["a", "b"], key=tables[0].get)
+counts_then = max(counts, key=counts.get)
+grouped = [(k, len(list(g))) for k, g in itertools.groupby(["x", "x", "y"], key=counts.get)]
+try:
+    sorted(["a", "b"], key=next(pick).get)
+except AttributeError:
+    left = "left as it is"
+return [first, counts_then, grouped, left]
+"""), {}, host)
+    assert outcome.result == [["b", "a"], "x", [(2, 2), (1, 1)], "left as it is"], outcome.reason
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="before 3.12 Python does not say where an f-string's parts are")
+def test_inside_an_f_string_too(host):
+    outcome = run(reflex("counts = {'x': 2, 'y': 1}\n"
+                         "return f'{sorted(counts, key=counts.get)} {next(n for n in [7, 8] if n > 7)}'"), {}, host)
+    assert outcome.result == "['y', 'x'] 8", outcome.reason
+
+
+def test_a_text_that_shows_its_own_source_shows_the_authors(host):
+    outcome = run(reflex("xs = [1, 2]\nd = {'b': 1, 'a': 2}\nreturn [f'{any(x > 1 for x in xs)=}', f'{sorted(d)=}']"),
+                  {}, host)
+    assert outcome.result == ["any(x > 1 for x in xs)=True", "sorted(d)=['a', 'b']"]
+
+
+def test_a_method_of_a_type_given_the_wrong_thing_fails_as_in_python(host):
+    outcome = run(reflex("""
+try:
+    return list(map(str.strip, [" a ", None]))
+except TypeError as exc:
+    return str(exc)
+"""), {}, host)
+    assert outcome.result == "descriptor 'strip' for 'str' objects doesn't apply to a 'NoneType' object"
+    assert run(reflex("return list(map(bytes.fromhex, ['41']))"), {}, host).result == [b"A"]  # a function of the type
+    late = run(reflex("return sorted(\n    ['b', 3],\n    key=str.lower)"), {}, host)
+    assert late.status == "stopped" and "(line 2 of the reflex)" in late.reason  # the call's line, as in Python
+
+
+@pytest.mark.parametrize("head", ["", '"""Doc."""\n', '"""Doc.\n\nMore.\n"""\nfrom __future__ import annotations\n'])
+def test_a_line_is_the_authors_line_wherever_the_engine_put_its_own(host, head):
+    source = head + "def reflex(rx):\n    xs = [0, 1]\n    return any(1 / x for x in xs)\n"
+    outcome = run(source, {}, host)
+    line = source.count("\n")
+    assert outcome.status == "stopped" and f"ZeroDivisionError: division by zero (line {line} of the reflex)" in \
+        outcome.reason, outcome.reason
+    wrong = run(head + "def reflex(rx):\n    return any(x for x in 5)\n", {}, host)
+    assert f"(line {line - 1} of the reflex)" in wrong.reason, wrong.reason
+
+
+def test_a_lent_helper_is_bounded_by_what_it_would_make(host):
+    outcome = run(reflex("import textwrap\nreturn len(textwrap.indent('a\\n' * 20000, prefix='x' * 40000))"), {}, host)
+    assert outcome.status == "stopped" and "characters at most" in outcome.reason
+    assert run(reflex("import textwrap\nreturn textwrap.indent('a\\nb', prefix='  ')"), {}, host).result == "  a\n  b"
+
+
+def test_a_small_model_that_is_late_leaves_time_to_act_on_the_answer(host):
+    import time
+
+    def slow(question, options, items):
+        time.sleep(5)
+        return [("yes", 0.99) for _ in items]
+    asked = run(reflex("ok = rx.ask('keep it?')\nrx.do(['touch', 'kept'])\nreturn ok"), {}, host, decider=slow,
+                limits={"seconds": 2})
+    assert asked.status == "asks" and asked.ms < 1800
+    assert resume(asked.state, "yes", host).result is True and host.ran == [["touch", "kept"]]
+
+
+def test_a_question_sends_up_no_more_than_a_caller_can_answer(host):
+    outcome = run(reflex("return rx.ask('keep?', about=[f'file-{n}' for n in range(300)])"), {}, host)
+    assert outcome.status == "stopped" and "300 things are in doubt" in outcome.reason
+
+
+def test_an_interrupted_run_ends_with_what_it_had_done(host):
+    stopped = []
+    host.commands = {"second": lambda argv: (_ for _ in ()).throw(KeyboardInterrupt())}
+    host.stop = lambda: stopped.append(True)
+    outcome = run(reflex("rx.do(['first'])\nrx.do(['second'])\nrx.do(['third'])"), {}, host)
+    assert outcome.status == "stopped" and outcome.reason.startswith("interrupted")
+    assert [e["what"] for e in outcome.effects] == ["first"] and stopped == [True]

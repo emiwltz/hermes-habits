@@ -66,3 +66,26 @@ def test_a_frozen_run_knows_the_folder_it_started_in(local, tmp_path):
     asked = run("def reflex(rx):\n    return rx.up('go?') + os.getcwd()\n", {}, local)
     assert started_in(asked.state) == str(tmp_path) and started_in(b"junk") is None
     assert resume(asked.state, "yes ", local).result == "yes " + str(tmp_path)
+
+
+def test_reading_a_folder_by_mistake_costs_no_open_file(local, tmp_path):
+    (tmp_path / "sub").mkdir()
+    before = len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else None
+    for _ in range(50):
+        with pytest.raises(OSError):
+            local.read("sub")
+    assert before is None or len(os.listdir("/proc/self/fd")) == before
+
+
+def test_a_command_stays_in_its_callers_group_and_can_be_stopped_from_outside(local):
+    import threading
+    out, _, _ = local.run(["sh", "-c", "ps -o pgid= -p $$"], 5)
+    assert int(out) == os.getpgrp()  # a caller that kills our group, or Ctrl-C, reaches the command too
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(code=local.run(["sleep", "30"], 60)[2]))
+    began = time.monotonic()
+    worker.start()
+    time.sleep(0.3)
+    local.stop()
+    worker.join(5)
+    assert result["code"] != 0 and time.monotonic() - began < 5 and not local.live

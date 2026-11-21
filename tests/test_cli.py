@@ -356,3 +356,51 @@ def test_a_result_nested_too_deep_is_still_reported(world, capsys):
                                                 "        x = [x]\n    return x\n")
     code, out, _ = call(capsys, "run", "deep")
     assert code == 0 and out.startswith("done:")
+
+
+def test_a_long_answer_comes_by_the_input(world, tmp_path, monkeypatch, capsys):
+    import io
+    code, out, _ = call(capsys, "run", "tidy")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"a note.txt": "text", "p.png": "image"}'))
+    code, out, _ = call(capsys, "answer", run_id, "-")
+    assert code == 0 and out.startswith("done: 2 files sorted.")
+
+
+def test_an_answer_cut_short_is_not_taken_twice(world, tmp_path, monkeypatch, capsys):
+    (world / "reflexes" / "log.py").write_text('''def reflex(rx):
+    if rx.up("log it?", ["yes", "no"]) == "yes":
+        rx.do(["sh", "-c", "echo one >> journal.txt"])
+        rx.do(["sleep", "30"])
+    return "logged"
+''')
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = call(capsys, "run", "log")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    from reflexes.host import Local
+    real = Local.run
+
+    def cut(self, argv, seconds, input=None):
+        if argv[0] == "sleep":
+            raise KeyboardInterrupt
+        return real(self, argv, seconds, input)
+    monkeypatch.setattr(Local, "run", cut)
+    code, out, _ = call(capsys, "answer", run_id, "yes")
+    assert code == 1 and out.startswith("stopped: interrupted") and "echo one >> journal.txt" in out
+    code, _, err = call(capsys, "answer", run_id, "yes")
+    assert code == 2 and "no run" in err and (tmp_path / "journal.txt").read_text() == "one\n"
+
+
+def test_a_name_no_file_can_have_is_a_wrong_call_not_a_crash(world, monkeypatch, capsys):
+    assert cli.main(["run", "a" * 300 + ".py"]) == 2
+    assert cli.main(["test", "~nouser-at-all/x.py"]) == 2
+    monkeypatch.setenv("REFLEX_PATH", "~nouser-at-all/reflexes")
+    assert cli.main(["list"]) == 0
+    capsys.readouterr()
+
+
+def test_the_place_where_runs_wait_is_the_same_from_any_folder(world, tmp_path, monkeypatch):
+    from reflexes import store
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REFLEX_HOME", ".state")
+    assert store.home() == tmp_path / ".state"

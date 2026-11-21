@@ -23,6 +23,7 @@ class Local:
     def __init__(self, cwd: str | None = None, extra_readers: dict | None = None, home: str | None = None,
                  env: dict | None = None):
         self.cwd = cwd or os.getcwd()  # OSError when the folder we are in is gone: there is nowhere to run
+        self.live, self.lock = set(), threading.Lock()  # the commands running now
         self.home = home or os.path.expanduser("~")
         self.extra_readers = extra_readers or {}
         self.env = env or {}  # variables its commands get on top of this process's own
@@ -47,10 +48,11 @@ class Local:
     def run(self, argv: list, seconds: float, input: str | None = None) -> tuple:
         """(output, errors, exit code) of one program, run without a shell. Its output is read as it comes and the
         program is stopped past MOST bytes: an endless one (cat /dev/zero) must not fill this process. Stopped
-        means the program and whatever it started: it runs in a group of its own, and the group is killed."""
+        means the program and whatever it started. It stays in the caller's own group of processes, so that a
+        caller who gives up on the run (Ctrl-C, a kill of the group) stops the command with it."""
         try:
             child = subprocess.Popen(argv, cwd=self.cwd, env=self.environment(), stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, start_new_session=True,
+                                     stderr=subprocess.PIPE,
                                      stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL)
         except FileNotFoundError:
             return "", f"{argv[0]}: command not found", 127
@@ -59,12 +61,11 @@ class Local:
         except NotADirectoryError:
             return "", f"{self.cwd}: not a folder", 126
         kept, over = {"out": bytearray(), "err": bytearray()}, threading.Event()
+        with self.lock:
+            self.live.add(child)
 
         def stop():
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except (OSError, AttributeError):
-                child.kill()
+            _kill(child)
 
         def drain(stream, name):
             try:
@@ -99,6 +100,9 @@ class Local:
         except BaseException:  # interrupted (Ctrl-C): nothing of the command is left behind
             stop()
             raise
+        finally:
+            with self.lock:
+                self.live.discard(child)
         for thread in threads:
             thread.join(1.0)  # a child of the program may still hold the pipes: what came so far is the output
         out, err = (bytes(kept[name]).decode("utf-8", "replace") for name in ("out", "err"))
@@ -108,12 +112,24 @@ class Local:
             return out, f"timed out after {seconds:.0f} s", 124
         return out, err, child.returncode
 
+    def stop(self) -> None:
+        """Stop every command still running (the run they belong to was interrupted)."""
+        with self.lock:
+            running = list(self.live)
+        for child in running:
+            _kill(child)
+
     def read(self, path: str) -> str:
         """The text of a regular file. A pipe or a device is refused: it may never end, or never start."""
         handle = os.open(os.path.join(self.cwd, path), os.O_RDONLY | os.O_NONBLOCK)
-        with os.fdopen(handle, "rb") as file:
+        try:
             if not stat.S_ISREG(os.fstat(handle).st_mode):
                 raise OSError("not a regular file")
+            file = os.fdopen(handle, "rb")
+        except BaseException:
+            os.close(handle)
+            raise
+        with file:
             data = file.read(MOST + 1)
         if len(data) > MOST:
             raise OSError(f"more than {MOST // 1_000_000} MB: read a part of it with rx.sh(['head', ...]) or grep")
@@ -124,3 +140,31 @@ class Local:
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
         with open(full, "a" if append else "w", encoding="utf-8") as handle:
             handle.write(text)
+
+
+def _kill(child) -> None:
+    """Kill a program and whatever it started. Its descendants are found while it still lives (once it is dead they
+    belong to nobody), from the table of processes; without `ps`, the program alone is killed."""
+    try:
+        table = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        table = ""
+    children = {}
+    for line in table.splitlines():
+        pid, _, parent = line.strip().partition(" ")
+        if pid.isdigit() and parent.strip().isdigit():
+            children.setdefault(int(parent), []).append(int(pid))
+    found, todo = [], [child.pid]
+    while todo:
+        for pid in children.get(todo.pop(), []):
+            found.append(pid)
+            todo.append(pid)
+    try:
+        child.kill()
+    except OSError:
+        pass
+    for pid in found:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass

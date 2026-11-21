@@ -23,6 +23,7 @@ git branch --color=always -a | git config user.email | git config --global user.
 lsof -nP -iTCP -sTCP:LISTEN | lsof -i | ss -tlnp | ss -tulpn state listening | netstat -an | printenv HOME
 ping -c1 example.com | ip addr | ip -br a | ip route show | ip -4 addr show dev eth0 | ip route get 1.1.1.1
 curl -s --max-redirs 3 https://a | curl -s localhost:8080/health | curl -sN --no-progress-meter https://a
+curl -s wttr.in/Paris?format=3 | curl -s https://user:pw@example.com/x | curl -s -w %{http_code} 127.0.0.1:8000
 """
 NOT_READS = [
     # programs that are not readers at all
@@ -63,6 +64,11 @@ NOT_READS = [
     ("curl gopher:/127.0.0.1:6379/_x", "http and https only"), ("curl dict:/h/info", "http and https only"),
     ("curl --url telnet:/h:1", "http and https only"), ("curl ftp.example.com/f", "http and https only"),
     ("curl FILE:/etc/passwd", "http and https only"),
+    # what a third review found: a format read from elsewhere, a user before the host curl guesses a scheme from
+    ("curl -s -o /dev/null -w @fmt.txt https://a", "takes its format from somewhere"),
+    ("curl -s -w @- https://a", "takes its format from somewhere"),
+    ("curl -s a@dict.localhost:6390/SET:x:y", "http and https only"),
+    ("curl a@ftp.example.com/f", "http and https only"), ("curl -s [::1]:6379/x", "http and https only"),
     # programs that run or fetch another one behind an innocent word
     ("arch -arm64 /bin/rm x", "arch is not known"), ("go --version", "go is not known"),
     ("cargo --version", "cargo is not known"), ("git log --show-signature", "git --show-signature"),

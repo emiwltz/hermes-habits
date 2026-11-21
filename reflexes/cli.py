@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shlex
+import signal
 import sys
 from pathlib import Path
 
@@ -22,7 +23,7 @@ USAGE = """reflex list                           the reflexes here, one per line
 reflex show <name>                    one reflex's source
 reflex run <name|file.py> [k=v ...]   run it
 reflex test <name|file.py> [k=v ...]  dry run: reads and questions happen, changes are only listed
-reflex answer <id> <answer>           carry on a run that asked
+reflex answer <id> <answer>           carry on a run that asked (- takes the answer from the input)
 reflex guide                          how to write a reflex
 Add --json to run, test and answer for the whole result as JSON."""
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -30,14 +31,26 @@ GONE = "the folder you are in no longer exists: a reflex needs a folder to run i
 
 
 def main(argv=None) -> int:
+    try:  # a caller that gives up on us (a kill, a closed terminal) is an interruption like Ctrl-C: the run stops
+        for sign in (signal.SIGTERM, signal.SIGHUP):  # its commands and says what it had done
+            signal.signal(sign, _interrupted)
+    except (ValueError, OSError, AttributeError):  # not the main thread, or no such signal here
+        pass
     try:
         return _main(list(sys.argv[1:] if argv is None else argv))
+    except KeyboardInterrupt:  # outside a run: nothing was going on
+        print("interrupted", file=sys.stderr)
+        return 130
     except BrokenPipeError:  # the reader closed early (| head): nothing more to say
         try:
             sys.stdout.close()
         except OSError:
             pass
         return 0
+
+
+def _interrupted(sign, frame):
+    raise KeyboardInterrupt
 
 
 def _main(args: list) -> int:
@@ -58,7 +71,8 @@ def _main(args: list) -> int:
         if not rest:
             return _fail(f"give the run and the answer: {_me()} answer <id> '<answer>'")
         words = rest[2:] if rest[1:2] == ["--"] else rest[1:]  # after --, an answer may start with a dash
-        return _answer(rest[0], " ".join(words), as_json)
+        text = sys.stdin.read() if rest[1:] == ["-"] else " ".join(words)  # a long answer comes by the input
+        return _answer(rest[0], text, as_json)
     if command not in ("show", "run", "test"):
         return _fail(f"reflex has no {command}.\n{USAGE}")
     as_json = "--json" in rest
@@ -155,17 +169,12 @@ def _answer(run_id: str, text: str, as_json: bool) -> int:
     state = store.take(run_id)  # taken out of the store: an answer is given once, by one caller
     if state is None:
         return _fail(f"no run {run_id} waits for an answer (a question is kept one day, and answered once)")
-    try:
-        folder = engine.started_in(state)  # the run carries on where it started, wherever the answer is typed
-        host = Local(cwd=folder) if folder and os.path.isdir(folder) else None
-        if host is None:
-            store.put_back(run_id, state)
-            return _fail(f"the folder this run was started in is gone ({folder}): it cannot carry on"
-                         if folder else GONE)
-        outcome = engine.resume(state, answer, host, decider=decider)
-    except BaseException:  # whatever happens here, the question is not lost
-        store.put_back(run_id, state)
-        raise
+    folder = engine.started_in(state)  # the run carries on where it started, wherever the answer is typed
+    if not (folder and os.path.isdir(folder)):
+        store.put_back(run_id, state)  # nothing ran: the question still stands
+        return _fail(f"the folder this run was started in is gone ({folder}): it cannot carry on" if folder else GONE)
+    # from here the run carries on and may change things: whatever happens, this answer is not taken twice
+    outcome = engine.resume(state, answer, Local(cwd=folder), decider=decider)
     if outcome.status == "asks" and outcome.state == state and store.put_back(run_id, state):
         return _report(outcome, as_json, run_id)  # the answer did not fit: the same question, under the same id
     return _report(outcome, as_json)

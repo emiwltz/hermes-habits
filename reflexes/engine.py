@@ -31,6 +31,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -46,6 +47,7 @@ SHOWN = 300  # characters of an output kept in the journal
 NOTED = 2000  # characters of a command or of an error kept in the journal
 LENT_CHARS = 100_000  # characters a lent helper takes: it runs outside the sandbox and its limits
 CONTEXT = 2000  # characters of an item's context shown to whoever answers
+DOUBTS = 200  # things one question may send up: more than that, no caller answers in one go
 MARK = b"reflex/1\n"
 NOT_STARTED = "not started: the run was out of time"
 NO_FILES = ("the sandbox has no files of its own: read with rx.read(path), write with rx.write(path, text), list with "
@@ -116,17 +118,46 @@ HIT = "_rx_hit"  # the name that any, all and next use to stop at the first item
 SETTLED = {"any": f") and not {HIT}.append(1))", "all": f") or {HIT}.append(1))", "next": f"), {HIT}.append(1))[0]"}
 LISTS_HERE = {"map", "filter", "zip", "enumerate", "reversed"}  # iterators in Python, lists in the sandbox
 TYPES = {"str", "bytes", "dict", "list", "set", "tuple", "int", "float"}
+KEYED = {"sorted", "min", "max"}  # their key= is a function, whatever else is called key elsewhere
+# What the rewritten source calls, put before the author's code only when it is needed.
+OURS = {
+    # any, all and next stop where Python stops: an iterator that ends once the hit is made, so that an iterator
+    # the author shares is left just after the item found, and an endless one ends
+    "until": """_rx_iter, _rx_next = iter, next
+class _rx_until:
+    def __init__(self, source, hit): self.source, self.hit = _rx_iter(source), hit
+    def __iter__(self): return self
+    def __next__(self):
+        if self.hit: raise StopIteration
+        return _rx_next(self.source)
+""",
+    # str.lower handed a number: the error Python gives (the method is in a lambda, which would say another)
+    "unfit": """def _rx_unfit(kind, method, given):
+    raise TypeError("descriptor '" + method + "' for '" + kind + "' objects doesn't apply to a '" + given + "' object")
+""",
+}
 
 
 def _lent(helper):
-    """A helper of the host, with a bound on what it is given: it runs here, outside the sandbox and its limits."""
+    """A helper of the host, with a bound on what it is given and on what it can make of it (an indent of 40,000
+    characters on 20,000 lines is 800 MB): it runs here, outside the sandbox and its limits."""
+    def texts(value):
+        if isinstance(value, (str, bytes)):
+            yield len(value)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                yield from texts(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from texts(item)
+
     def bounded(*args, **kwargs):
-        texts = [a for a in args if isinstance(a, str)] + [w for a in args if isinstance(a, (list, tuple))
-                                                           for w in a if isinstance(w, str)]
-        if sum(len(text) for text in texts) > LENT_CHARS:
-            raise ValueError(f"{helper.__module__}.{helper.__name__} takes {LENT_CHARS} characters at most here")
+        sizes = sorted(texts([args, kwargs]), reverse=True) + [0, 0]
+        if sum(sizes) > LENT_CHARS or sizes[0] * sizes[1] > 100 * LENT_CHARS:
+            raise ValueError(f"{helper.__name__} takes {LENT_CHARS} characters at most here")
         return helper(*args, **kwargs)
     return bounded
+
 
 
 # Pure helpers Python has and the sandbox lacks: lent from the host, they touch nothing.
@@ -211,13 +242,13 @@ def _parsed(source: str):
         raise Refused(f"not valid Python: {type(exc).__name__}: {str(exc)[:100]}") from None
 
 
-def _prepared(source: str) -> tuple:
-    """(the code the sandbox runs, the lines it adds before the author's first one, the builtins to put right after
-    the author's code, the methods the author hands over without calling them).
+def _prepared(source: str) -> dict:
+    """The code the sandbox runs, and what the engine keeps about it: where its own lines sit among the author's
+    (at, shift), the builtins to put right after the author's code (shims), the methods the author hands over
+    without calling them (loose).
 
     The everyday modules the reflex did not bind itself are imported for it: a forgotten `import re` is not worth a
-    failed run. The import is one line put first; after a `from __future__` import, which must stay first, it goes
-    on that same line instead and adds none."""
+    failed run. The engine's lines go first, or right after a `from __future__` import, which must stay first."""
     tree = _parsed(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
@@ -225,7 +256,7 @@ def _prepared(source: str) -> tuple:
             if ignored:
                 raise Refused(f"class {node.name} defines {ignored[0]}, which the sandbox never calls: give it a "
                               f"plain method instead (is_empty(), size()) and call that (line {node.lineno})")
-    bound, modules = set(), set()
+    bound, modules = set(), set()  # what the source binds at its top level, and which of those are modules
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = {(alias.asname or alias.name).split(".")[0] for alias in node.names}
@@ -236,33 +267,57 @@ def _prepared(source: str) -> tuple:
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             bound |= {n.id for target in targets for n in ast.walk(target) if isinstance(n, ast.Name)}
-    names = [("os.path" if name == "os" else name) for name in READY if name not in bound] + ["_rx"]
-    ready = "import " + ", ".join(names)
-    code, loose = _as_meant(source, tree, modules | {name for name in READY if name not in bound} | {"rx"}, bound)
-    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    shims = [name for name in SHIMS if name in used and name not in bound]
+    ready = [name for name in READY if name not in bound]
     future = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "__future__"]
-    if not future:
-        return ready + "\n" + code, 1, shims, loose
+    at = max((n.end_lineno for n in future), default=0)
+    code, loose, needs = _as_meant(source, tree, modules | set(ready) | {"rx"}, _taken(tree))
+    if any(n.lineno <= at for n in tree.body if n not in future and not isinstance(n, ast.Expr)):
+        code, needs = source, set()  # code on the very line of the __future__ import would run before our own
+    ours = ["import " + ", ".join(["os.path" if name == "os" else name for name in ready] + ["_rx"])]
+    ours += [line for name in OURS if name in needs for line in OURS[name].splitlines()]
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     lines = code.split("\n")
-    at, col = future[-1].end_lineno - 1, future[-1].end_col_offset
-    row = lines[at].encode()
-    lines[at] = (row[:col] + b"; " + ready.encode() + row[col:]).decode()
-    return "\n".join(lines), 0, shims, loose
+    lines[at:at] = ours
+    return {"code": "\n".join(lines), "at": at, "shift": len(ours), "loose": loose,
+            "shims": [name for name in SHIMS if name in used and name not in bound]}
 
 
-def _as_meant(source: str, tree, modules: set, bound: set) -> tuple:
-    """Ordinary Python that the sandbox takes otherwise, put right in the source before it runs; and the methods
-    the source still hands over without calling them (the sandbox will refuse those: the error can then say so).
+def _taken(tree) -> set:
+    """Every name the source binds anywhere (a variable, a parameter, a function, an import): a builtin of that name
+    may not be the builtin where it is used."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names |= {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names |= set(node.names)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.add(node.rest)
+    return names
 
-    - any(...), all(...) and next(...) of a generator expression stop at the first item that settles them. The
-      sandbox builds a generator expression as a whole list first: rx.do in it would run for every item.
+
+def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
+    """(the source with ordinary Python that the sandbox takes otherwise put right, the methods it still hands over
+    without calling them, which of the engine's own helpers it now calls).
+
+    - any(...), all(...) and next(...) of a generator expression stop at the first item that settles them, as in
+      Python. The sandbox builds a generator expression as a whole list first: rx.do in it ran for every item.
     - next() of map, filter, zip, enumerate or reversed, which are lists in the sandbox.
-    - a method handed over without being called where a function is expected (key=str.lower, key=counts.get,
+    - a method handed over where a function is expected (sorted(key=str.lower), max(key=counts.get),
       map(str.strip, lines)): the sandbox has no such value.
     - datetime.strptime, which the host does as Python does.
 
-    Text is only inserted, around whole expressions, so every line keeps its number."""
+    Text is only inserted, around whole expressions, so every line keeps its number. Nothing is touched where the
+    author gave one of these names another meaning, nor in f"{x=}", which shows its own text; and no function is
+    made in the body of a class, where it would not see the class's names."""
     lines = [line.encode() for line in source.split("\n")]
     edits, order = [], itertools.count(1)  # (line, byte column, rank among those at the same place, text)
 
@@ -275,64 +330,93 @@ def _as_meant(source: str, tree, modules: set, bound: set) -> tuple:
             node = node.value
         return node.id if isinstance(node, ast.Name) else ""
 
-    inner = set()  # inside an f-string an expression's place is not reliable before Python 3.12: left as it is
-    if sys.version_info < (3, 12):
-        inner = {id(n) for text in ast.walk(tree) if isinstance(text, ast.JoinedStr) for n in ast.walk(text)}
-    called, wrapped = set(), set()
-    clocks = {alias.asname or alias.name for node in tree.body if isinstance(node, ast.Import)
-              for alias in node.names if alias.name == "time"}  # time.strptime is another function
+    def builtin(node, names) -> str:  # the name called, when it is one of these and still Python's own
+        return node.id if isinstance(node, ast.Name) and node.id in names and node.id not in taken else ""
+
+    def shown(field) -> bool:  # f"{x=}": the expression is followed by = and its text is part of the result
+        if sys.version_info < (3, 12):
+            return True  # and before 3.12 the place of an expression inside an f-string is not reliable
+        rest = lines[field.value.end_lineno - 1][field.value.end_col_offset:].lstrip(b" \t)")
+        return rest.startswith(b"=") and not rest.startswith(b"==")
+
+    apart = {id(n) for text in ast.walk(tree) if isinstance(text, ast.JoinedStr) for field in text.values
+             if isinstance(field, ast.FormattedValue) and shown(field) for n in ast.walk(field)}
+    classy = {id(n) for kind in ast.walk(tree) if isinstance(kind, ast.ClassDef) for line in kind.body
+              if not isinstance(line, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(line)}
+    still = (ast.Name, ast.Attribute, ast.Subscript, ast.Constant, ast.Slice, ast.Tuple, ast.UnaryOp, ast.BinOp,
+             ast.expr_context, ast.operator, ast.unaryop)  # an owner made of these reads the same when copied
+    # under which names the source knows the datetime class, whose strptime the host does
+    imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    clocks = {a.asname or a.name for n in imports if isinstance(n, ast.Import) for a in n.names if a.name == "datetime"}
+    clocks |= {"datetime"} - taken
+    classes = {a.asname or a.name for n in imports if isinstance(n, ast.ImportFrom) and n.module == "datetime"
+               for a in n.names if a.name == "datetime"}
+    called, wrapped, needs = set(), set(), set()
     for node in ast.walk(tree):  # outer expressions before the ones they hold
         if not isinstance(node, ast.Call):
             continue
-        called.add(id(node.func))
-        if id(node) in inner:
+        func, first = node.func, node.args[0] if node.args else None
+        called.add(id(func))
+        if id(node) in apart:
             continue
-        name = node.func.id if isinstance(node.func, ast.Name) and node.func.id not in bound else ""
-        first = node.args[0] if node.args else None
-        func = node.func
-        if (isinstance(func, ast.Attribute) and func.attr == "strptime" and root(func) not in clocks | {""}
-                and ast.unparse(func.value).split(".")[-1] not in ("date", "time")):  # datetime's, under any name
+        if isinstance(func, ast.Attribute) and func.attr == "strptime" and (
+                (isinstance(func.value, ast.Name) and func.value.id in classes) or
+                (isinstance(func.value, ast.Attribute) and func.value.attr == "datetime"
+                 and isinstance(func.value.value, ast.Name) and func.value.value.id in clocks)):
             around(func, "(_rx.strptime if True else ", ")")
-        if name in SETTLED and isinstance(first, ast.GeneratorExp) and not any(g.is_async for g in first.generators):
+        name = builtin(func, SETTLED)
+        plain = not node.keywords and len(node.args) == (2 if name == "next" and len(node.args) == 2 else 1)
+        if name and plain and isinstance(first, ast.GeneratorExp) and not any(g.is_async for g in first.generators):
             opens, closes = (first.lineno, first.col_offset), (first.end_lineno, first.end_col_offset - 1)
             if lines[opens[0] - 1][opens[1]:opens[1] + 1] == b"(" and lines[closes[0] - 1][closes[1]:closes[1] + 1] == b")":
+                needs.add("until")
                 around(node, "[", f" for {HIT} in [[]]][0]")
-                edits.append((opens[0], opens[1] + 1, next(order), "iter([" if name == "next" else "["))
-                edits.append((*closes, -next(order), f" if not {HIT}])" if name == "next" else f" if not {HIT}]"))
+                edits.append((opens[0], opens[1] + 1, next(order), "_rx_iter([" if name == "next" else "["))
+                edits.append((*closes, -next(order), "])" if name == "next" else "]"))
                 around(first.elt, "((", SETTLED[name])
-                for at, part in enumerate(first.generators):
-                    if at:
-                        around(part.iter, f"(() if {HIT} else (", "))")
-                    for condition in part.ifs:
-                        around(condition, f"(not {HIT} and (", "))")
-        elif (name == "next" and isinstance(first, ast.Call) and isinstance(first.func, ast.Name)
-                and first.func.id in LISTS_HERE):
-            around(first, "iter(", ")")
-        handed = [k.value for k in node.keywords if k.arg == "key"] + ([first] if name in ("map", "filter") else [])
+                for part in first.generators:
+                    around(part.iter, "_rx_until(", f", {HIT})")
+        elif name == "next" and plain and isinstance(first, ast.Call) and builtin(first.func, LISTS_HERE):
+            needs.add("until")
+            around(first, "_rx_iter(", ")")
+        handed = [first] if builtin(func, {"map", "filter"}) and first is not None else []
+        if builtin(func, KEYED) or (isinstance(func, ast.Attribute) and (
+                func.attr == "sort" or (func.attr == "groupby" and root(func) in modules))):
+            handed += [k.value for k in node.keywords if k.arg == "key"]
         for value in handed:
-            if not isinstance(value, ast.Attribute) or root(value) in modules | {""}:
-                continue  # a module's function (os.path.basename) is a value the sandbox has; and the lambda reads
-                # its owner again at each call, which is the same thing only for a plain name
-            wrapped.add(id(value))
-            if isinstance(value.value, ast.Name) and value.value.id in TYPES:
-                around(value, f"(lambda _s, *_a: _s.{value.attr}(*_a) if True else ", ")")
-            else:
+            if not isinstance(value, ast.Attribute) or id(value) in classy or root(value) in modules - {""}:
+                continue  # a module's function (os.path.basename) is a value the sandbox has
+            kind, owner = builtin(value.value, TYPES), value.value
+            method = getattr(getattr(builtins, kind), value.attr, None) if kind else None
+            if isinstance(method, (types.MethodDescriptorType, types.WrapperDescriptorType)):
+                if {"isinstance", "type"} & taken:
+                    continue
+                wrapped.add(id(value))  # str.lower: called on each item, which must be a str as Python wants it
+                needs.add("unfit")
+                around(value, f"(lambda _s, *_a: _s.{value.attr}(*_a) if isinstance(_s, {kind}) else "
+                              f"_rx_unfit('{kind}', '{value.attr}', type(_s).__name__) if True else ", ")")
+            elif kind:
+                wrapped.add(id(value))  # bytes.fromhex: a function of the type itself
                 around(value, "(lambda *_a, **_k: ", "(*_a, **_k))")
+            elif all(isinstance(n, still) for n in ast.walk(owner)):
+                wrapped.add(id(value))  # counts.get: the owner is read once, here, as Python reads it
+                around(value, f"([(lambda *_a, **_k: _o.{value.attr}(*_a, **_k)) for _o in [{ast.unparse(owner)}]][0]"
+                              " if True else ", ")")
     loose = sorted({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load)
                     and id(n) not in called | wrapped}
                    | {n.args[1].value for n in ast.walk(tree) if isinstance(n, ast.Call)
                       and isinstance(n.func, ast.Name) and n.func.id == "getattr" and len(n.args) > 1
                       and isinstance(n.args[1], ast.Constant) and isinstance(n.args[1].value, str)})
     if not edits:
-        return source, loose
+        return source, loose, needs
     for line, col, _, text in sorted(edits, reverse=True):  # from the end: what is still to place keeps its offset
         lines[line - 1] = lines[line - 1][:col] + text.encode() + lines[line - 1][col:]
     code = "\n".join(line.decode() for line in lines)
     try:
         ast.parse(code)
     except SyntaxError:  # never hand over a rewrite that does not read: the author's own text then runs as it is
-        return source, loose
-    return code, loose
+        return source, loose, set()
+    return code, loose, needs
 
 
 def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False, decider=None,
@@ -353,13 +437,14 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
             raise Refused("; ".join(filter(None, [
                 f"unknown input: {', '.join(unknown)}" if unknown else "",
                 f"missing input: {', '.join(missing)}" if missing else ""])) + f" (it takes: {takes})")
-        code, job.shift, shims, job.loose = _prepared(source)
+        ready = _prepared(source)
     except Refused as exc:
         return job.stopped(str(exc))
     call = "reflex(rx, **__reflex_inputs__)" if about["rx"] else "reflex(**__reflex_inputs__)"
-    job.length = source.count("\n") + 1
-    more = {"_rx_names": NAMES} if "hasattr" in shims else {}
-    return job.start(code + TAIL.format(shims="".join(SHIMS[name] for name in shims), call=call), given, more)
+    job.at, job.shift, job.loose, job.length = ready["at"], ready["shift"], ready["loose"], source.count("\n") + 1
+    more = {"_rx_names": NAMES} if "hasattr" in ready["shims"] else {}
+    tail = TAIL.format(shims="".join(SHIMS[name] for name in ready["shims"]), call=call)
+    return job.start(ready["code"] + tail, given, more)
 
 
 def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
@@ -376,6 +461,7 @@ def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
         job.effects, job.planned = list(meta["effects"]), list(meta["planned"])
         job.printed, job.spent = str(meta["output"]), int(meta["ms"])
         job.shift, job.length, pending = int(meta.get("shift", 0)), int(meta.get("length", 0)), meta["pending"]
+        job.at = int(meta.get("at", 0))
         job.loose = [str(name) for name in meta.get("loose", [])]
         if pending["verb"] not in ("ask", "up") or not isinstance(pending["asks"], dict):
             raise ValueError("no question")
@@ -477,7 +563,7 @@ class _Run:
         self.effects, self.planned, self.printed, self.spent = [], [], "", 0
         self.began = time.monotonic()
         self.last_error = ""
-        self.shift = 0  # lines the engine put before the author's first one
+        self.shift, self.at = 0, 0  # lines the engine put among the author's, and after which of them
         self.length = 0  # lines of the author's source
         self.loose = []  # methods the source hands over without calling them
 
@@ -531,8 +617,20 @@ class _Run:
             return self.driven(snap)
         except monty.MontyError:
             raise
+        except KeyboardInterrupt:  # cut by its caller: the run ends here, and says what it had done
+            self.halt()
+            return self.stopped("interrupted: what the journal lists was done, and a change may be half made")
         except Exception as exc:  # a fault of the engine or of a host: the run stops, and its journal is kept
             return self.stopped(f"the engine failed ({type(exc).__name__}: {exc}): what the journal lists was done")
+
+    def halt(self):
+        """Stop what the host still runs for this run, if the host can."""
+        stop = getattr(self.host, "stop", None)
+        if stop:
+            try:
+                stop()
+            except Exception:
+                pass
 
     def driven(self, snap) -> Outcome:
         while not isinstance(snap, monty.MontyComplete):
@@ -557,7 +655,8 @@ class _Run:
                 continue
             except _Pause as pause:
                 head = json.dumps({"dry": self.dry, "limits": self.limits, "min_confidence": self.min_confidence,
-                                   "shift": self.shift, "length": self.length, "loose": self.loose,
+                                   "shift": self.shift, "at": self.at, "length": self.length,
+                                   "loose": self.loose,
                                    "cwd": getattr(self.host, "cwd", None),
                                    "effects": self.effects, "planned": self.planned, "output": self.printed,
                                    "ms": self.ms(), "pending": {**pause.pending, "asks": pause.asks}}, default=str)
@@ -595,6 +694,13 @@ class _Run:
     def heard(self, stream, text):
         self.printed = (self.printed + text)[-20_000:]
 
+    def mine(self, line: int) -> int:
+        """The author's line for a line of the code that ran; 0 for a line of the engine's."""
+        if self.at < line <= self.at + self.shift:
+            return 0
+        own = line - self.shift if line > self.at else line
+        return own if not self.length or own <= self.length else 0
+
     def said(self, exc) -> str:
         """Why the reflex stopped, with its line."""
         text = str(exc)
@@ -604,9 +710,11 @@ class _Run:
             every = list(exc.traceback())
         except Exception:  # an error with no frames to show
             every = []
-        own = [f for f in every if not self.length or 0 < f.line - self.shift <= self.length]  # the author's lines
+        own = [f for f in every if self.mine(f.line)]  # the author's lines, not the engine's
+        if every and not self.mine(every[-1].line) and own and own[-1].function_name == "<lambda>":
+            own = own[:-1]  # raised by the engine's own helper, from the lambda it put there: the call is the place
         frames = [f for f in own if f.function_name != "<module>"] or own[-1:]  # in a function, else outside any
-        line = f" (line {frames[-1].line - self.shift} of the reflex)" if frames else ""
+        line = f" (line {self.mine(frames[-1].line)} of the reflex)" if frames else ""
         hint = next((hint for said, hint in HINTS if said in text), "")
         taken = NO_VALUE.search(text)
         if taken and hasattr(getattr(builtins, taken[1], None), taken[2]):
@@ -712,7 +820,11 @@ class _Run:
         workers = min(int(getattr(self.host, "workers", 8)), len(commands))  # a host may take one command at a time
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                results = list(pool.map(one, commands))
+                try:
+                    results = list(pool.map(one, commands))
+                except BaseException:  # interrupted while they run: none is left running behind the run
+                    self.halt()
+                    raise
         else:
             results = [one(argv) for argv in commands]
         if any(err == NOT_STARTED for _, _, err, _, _ in results):  # some of the list never ran: no result to give
@@ -814,6 +926,9 @@ class _Run:
             else:
                 unsure.append(item)
         self.note("ask", question, began, items=len(items), unsure=len(unsure), by=by)
+        if len(unsure) > DOUBTS:
+            raise _Stop(f"rx.ask: {len(unsure)} things are in doubt, more than one question can send up ({DOUBTS}): "
+                        "ask about fewer things at a time" + ("" if self.decider else ", or set up a small model"))
         if unsure:
             asks = {"question": question, "options": choices}
             if many or about is not None:
@@ -836,11 +951,11 @@ class _Run:
                 box["error"] = exc
         worker = threading.Thread(target=work, daemon=True)
         worker.start()
-        worker.join(max(0.0, self.limits["seconds"] - self.ms() / 1000))
+        worker.join(max(0.0, (self.limits["seconds"] - self.ms() / 1000) / 2))  # the other half is for the rest
         if "error" in box:
             raise box["error"]
         if "answers" not in box:
-            raise TimeoutError("no answer in the time the run had left")
+            raise TimeoutError("no answer in half the time the run had left")
         return box["answers"]
 
     def rx_up(self, question, options=None, **context):

@@ -18,13 +18,14 @@ KEPT = 24 * 3600  # seconds a run that asked waits for its answer
 
 
 def home() -> Path:
-    return Path(os.environ.get("REFLEX_HOME") or Path.home() / ".reflexes")
+    """Where the user's own reflexes and the runs that wait are kept: the same place from any folder."""
+    return Path(os.path.abspath(os.path.expanduser(os.environ.get("REFLEX_HOME") or "~/.reflexes")))
 
 
 def folders() -> list:
     listed = os.environ.get("REFLEX_PATH")
     if listed:
-        found = [Path(p).expanduser() for p in listed.split(os.pathsep) if p]
+        found = [Path(os.path.expanduser(p)) for p in listed.split(os.pathsep) if p]  # ~nobody stays as written
     else:
         found = [home()]
         try:
@@ -66,9 +67,12 @@ def everything() -> dict:
 def find(target: str) -> Path | None:
     """A reflex by name, or by the path of its file."""
     if target.endswith(".py") or os.sep in target:
-        path = Path(target).expanduser()
-        if path.is_file():
-            return path
+        try:
+            path = Path(os.path.expanduser(target))
+            if path.is_file():
+                return path
+        except (OSError, ValueError):  # a name too long to be a file, a null byte in it
+            return None
         target = target[:-3] if target.endswith(".py") and os.sep not in target else target
     return everything().get(target)
 
