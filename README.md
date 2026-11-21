@@ -103,7 +103,7 @@ YAML format gave 1 working reflex in 6 against 6 in 6), or a measure on a cheap 
 ## Try it
 
 ```bash
-pip install -e .                      # Python 3.10+; brings the sandbox (pydantic-monty)
+pip install -e .                      # Python 3.10+ on Linux or macOS; brings the sandbox (pydantic-monty)
 REFLEX_PATH=examples reflex list
 REFLEX_PATH=examples reflex run disk-space
 REFLEX_PATH=examples reflex test tidy-downloads
@@ -114,6 +114,9 @@ With no small model set up, every `rx.ask` goes up to the caller, so everything 
 the same format), the closed questions are answered in a fraction of a second and only the doubts go up.
 
 From Python: `from reflexes import run, resume, Local`.
+
+Everything here was built and measured on Linux (x86-64, Python 3.10 to 3.13). The table of reads was written with
+macOS in mind and reviewed against its manuals, but nothing has run on a Mac yet.
 
 ## What keeps it safe, and what does not
 
