@@ -7,9 +7,13 @@ a host only carries it out. Another host, an agent's own tools for one, has the 
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
+import threading
 
 from . import readers
+
+MOST = 8_000_000  # bytes of one output or one file a reflex may be handed; past it the command is stopped
 
 
 class Local:
@@ -17,11 +21,8 @@ class Local:
 
     def __init__(self, cwd: str | None = None, extra_readers: dict | None = None, home: str | None = None,
                  env: dict | None = None):
+        self.cwd = cwd or os.getcwd()  # OSError when the folder we are in is gone: there is nowhere to run
         self.home = home or os.path.expanduser("~")
-        try:
-            self.cwd = cwd or os.getcwd()
-        except OSError:  # the folder we were started in is gone
-            self.cwd = self.home
         self.extra_readers = extra_readers or {}
         self.env = env or {}  # variables its commands get on top of this process's own
 
@@ -43,24 +44,69 @@ class Local:
         return readers.outside(argv)
 
     def run(self, argv: list, seconds: float, input: str | None = None) -> tuple:
-        """(output, errors, exit code) of one program, run without a shell."""
+        """(output, errors, exit code) of one program, run without a shell. Its output is read as it comes and the
+        program is stopped past MOST bytes: an endless one (cat /dev/zero) must not fill this process."""
         try:
-            done = subprocess.run(argv, cwd=self.cwd, input=input, capture_output=True, text=True, errors="replace",
-                                  timeout=seconds, stdin=None if input is not None else subprocess.DEVNULL,
-                                  env=self.environment())
+            child = subprocess.Popen(argv, cwd=self.cwd, env=self.environment(), stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE,
+                                     stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL)
         except FileNotFoundError:
             return "", f"{argv[0]}: command not found", 127
         except PermissionError:
             return "", f"{argv[0]}: permission denied", 126
         except NotADirectoryError:
             return "", f"{self.cwd}: not a folder", 126
+        kept, over = {"out": bytearray(), "err": bytearray()}, threading.Event()
+
+        def drain(stream, name):
+            try:
+                while chunk := stream.read1(65536):
+                    if len(kept[name]) + len(chunk) > MOST:
+                        over.set()
+                        child.kill()
+                        break
+                    kept[name] += chunk
+            except (OSError, ValueError):
+                pass
+
+        def feed():
+            try:
+                child.stdin.write(input.encode())
+                child.stdin.close()
+            except (OSError, ValueError):
+                pass
+        threads = [threading.Thread(target=drain, args=(child.stdout, "out"), daemon=True),
+                   threading.Thread(target=drain, args=(child.stderr, "err"), daemon=True)]
+        if input is not None:
+            threads.append(threading.Thread(target=feed, daemon=True))
+        for thread in threads:
+            thread.start()
+        late = False
+        try:
+            child.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
-            return "", f"timed out after {seconds:.0f} s", 124
-        return done.stdout, done.stderr, done.returncode
+            late = True
+            child.kill()
+            child.wait()
+        for thread in threads:
+            thread.join(1.0)  # a child of the program may still hold the pipes: what came so far is the output
+        out, err = (bytes(kept[name]).decode("utf-8", "replace") for name in ("out", "err"))
+        if over.is_set():
+            return "", f"more than {MOST // 1_000_000} MB of output: narrow the command", 125
+        if late:
+            return out, f"timed out after {seconds:.0f} s", 124
+        return out, err, child.returncode
 
     def read(self, path: str) -> str:
-        with open(os.path.join(self.cwd, path), encoding="utf-8", errors="replace") as handle:
-            return handle.read()
+        """The text of a regular file. A pipe or a device is refused: it may never end, or never start."""
+        handle = os.open(os.path.join(self.cwd, path), os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(handle, "rb") as file:
+            if not stat.S_ISREG(os.fstat(handle).st_mode):
+                raise OSError("not a regular file")
+            data = file.read(MOST + 1)
+        if len(data) > MOST:
+            raise OSError(f"more than {MOST // 1_000_000} MB: read a part of it with rx.sh(['head', ...]) or grep")
+        return data.decode("utf-8", "replace")
 
     def write(self, path: str, text: str, append: bool = False) -> None:
         full = os.path.join(self.cwd, path)

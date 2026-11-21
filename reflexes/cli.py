@@ -26,6 +26,7 @@ reflex answer <id> <answer>           carry on a run that asked
 reflex guide                          how to write a reflex
 Add --json to run, test and answer for the whole result as JSON."""
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+GONE = "the folder you are in no longer exists: a reflex needs a folder to run in (cd somewhere first)"
 
 
 def main(argv=None) -> int:
@@ -79,7 +80,10 @@ def _main(args: list) -> int:
         inputs = _inputs(rest[1:], source)
     except ValueError as exc:
         return _fail(str(exc))
-    outcome = engine.run(source, inputs, Local(), dry=command == "test", decider=decide.from_env())
+    host = _here()
+    if host is None:
+        return _fail(GONE)
+    outcome = engine.run(source, inputs, host, dry=command == "test", decider=decide.from_env())
     return _report(outcome, as_json)
 
 
@@ -90,7 +94,8 @@ def _list() -> int:
     for name, path in found.items():
         try:
             about = engine.describe(path.read_text(encoding="utf-8", errors="replace"))
-            inputs = ", ".join(i["name"] if i["required"] else f"{i['name']}={_default(i['default'])}"
+            inputs = ", ".join(i["name"] if i["required"] else
+                               f"{i['name']}={i['default'] if i.get('written') else _default(i['default'])}"
                                for i in about["inputs"])
             print(f"{name}({inputs}) · {_line(about['doc'].splitlines()[0]) if about['doc'] else 'no description'}")
         except (engine.Refused, OSError) as exc:
@@ -111,7 +116,8 @@ def _inputs(pairs: list, source: str) -> dict:
     """name=value pairs. A value is read as JSON when it is JSON (a number, true, a list), else as the text it is;
     an input whose default is a text always stays a text."""
     try:
-        texts = {i["name"] for i in engine.describe(source)["inputs"] if isinstance(i.get("default"), str)}
+        texts = {i["name"] for i in engine.describe(source)["inputs"]
+                 if isinstance(i.get("default"), str) and not i.get("written")}
     except engine.Refused:
         texts = set()  # the run itself will say what is wrong with the reflex
     inputs = {}
@@ -126,7 +132,7 @@ def _inputs(pairs: list, source: str) -> dict:
 def _value(text: str):
     try:
         return json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return text
 
 
@@ -137,7 +143,7 @@ def _answer_value(text: str):
     if text[:1] in ("{", "[", '"'):
         try:
             return json.loads(text)
-        except ValueError:
+        except (ValueError, RecursionError):
             pass
     return text
 
@@ -145,13 +151,32 @@ def _answer_value(text: str):
 def _answer(run_id: str, text: str, as_json: bool) -> int:
     if not text.strip():
         return _fail(f"give the answer: {_me()} answer {run_id} '<answer>'")
+    answer, decider = _answer_value(text), decide.from_env()
     state = store.take(run_id)  # taken out of the store: an answer is given once, by one caller
     if state is None:
         return _fail(f"no run {run_id} waits for an answer (a question is kept one day, and answered once)")
-    outcome = engine.resume(state, _answer_value(text), Local(), decider=decide.from_env())
+    try:
+        folder = engine.started_in(state)  # the run carries on where it started, wherever the answer is typed
+        host = Local(cwd=folder) if folder and os.path.isdir(folder) else None
+        if host is None:
+            store.put_back(run_id, state)
+            return _fail(f"the folder this run was started in is gone ({folder}): it cannot carry on"
+                         if folder else GONE)
+        outcome = engine.resume(state, answer, host, decider=decider)
+    except BaseException:  # whatever happens here, the question is not lost
+        store.put_back(run_id, state)
+        raise
     if outcome.status == "asks" and outcome.state == state and store.put_back(run_id, state):
         return _report(outcome, as_json, run_id)  # the answer did not fit: the same question, under the same id
     return _report(outcome, as_json)
+
+
+def _here():
+    """The local host in the folder we are in; None when that folder is gone."""
+    try:
+        return Local()
+    except OSError:
+        return None
 
 
 def _me() -> str:
@@ -185,12 +210,15 @@ def _report(outcome, as_json: bool, run_id: str | None = None) -> int:
 
 def _plain(value):
     """A value JSON can carry: a set as a list, bytes and odd numbers as text."""
-    if isinstance(value, dict):
-        return {str(k): _plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    if isinstance(value, (set, frozenset)):
-        return sorted((_plain(v) for v in value), key=str)
+    try:
+        if isinstance(value, dict):
+            return {str(k): _plain(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_plain(v) for v in value]
+        if isinstance(value, (set, frozenset)):
+            return sorted((_plain(v) for v in value), key=str)
+    except RecursionError:  # nested deeper than JSON can say
+        return "(a value nested too deep to show)"
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, bytes):
@@ -200,7 +228,7 @@ def _plain(value):
 
 def _tilde(text: str) -> str:
     """The home folder written ~ again where it starts a path: shorter to read, the same on every machine."""
-    home = Local().home.rstrip("/")
+    home = os.path.expanduser("~").rstrip("/")
     if len(home) < 2:
         return text
     return re.sub(r"(?<![\w./~-])" + re.escape(home) + r"(?=/|[\s'\":,)\]]|$)", "~", text)
@@ -233,6 +261,8 @@ def render(outcome, run_id: str | None = None) -> str:
             lines.append(f"dry run (it changes nothing): {_shown(outcome.result)}")
         else:
             lines.append(f"done: {_shown(outcome.result)}")
+        if partly:  # the reflex went on after a change that failed: the caller must know it may be half made
+            lines += [f"  may have partly run: {what}" for what in partly]
         lines.append(_counts(outcome))
     elif outcome.status == "asks":
         asks = dict(outcome.asks or {})
@@ -280,10 +310,13 @@ def _shown(result) -> str:
 def _counts(outcome) -> str:
     verbs = [e["verb"] for e in outcome.effects]
     reads = verbs.count("sh") + verbs.count("read")
-    changes = sum(1 for e in outcome.effects if e["verb"] in ("do", "write"))
+    acts = [e for e in outcome.effects if e["verb"] in ("do", "write")]
+    changes, failed = sum(1 for e in acts if not e.get("error")), sum(1 for e in acts if e.get("error"))
     questions = verbs.count("ask") + verbs.count("up")
     parts = [f"{reads} read{'s' if reads != 1 else ''}",
              f"{changes} change{'s' if changes != 1 else ''}{' planned' if outcome.dry and changes else ''}"]
+    if failed:
+        parts.append(f"{failed} failed")
     if questions:
         parts.append(f"{questions} question{'s' if questions != 1 else ''}")
     return f"({', '.join(parts)} · {outcome.ms / 1000:.1f} s)"

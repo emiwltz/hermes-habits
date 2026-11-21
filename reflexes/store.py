@@ -86,7 +86,7 @@ def keep(state: bytes) -> str:
     folder = _runs()
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     now = time.time()
-    for old in folder.glob("*.run"):  # a question nobody answered in a day is dropped
+    for old in [*folder.glob("*.run"), *folder.glob("*.taken")]:  # a question nobody answered in a day is dropped
         try:
             if now - old.stat().st_mtime > KEPT:
                 old.unlink()

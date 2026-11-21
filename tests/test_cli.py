@@ -271,7 +271,7 @@ def test_usage_and_unknown_commands(capsys):
     assert call(capsys, "run")[2] == "reflex run needs the name of a reflex"
 
 
-def test_from_a_folder_that_is_gone_the_users_own_reflexes_still_run(world, tmp_path, monkeypatch, capsys):
+def test_from_a_folder_that_is_gone_reflexes_are_listed_and_none_runs(world, tmp_path, monkeypatch, capsys):
     gone = tmp_path / "gone"
     gone.mkdir()
     monkeypatch.chdir(gone)
@@ -279,7 +279,7 @@ def test_from_a_folder_that_is_gone_the_users_own_reflexes_still_run(world, tmp_
     monkeypatch.delenv("REFLEX_PATH")
     monkeypatch.setenv("REFLEX_HOME", str(tmp_path / "reflexes"))
     assert cli.main(["list"]) == 0 and "tidy(" in capsys.readouterr().out
-    assert cli.main(["run", "disk"]) == 0 and "done:" in capsys.readouterr().out
+    assert cli.main(["run", "disk"]) == 2 and "no longer exists" in capsys.readouterr().err  # nowhere to run it
 
 
 def test_at_home_the_folder_of_reflexes_is_named_once(world, tmp_path, monkeypatch, capsys):
@@ -288,3 +288,71 @@ def test_at_home_the_folder_of_reflexes_is_named_once(world, tmp_path, monkeypat
     monkeypatch.chdir(tmp_path / "home")
     assert cli.main(["list"]) == 0
     assert capsys.readouterr().out.count(".reflexes") == 1
+
+
+PURGE = '''def reflex(rx):
+    """Delete the logs of this folder, once confirmed."""
+    logs = [name for name in rx.sh(["ls"]).splitlines() if name.endswith(".log")]
+    if rx.up(f"delete {logs}?", ["yes", "no"]) == "yes":
+        for name in logs:
+            rx.do(["rm", name])
+    return f"{len(logs)} deleted in {os.getcwd()}"
+'''
+
+
+def test_an_answer_carries_the_run_on_in_the_folder_it_started_in(world, tmp_path, monkeypatch, capsys):
+    (world / "reflexes" / "purge.py").write_text(PURGE)
+    here, elsewhere = tmp_path / "a", tmp_path / "b"
+    for folder in (here, elsewhere):
+        folder.mkdir()
+        (folder / "old.log").write_text("x")
+    monkeypatch.chdir(here)
+    code, out, _ = call(capsys, "run", "purge")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    monkeypatch.chdir(elsewhere)
+    code, out, _ = call(capsys, "answer", run_id, "yes")
+    assert code == 0 and f"1 deleted in {here}" in out
+    assert not (here / "old.log").exists() and (elsewhere / "old.log").exists()
+
+
+def test_an_answer_that_cannot_even_be_read_keeps_the_question(world, tmp_path, monkeypatch, capsys):
+    (world / "reflexes" / "purge.py").write_text(PURGE)
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = call(capsys, "run", "purge")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    assert cli.main(["answer", run_id, "[" * 50000 + "]" * 50000]) == 3  # no option of the question: asked again
+    capsys.readouterr()
+    code, out, _ = call(capsys, "answer", run_id, "no")
+    assert code == 0 and "0 deleted" in out
+
+
+def test_done_says_which_changes_failed_on_the_way(world, capsys):
+    (world / "reflexes" / "half.py").write_text('''def reflex(rx):
+    made = 0
+    for name in ["a", "/nowhere/b"]:
+        try:
+            rx.do(["touch", name])
+            made += 1
+        except RuntimeError:
+            pass
+    return f"{made} made"
+''')
+    code, out, _ = call(capsys, "run", "half")
+    assert code == 0 and "done: 1 made" in out and "may have partly run: touch /nowhere/b" in out
+    assert "1 change, 1 failed" in out
+
+
+def test_an_input_whose_default_is_computed_is_typed_like_any_other(world, capsys):
+    (world / "reflexes" / "old.py").write_text("WEEK = 7\n\ndef reflex(rx, hours=24 * 7, days=WEEK, tag='x'):\n"
+                                               "    return [hours * 2, days + 1, tag]\n")
+    code, out, _ = call(capsys, "list")
+    assert "old(hours=24 * 7, days=WEEK, tag=\"x\")" in out
+    code, out, _ = call(capsys, "run", "old", "hours=48", "days=3", "tag=5")
+    assert code == 0 and 'done: [96, 4, "5"]' in out
+
+
+def test_a_result_nested_too_deep_is_still_reported(world, capsys):
+    (world / "reflexes" / "deep.py").write_text("def reflex(rx):\n    x = []\n    for _ in range(3000):\n"
+                                                "        x = [x]\n    return x\n")
+    code, out, _ = call(capsys, "run", "deep")
+    assert code == 0 and out.startswith("done:")

@@ -43,6 +43,8 @@ MIN_CONFIDENCE = 0.8  # under this, an answer of the small model is a doubt
 SHELL_WORDS = {"|", "||", "&&", ";", "&", ">", ">>", "<", "<<", "2>", "2>&1", "&>"}
 OUTPUT = 2_000_000  # characters one read may hand to the reflex
 SHOWN = 300  # characters of an output kept in the journal
+NOTED = 2000  # characters of a command or of an error kept in the journal
+LENT_CHARS = 100_000  # characters a lent helper takes: it runs outside the sandbox and its limits
 CONTEXT = 2000  # characters of an item's context shown to whoever answers
 MARK = b"reflex/1\n"
 NOT_STARTED = "not started: the run was out of time"
@@ -74,11 +76,24 @@ HIT = "_rx_hit"  # the name that any, all and next use to stop at the first item
 SETTLED = {"any": f") and not {HIT}.append(1))", "all": f") or {HIT}.append(1))", "next": f"), {HIT}.append(1))[0]"}
 LISTS_HERE = {"map", "filter", "zip", "enumerate", "reversed"}  # iterators in Python, lists in the sandbox
 TYPES = {"str", "bytes", "dict", "list", "set", "tuple", "int", "float"}
+
+
+def _lent(helper):
+    """A helper of the host, with a bound on what it is given: it runs here, outside the sandbox and its limits."""
+    def bounded(*args, **kwargs):
+        texts = [a for a in args if isinstance(a, str)] + [w for a in args if isinstance(a, (list, tuple))
+                                                           for w in a if isinstance(w, str)]
+        if sum(len(text) for text in texts) > LENT_CHARS:
+            raise ValueError(f"{helper.__module__}.{helper.__name__} takes {LENT_CHARS} characters at most here")
+        return helper(*args, **kwargs)
+    return bounded
+
+
 # Pure helpers Python has and the sandbox lacks: lent from the host, they touch nothing.
 LENT = {
-    "shlex": {"quote": shlex.quote, "split": shlex.split, "join": shlex.join},
-    "textwrap": {"dedent": textwrap.dedent, "indent": textwrap.indent, "shorten": textwrap.shorten,
-                 "fill": textwrap.fill, "wrap": textwrap.wrap},
+    "shlex": {"quote": _lent(shlex.quote), "split": _lent(shlex.split), "join": _lent(shlex.join)},
+    "textwrap": {"dedent": _lent(textwrap.dedent), "indent": _lent(textwrap.indent),
+                 "shorten": _lent(textwrap.shorten), "fill": _lent(textwrap.fill), "wrap": _lent(textwrap.wrap)},
     "string": {name: getattr(string, name) for name in ("ascii_letters", "ascii_lowercase", "ascii_uppercase",
                                                         "digits", "hexdigits", "punctuation", "whitespace")},
 }
@@ -120,10 +135,7 @@ class Refused(ValueError):
 
 def describe(source: str) -> dict:
     """What a reflex says of itself, read without running it: its description and its inputs."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as exc:
-        raise Refused(f"not valid Python: {exc.msg} (line {exc.lineno})") from None
+    tree = _parsed(source)
     found = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "reflex"]
     if not found:
         raise Refused("no reflex here: a reflex is one function, def reflex(rx, ...)")
@@ -141,11 +153,20 @@ def describe(source: str) -> dict:
         if default is not None:
             try:
                 entry["default"] = ast.literal_eval(default)
-            except Exception:  # not a literal (a name, a call, a set of lists): shown as it is written
-                entry["default"] = ast.unparse(default)
+            except Exception:  # not a literal (a name, 24 * 7, a call): shown as it is written
+                entry["default"], entry["written"] = ast.unparse(default), True
         inputs.append(entry)
     doc = ast.get_docstring(fn) or ast.get_docstring(tree) or ""
     return {"doc": doc.strip(), "inputs": inputs, "rx": takes_rx, "open": args.kwarg is not None}
+
+
+def _parsed(source: str):
+    try:
+        return ast.parse(source)
+    except SyntaxError as exc:
+        raise Refused(f"not valid Python: {exc.msg} (line {exc.lineno})") from None
+    except (ValueError, RecursionError, MemoryError) as exc:  # a null byte, an expression nested too deep
+        raise Refused(f"not valid Python: {type(exc).__name__}: {str(exc)[:100]}") from None
 
 
 def _prepared(source: str) -> tuple:
@@ -154,7 +175,7 @@ def _prepared(source: str) -> tuple:
     The everyday modules the reflex did not bind itself are imported for it: a forgotten `import re` is not worth a
     failed run. The import is one line put first; after a `from __future__` import, which must stay first, it goes
     on that same line instead and adds none."""
-    tree = ast.parse(source)
+    tree = _parsed(source)
     bound, modules = set(), set()
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -196,7 +217,7 @@ def _as_meant(source: str, tree, modules: set, bound: set) -> str:
         edits.append((node.lineno, node.col_offset, next(order), before))  # at one place, the outer comes first
         edits.append((node.end_lineno, node.end_col_offset, -next(order), after))  # and closes last
 
-    def root(node):
+    def root(node):  # the name a dotted name starts with; "" for anything that is not names and dots only
         while isinstance(node, ast.Attribute):
             node = node.value
         return node.id if isinstance(node, ast.Name) else ""
@@ -226,8 +247,9 @@ def _as_meant(source: str, tree, modules: set, bound: set) -> str:
             around(first, "iter(", ")")
         handed = [k.value for k in node.keywords if k.arg == "key"] + ([first] if name in ("map", "filter") else [])
         for value in handed:
-            if not isinstance(value, ast.Attribute) or root(value) in modules:
-                continue  # a module's function (os.path.basename) is a value the sandbox has
+            if not isinstance(value, ast.Attribute) or root(value) in modules | {""}:
+                continue  # a module's function (os.path.basename) is a value the sandbox has; and the lambda reads
+                # its owner again at each call, which is the same thing only for a plain name
             if isinstance(value.value, ast.Name) and value.value.id in TYPES:
                 around(value, f"(lambda _s, *_a: _s.{value.attr}(*_a) if True else ", ")")
             else:
@@ -249,6 +271,9 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
     """Run a reflex from its source. dry: reads and questions happen, changes are only planned."""
     job = _Run(host, decider, dry, {**LIMITS, **(limits or {})}, min_confidence)
     try:
+        if not isinstance(source, str):
+            raise Refused("a reflex is the text of one Python function")
+        source = source.replace("\r\n", "\n").replace("\r", "\n")
         about = describe(source)
         given = dict(inputs or {})
         known = [i["name"] for i in about["inputs"]]
@@ -259,10 +284,11 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
             raise Refused("; ".join(filter(None, [
                 f"unknown input: {', '.join(unknown)}" if unknown else "",
                 f"missing input: {', '.join(missing)}" if missing else ""])) + f" (it takes: {takes})")
+        code, job.shift = _prepared(source)
     except Refused as exc:
         return job.stopped(str(exc))
     call = "reflex(rx, **__reflex_inputs__)" if about["rx"] else "reflex(**__reflex_inputs__)"
-    code, job.shift = _prepared(source)
+    job.length = source.count("\n") + 1
     return job.start(code + TAIL.format(call=call), given)
 
 
@@ -273,13 +299,29 @@ def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
             raise ValueError("not a frozen run")
         head, _, snapshot = state[len(MARK):].partition(b"\n")
         meta = json.loads(head)
-        job = _Run(host, decider, meta["dry"], meta["limits"], meta["min_confidence"])
-        job.effects, job.planned, job.printed, job.spent = meta["effects"], meta["planned"], meta["output"], meta["ms"]
-        job.shift, pending = meta.get("shift", 0), meta["pending"]
-        pending["verb"], pending["asks"]
-    except (ValueError, KeyError, TypeError) as exc:
+        limits = {name: meta["limits"][name] for name in LIMITS}
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in limits.values()):
+            raise ValueError("limits")
+        job = _Run(host, decider, bool(meta["dry"]), limits, float(meta["min_confidence"]))
+        job.effects, job.planned = list(meta["effects"]), list(meta["planned"])
+        job.printed, job.spent = str(meta["output"]), int(meta["ms"])
+        job.shift, job.length, pending = int(meta.get("shift", 0)), int(meta.get("length", 0)), meta["pending"]
+        if pending["verb"] not in ("ask", "up") or not isinstance(pending["asks"], dict):
+            raise ValueError("no question")
+        if pending["verb"] == "ask":
+            pending["options"], pending["unsure"], pending["sure"], pending["items"]
+            pending["many"], pending["yes_no"]
+        return job.carry_on(snapshot, pending, answer, state)
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         return Outcome("stopped", reason=f"this run cannot be carried on: its saved state is damaged ({exc})")
-    return job.carry_on(snapshot, pending, answer, state)
+
+
+def started_in(state: bytes) -> str | None:
+    """The folder of the host a frozen run was started with: where its answer must carry it on."""
+    try:
+        return json.loads(state[len(MARK):].partition(b"\n")[0]).get("cwd") or None
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 # ---- the sandbox ---------------------------------------------------------------------------------------------
@@ -365,6 +407,7 @@ class _Run:
         self.began = time.monotonic()
         self.last_error = ""
         self.shift = 0  # lines the engine put before the author's first one
+        self.length = 0  # lines of the author's source
 
     # ---- the three ends ---------------------------------------------------------------------------------------
 
@@ -441,7 +484,8 @@ class _Run:
                 continue
             except _Pause as pause:
                 head = json.dumps({"dry": self.dry, "limits": self.limits, "min_confidence": self.min_confidence,
-                                   "shift": self.shift,
+                                   "shift": self.shift, "length": self.length,
+                                   "cwd": getattr(self.host, "cwd", None),
                                    "effects": self.effects, "planned": self.planned, "output": self.printed,
                                    "ms": self.ms(), "pending": {**pause.pending, "asks": pause.asks}}, default=str)
                 return self.outcome("asks", asks=pause.asks, state=MARK + head.encode() + b"\n" + snap.dump())
@@ -484,9 +528,12 @@ class _Run:
         if isinstance(exc, monty.MontySyntaxError):
             return f"not valid Python: {text}"
         try:
-            frames = [f for f in exc.traceback() if f.function_name != "<module>"]
+            every = list(exc.traceback())
         except Exception:  # an error with no frames to show
-            frames = []
+            every = []
+        frames = [f for f in every if f.function_name != "<module>"]
+        if not frames and every and 0 < every[-1].line - self.shift <= self.length:
+            frames = every[-1:]  # an error outside any function, in the author's own lines
         line = f" (line {frames[-1].line - self.shift} of the reflex)" if frames else ""
         hint = next((hint for said, hint in HINTS if said in text), "")
         taken = NO_VALUE.search(text)
@@ -512,7 +559,9 @@ class _Run:
         return handler(*bound.args, **bound.kwargs)
 
     def note(self, verb: str, what: str, began: float, **more) -> dict:
-        entry = {"verb": verb, "what": what, "ms": int((time.monotonic() - began) * 1000), **more}
+        if isinstance(more.get("error"), str):
+            more["error"] = _short(more["error"], NOTED)
+        entry = {"verb": verb, "what": _short(what, NOTED), "ms": int((time.monotonic() - began) * 1000), **more}
         self.effects.append(entry)
         return entry
 
@@ -614,7 +663,7 @@ class _Run:
         ok, argv = self.codes(ok), self.command("do", cmd)
         began = time.monotonic()
         if self.dry:
-            self.planned.append(shlex.join(argv))
+            self.planned.append(_short(shlex.join(argv), NOTED))
             self.note("do", shlex.join(argv), began, planned=True)
             return ""
         out, err, code = self.ran(argv, self.seconds(timeout), input)
@@ -640,7 +689,7 @@ class _Run:
         """Write a file (its folders are made). In a dry run it is only planned."""
         began, full = time.monotonic(), self.host.path(_text("write", "path", path))
         text = _text("write", "text", text)
-        what = f"{'append to' if append else 'write'} {full} ({len(text)} characters)"
+        what = f"{'append to' if append else 'write'} {_short(full, NOTED)} ({len(text)} characters)"
         if self.dry:
             self.planned.append(what)
             self.note("write", full, began, planned=True, chars=len(text))
@@ -676,7 +725,7 @@ class _Run:
         began, answers, by = time.monotonic(), None, "nobody"
         if self.decider is not None:
             try:
-                answers = list(self.decider(question, choices, [(_key(i), context_of(i)) for i in items]))
+                answers = self.decided(question, choices, [(_key(i), context_of(i)) for i in items])
                 by = getattr(self.decider, "name", "small model")
             except Exception as exc:  # no small model answered: every item is a doubt
                 answers, by = None, f"nobody ({type(exc).__name__}: {str(exc)[:80]})"
@@ -702,6 +751,24 @@ class _Run:
             raise _Pause({"verb": "ask", "many": many, "yes_no": yes_no, "options": choices, "sure": sure,
                           "items": items, "unsure": [_key(i) for i in unsure]}, asks)
         return _answers(sure, items, many, yes_no)
+
+    def decided(self, question, choices, items) -> list:
+        """The small model's answers, waited for no longer than the run has left."""
+        box = {}
+
+        def work():
+            try:
+                box["answers"] = list(self.decider(question, choices, items))
+            except Exception as exc:
+                box["error"] = exc
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(max(0.0, self.limits["seconds"] - self.ms() / 1000))
+        if "error" in box:
+            raise box["error"]
+        if "answers" not in box:
+            raise TimeoutError("no answer in the time the run had left")
+        return box["answers"]
 
     def rx_up(self, question, options=None, **context):
         """One precise question for the big model. The run freezes; it carries on with the answer.
@@ -772,6 +839,6 @@ def _cut(text: str) -> str:
     return text
 
 
-def _short(text: str) -> str:
+def _short(text: str, most: int = SHOWN) -> str:
     text = (text or "").strip()
-    return text if len(text) <= SHOWN else text[:SHOWN] + f"… (+{len(text) - SHOWN})"
+    return text if len(text) <= most else text[:most] + f"… (+{len(text) - most})"

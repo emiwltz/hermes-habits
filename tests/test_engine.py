@@ -596,3 +596,79 @@ def test_a_fault_of_the_host_keeps_the_journal():
     outcome = run(reflex("rx.do(['touch', 'x'])\nreturn rx.sh(['ls'])"), {}, host)
     assert outcome.status == "stopped" and "the engine failed (KeyError" in outcome.reason
     assert [e["what"] for e in outcome.effects] == ["touch x"]
+
+
+# ---- what a second review found, each kept as a test ----------------------------------------------------------
+
+def test_a_lent_helper_takes_a_bounded_text(host):
+    outcome = run(reflex("import shlex\nreturn len(shlex.split('a' * 200_000))"), {}, host)
+    assert outcome.status == "stopped" and "100000 characters at most" in outcome.reason
+    assert run(reflex("import shlex\nreturn shlex.split('a \"b c\"')"), {}, host).result == ["a", "b c"]
+
+
+def test_the_small_model_is_waited_for_no_longer_than_the_run_has_left(host):
+    import time
+
+    def slow(question, options, items):
+        time.sleep(5)
+        return [("yes", 0.99) for _ in items]
+    outcome = run(reflex("return rx.ask('ok?')"), {}, host, decider=slow, limits={"seconds": 0.5})
+    assert outcome.status == "asks" and outcome.ms < 3000 and "TimeoutError" in outcome.effects[0]["by"]
+
+
+def test_a_default_that_is_computed_is_marked_as_written(host):
+    about = describe("N = 2\ndef reflex(rx, hours=24 * 7, days=N, name='a', many=[1]):\n    return 1\n")
+    assert [(i["default"], i.get("written", False)) for i in about["inputs"]] == [
+        ("24 * 7", True), ("N", True), ("a", False), ([1], False)]
+
+
+def test_an_owner_that_does_not_read_the_same_twice_is_left_alone(host):
+    outcome = run(reflex("it = iter([{'a': 3, 'b': 1}, {'a': 0, 'b': 9}])\nreturn sorted(['a', 'b'], key=next(it).get)"),
+                  {}, host)
+    assert outcome.status == "stopped" and "handed over without being called" in outcome.reason
+
+
+@pytest.mark.parametrize("source, said", [
+    ("def reflex(rx):\r    x = next(y for y in [5])\r    return x\r", None),
+    ("def reflex(rx):\r\n    return any(x for x in [0, 2])\r\n", None),
+    ("def reflex(rx):\n    return 1" + "+1" * 12000 + "\n", "not valid Python"),
+    ("def reflex(rx):\n    return '\x00'\n", "not valid Python"),
+    (None, "the text of one Python function"),
+])
+def test_a_source_in_any_state_ends_in_an_outcome(host, source, said):
+    outcome = run(source, {}, host)
+    assert (outcome.status, said is None or said in outcome.reason) == ("stopped" if said else "done", True)
+
+
+def test_an_error_outside_any_function_has_its_line(host):
+    outcome = run("import json\nLIMIT = int('ten')\n\ndef reflex(rx):\n    return LIMIT\n", {}, host)
+    assert outcome.status == "stopped" and "(line 2 of the reflex)" in outcome.reason
+
+
+def test_a_damaged_state_is_a_stop_whatever_is_wrong_in_it(host):
+    import json
+    from reflexes.engine import MARK
+    asked = run(reflex("return rx.ask('ok?', about=['a', 'b'])"), {}, host)
+    head, _, snapshot = asked.state[len(MARK):].partition(b"\n")
+    meta = json.loads(head)
+    for spoil in (lambda m: m["limits"].pop("cpu"), lambda m: m["pending"].pop("options"),
+                  lambda m: m.update(ms="soon"), lambda m: m.update(effects=None),
+                  lambda m: m["pending"].update(verb="other"), lambda m: m.update(limits={"seconds": "x"})):
+        bad = json.loads(head)
+        spoil(bad)
+        outcome = resume(MARK + json.dumps(bad).encode() + b"\n" + snapshot, {"a": "yes", "b": "no"}, host)
+        assert outcome.status == "stopped" and "damaged" in outcome.reason
+    assert resume(asked.state, {"a": "yes", "b": "no"}, host).result == {"a": True, "b": False}
+
+
+def test_the_journal_stays_small_whatever_passes_through_it(host):
+    outcome = run(reflex("""
+for at in range(3):
+    try:
+        rx.read("/x/" + "y" * 50_000)
+    except FileNotFoundError:
+        pass
+rx.do(["echo", "z" * 50_000])
+return "ok"
+"""), {}, host, dry=True)
+    assert outcome.result == "ok" and len(str(outcome.effects)) + len(str(outcome.planned)) < 30_000
