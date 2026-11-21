@@ -1,29 +1,50 @@
-import sys
-from pathlib import Path
+import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-import pytest  # noqa: E402
+from reflexes import readers
 
 
-@pytest.fixture(autouse=True)
-def no_shipped_reflex_does_df(monkeypatch, request):
-    """The tests learn `df -h ~` from made-up histories. The shipped disk-space example does that very command, and
-    the dream drafts no second reflex for a command a reflex already does: so in the tests' world disk-space is not
-    counted, except in the tests of that rule, which ask for the real examples with the fixture `shipped`."""
-    if "shipped" in request.fixturenames:
-        return
-    from habits import nursery
-    doers = nursery.Dream._doers
+class FakeHost:
+    """A host that runs nothing: commands answer from a table, files live in a dict."""
 
-    def without_disk_space(self):
-        return {key: kept for key, found in doers(self).items()
-                if (kept := [(name, folder) for name, folder in found if name != "disk-space"])}
+    home = "/home/me"
 
-    monkeypatch.setattr(nursery.Dream, "_doers", without_disk_space)
+    def __init__(self, commands=None, files=None):
+        self.commands = commands or {}  # "ls -p /x" -> output, or (output, errors, code), or a function of argv
+        self.files = dict(files or {})
+        self.ran, self.inputs = [], []
+
+    def path(self, word):
+        return self.home + word[1:] if word == "~" or word.startswith("~/") else word
+
+    def reads_only(self, argv):
+        return readers.why_not(argv)
+
+    def run(self, argv, seconds, input=None):
+        self.ran.append(list(argv))
+        self.inputs.append(input)
+        found = self.commands.get(" ".join(argv), self.commands.get(argv[0], ""))
+        if callable(found):
+            found = found(argv)
+        return found if isinstance(found, tuple) else (found, "", 0)
+
+    def read(self, path):
+        if path not in self.files:
+            raise FileNotFoundError(2, "No such file or directory")
+        return self.files[path]
+
+    def write(self, path, text, append=False):
+        self.files[path] = (self.files.get(path, "") if append else "") + text
 
 
 @pytest.fixture
-def shipped():
-    """The shipped examples count as they do for a user (see no_shipped_reflex_does_df)."""
+def host():
+    return FakeHost()
+
+
+def decider(table, name="fake"):
+    """A small model that answers from {item text: (answer, confidence)}; anything else is a doubt."""
+    def decide(question, options, items):
+        decide.calls.append((question, list(options), list(items)))
+        return [table.get(text, (options[0], 0.1)) for text, _ in items]
+    decide.calls, decide.name = [], name
+    return decide
