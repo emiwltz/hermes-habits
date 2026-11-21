@@ -70,12 +70,31 @@ Two benches, in [bench/](bench/), run on 21 November 2026 with fresh model insta
 **Writing a reflex, first try, from the guide alone** (eight small real tasks; the reflex is then run for real in a
 throwaway home, dry and live, and what is on disk is checked):
 
-MEASURED_WRITING
+| Written by | Reflexes that work, first try |
+| --- | --- |
+| Claude Haiku 5.5 | 22 of 24 |
+| Claude Sonnet 5.5 | 16 of 16 |
+| Claude Opus 5.5 | 8 of 8 |
+| all | 46 of 48 |
+
+The two that fail read a `df` column wrongly and misuse `rx.ask` once. An earlier round compared three guides on 96
+reflexes written by Haiku and Sonnet: 91 worked (this guide 31 of 32, one with four verbs only 32 of 32, a
+300-token card 28 of 32). Each writer made three tool calls (read the guide, read the task, write the file); five of the 96 then edited their
+file once more. None could run or check its reflex.
 
 **Using reflexes** (a request, the lines above in the prompt, a shell; six situations: a plain call, a question to
 answer, a dry run asked for, an input to pass, a request no reflex fits, and "make that a reflex"):
 
-MEASURED_USE
+| Situation | Right, of 5 | What the model did |
+| --- | --- | --- |
+| a request a reflex fits | 5 | `reflex run`, nothing by hand |
+| a reflex that asks | 5 | `run`, then `answer` with the five notes classified; the reflex moved them |
+| "show me first" | 5 | `reflex test`, nothing changed |
+| an input to pass | 5 | `test` then `run` with `days=20` |
+| a request no reflex fits | 5 | no reflex; one command by hand |
+| "make that a reflex" | 5 | `guide`, wrote the file, `test`, `run`: four tool calls for a new working reflex |
+
+Five runs per situation: Haiku twice, Sonnet twice, Opus once.
 
 What these numbers are not: a comparison with another format on the same tasks (an earlier, smaller trial of the 0.1
 YAML format gave 1 working reflex in 6 against 6 in 6), or a measure on a cheap non-Claude model. Both are to do.
