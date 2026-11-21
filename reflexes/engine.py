@@ -59,6 +59,13 @@ NO_MODULE = {  # what a reflex reaches for by habit, and what does the job here
     "urllib": "fetch with rx.sh(['curl', '-s', url]); take a URL apart with re or str methods",
     "http": "fetch with rx.sh(['curl', '-s', url])",
     "operator": "write the function out: key=lambda x: x[1]",
+    "statistics": "write it out: sum(xs) / len(xs), sorted(xs)[len(xs) // 2]",
+    "heapq": "use sorted(xs)[:n]",
+    "enum": "use plain constants",
+    "pprint": "use json.dumps(value, indent=2)",
+    "uuid": "use rx.sh(['uuidgen'])",
+    "tempfile": "use rx.do(['mktemp'])",
+    "difflib": "use rx.sh(['diff', a, b], ok=(0, 1))",
 }
 HINTS = (  # what the sandbox says in its own words, and what the author should do about it
     ("cannot suspend in this synchronous context",
@@ -70,7 +77,40 @@ HINTS = (  # what the sandbox says in its own words, and what the author should 
     ("exceptions can only be called with zero or one string argument",
      "an error takes one text here: raise ValueError(f'...')"),
     ("callable replacement is not yet supported", "build the text from re.finditer(...) instead"),
+    ("'float' object cannot be interpreted as an integer",
+     "timedelta and range take whole numbers here: timedelta(seconds=int(hours * 3600))"),
+    ("'datetime.datetime' has no attribute 'today'", "use datetime.now()"),
+    ("has no attribute 'utcnow'", "use datetime.now(datetime.timezone.utc)"),
+    ("cannot import name 'UTC'", "use datetime.timezone.utc"),
+    ("cannot import name", "the sandbox has part of the standard library only: write that step in plain Python"),
+    ("No module named", "the sandbox has part of the standard library only: write that step in plain Python, or "
+                        "get it from a command with rx.sh"),
+    ("does not yet support method decorators",
+     "write a plain method or a function instead of @property, @staticmethod or @classmethod"),
+    ("not supported between instances of",
+     "the sandbox does not call __lt__ and its kin: sort or compare with key=lambda x: x.field"),
 )
+NOT_CALLED = ("__bool__", "__len__", "__format__")  # the sandbox ignores them in a class, without a word
+# Builtins put right for the reflex: defined after its own code, so its line numbers stay, and only when it uses
+# them and has no function of that name itself. hasattr is always False on a built-in value in the sandbox, and
+# round(x, n) differs from Python's on halves (round(2.675, 2) gives 2.68).
+SHIMS = {
+    "hasattr": """_rx_hasattr, _rx_plain = hasattr, (str, bytes, list, dict, set, frozenset, tuple, int, float)
+def hasattr(thing, name):
+    if isinstance(thing, _rx_plain):
+        return name in _rx_names[type(thing).__name__]
+    return _rx_hasattr(thing, name)
+""",
+    "round": """_rx_round = round
+def round(number, ndigits=None):
+    if ndigits is None:
+        return _rx_round(number)
+    if isinstance(number, float) and isinstance(ndigits, int) and not isinstance(ndigits, bool) and 0 <= ndigits < 300:
+        return float(format(number, "." + str(ndigits) + "f"))
+    return _rx_round(number, ndigits)
+""",
+}
+NAMES = {kind.__name__: sorted(dir(kind)) for kind in (str, bytes, list, dict, set, frozenset, tuple, int, float, bool)}
 NO_VALUE = re.compile(r"'(\w+)'(?: object)? has no attribute '(\w+)'")  # a method taken without being called
 HIT = "_rx_hit"  # the name that any, all and next use to stop at the first item that settles them
 SETTLED = {"any": f") and not {HIT}.append(1))", "all": f") or {HIT}.append(1))", "next": f"), {HIT}.append(1))[0]"}
@@ -96,8 +136,10 @@ LENT = {
                  "shorten": _lent(textwrap.shorten), "fill": _lent(textwrap.fill), "wrap": _lent(textwrap.wrap)},
     "string": {name: getattr(string, name) for name in ("ascii_letters", "ascii_lowercase", "ascii_uppercase",
                                                         "digits", "hexdigits", "punctuation", "whitespace")},
+    # the engine's own: datetime.strptime as Python has it (the sandbox's forgets a lone %H and wants a full date)
+    "_rx": {"strptime": _lent(datetime.datetime.strptime)},
 }
-TAIL = "\n\nimport rx\n__reflex_inputs__ = dict(__reflex_inputs__)\n{call}\n"
+TAIL = "\n\nimport rx\n__reflex_inputs__ = dict(__reflex_inputs__)\n{shims}{call}\n"
 READY = ("re", "json", "math", "datetime", "collections", "itertools", "functools", "os")  # there without an import
 
 
@@ -170,12 +212,19 @@ def _parsed(source: str):
 
 
 def _prepared(source: str) -> tuple:
-    """(the code the sandbox runs, how many lines it adds before the author's first line).
+    """(the code the sandbox runs, the lines it adds before the author's first one, the builtins to put right after
+    the author's code, the methods the author hands over without calling them).
 
     The everyday modules the reflex did not bind itself are imported for it: a forgotten `import re` is not worth a
     failed run. The import is one line put first; after a `from __future__` import, which must stay first, it goes
     on that same line instead and adds none."""
     tree = _parsed(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            ignored = [n.name for n in node.body if isinstance(n, ast.FunctionDef) and n.name in NOT_CALLED]
+            if ignored:
+                raise Refused(f"class {node.name} defines {ignored[0]}, which the sandbox never calls: give it a "
+                              f"plain method instead (is_empty(), size()) and call that (line {node.lineno})")
     bound, modules = set(), set()
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -187,27 +236,31 @@ def _prepared(source: str) -> tuple:
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             bound |= {n.id for target in targets for n in ast.walk(target) if isinstance(n, ast.Name)}
-    names = [("os.path" if name == "os" else name) for name in READY if name not in bound]
-    ready = "import " + ", ".join(names) if names else "pass"
-    code = _as_meant(source, tree, modules | {name for name in READY if name not in bound} | {"rx"}, bound)
+    names = [("os.path" if name == "os" else name) for name in READY if name not in bound] + ["_rx"]
+    ready = "import " + ", ".join(names)
+    code, loose = _as_meant(source, tree, modules | {name for name in READY if name not in bound} | {"rx"}, bound)
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    shims = [name for name in SHIMS if name in used and name not in bound]
     future = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "__future__"]
     if not future:
-        return ready + "\n" + code, 1
+        return ready + "\n" + code, 1, shims, loose
     lines = code.split("\n")
     at, col = future[-1].end_lineno - 1, future[-1].end_col_offset
     row = lines[at].encode()
     lines[at] = (row[:col] + b"; " + ready.encode() + row[col:]).decode()
-    return "\n".join(lines), 0
+    return "\n".join(lines), 0, shims, loose
 
 
-def _as_meant(source: str, tree, modules: set, bound: set) -> str:
-    """Ordinary Python that the sandbox takes otherwise, put right in the source before it runs.
+def _as_meant(source: str, tree, modules: set, bound: set) -> tuple:
+    """Ordinary Python that the sandbox takes otherwise, put right in the source before it runs; and the methods
+    the source still hands over without calling them (the sandbox will refuse those: the error can then say so).
 
     - any(...), all(...) and next(...) of a generator expression stop at the first item that settles them. The
       sandbox builds a generator expression as a whole list first: rx.do in it would run for every item.
     - next() of map, filter, zip, enumerate or reversed, which are lists in the sandbox.
     - a method handed over without being called where a function is expected (key=str.lower, key=counts.get,
       map(str.strip, lines)): the sandbox has no such value.
+    - datetime.strptime, which the host does as Python does.
 
     Text is only inserted, around whole expressions, so every line keeps its number."""
     lines = [line.encode() for line in source.split("\n")]
@@ -225,11 +278,21 @@ def _as_meant(source: str, tree, modules: set, bound: set) -> str:
     inner = set()  # inside an f-string an expression's place is not reliable before Python 3.12: left as it is
     if sys.version_info < (3, 12):
         inner = {id(n) for text in ast.walk(tree) if isinstance(text, ast.JoinedStr) for n in ast.walk(text)}
+    called, wrapped = set(), set()
+    clocks = {alias.asname or alias.name for node in tree.body if isinstance(node, ast.Import)
+              for alias in node.names if alias.name == "time"}  # time.strptime is another function
     for node in ast.walk(tree):  # outer expressions before the ones they hold
-        if not isinstance(node, ast.Call) or id(node) in inner:
+        if not isinstance(node, ast.Call):
+            continue
+        called.add(id(node.func))
+        if id(node) in inner:
             continue
         name = node.func.id if isinstance(node.func, ast.Name) and node.func.id not in bound else ""
         first = node.args[0] if node.args else None
+        func = node.func
+        if (isinstance(func, ast.Attribute) and func.attr == "strptime" and root(func) not in clocks | {""}
+                and ast.unparse(func.value).split(".")[-1] not in ("date", "time")):  # datetime's, under any name
+            around(func, "(_rx.strptime if True else ", ")")
         if name in SETTLED and isinstance(first, ast.GeneratorExp) and not any(g.is_async for g in first.generators):
             opens, closes = (first.lineno, first.col_offset), (first.end_lineno, first.end_col_offset - 1)
             if lines[opens[0] - 1][opens[1]:opens[1] + 1] == b"(" and lines[closes[0] - 1][closes[1]:closes[1] + 1] == b")":
@@ -250,20 +313,26 @@ def _as_meant(source: str, tree, modules: set, bound: set) -> str:
             if not isinstance(value, ast.Attribute) or root(value) in modules | {""}:
                 continue  # a module's function (os.path.basename) is a value the sandbox has; and the lambda reads
                 # its owner again at each call, which is the same thing only for a plain name
+            wrapped.add(id(value))
             if isinstance(value.value, ast.Name) and value.value.id in TYPES:
                 around(value, f"(lambda _s, *_a: _s.{value.attr}(*_a) if True else ", ")")
             else:
                 around(value, "(lambda *_a, **_k: ", "(*_a, **_k))")
+    loose = sorted({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load)
+                    and id(n) not in called | wrapped}
+                   | {n.args[1].value for n in ast.walk(tree) if isinstance(n, ast.Call)
+                      and isinstance(n.func, ast.Name) and n.func.id == "getattr" and len(n.args) > 1
+                      and isinstance(n.args[1], ast.Constant) and isinstance(n.args[1].value, str)})
     if not edits:
-        return source
+        return source, loose
     for line, col, _, text in sorted(edits, reverse=True):  # from the end: what is still to place keeps its offset
         lines[line - 1] = lines[line - 1][:col] + text.encode() + lines[line - 1][col:]
     code = "\n".join(line.decode() for line in lines)
     try:
         ast.parse(code)
     except SyntaxError:  # never hand over a rewrite that does not read: the author's own text then runs as it is
-        return source
-    return code
+        return source, loose
+    return code, loose
 
 
 def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False, decider=None,
@@ -284,12 +353,13 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
             raise Refused("; ".join(filter(None, [
                 f"unknown input: {', '.join(unknown)}" if unknown else "",
                 f"missing input: {', '.join(missing)}" if missing else ""])) + f" (it takes: {takes})")
-        code, job.shift = _prepared(source)
+        code, job.shift, shims, job.loose = _prepared(source)
     except Refused as exc:
         return job.stopped(str(exc))
     call = "reflex(rx, **__reflex_inputs__)" if about["rx"] else "reflex(**__reflex_inputs__)"
     job.length = source.count("\n") + 1
-    return job.start(code + TAIL.format(call=call), given)
+    more = {"_rx_names": NAMES} if "hasattr" in shims else {}
+    return job.start(code + TAIL.format(shims="".join(SHIMS[name] for name in shims), call=call), given, more)
 
 
 def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
@@ -306,6 +376,7 @@ def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
         job.effects, job.planned = list(meta["effects"]), list(meta["planned"])
         job.printed, job.spent = str(meta["output"]), int(meta["ms"])
         job.shift, job.length, pending = int(meta.get("shift", 0)), int(meta.get("length", 0)), meta["pending"]
+        job.loose = [str(name) for name in meta.get("loose", [])]
         if pending["verb"] not in ("ask", "up") or not isinstance(pending["asks"], dict):
             raise ValueError("no question")
         if pending["verb"] == "ask":
@@ -408,6 +479,7 @@ class _Run:
         self.last_error = ""
         self.shift = 0  # lines the engine put before the author's first one
         self.length = 0  # lines of the author's source
+        self.loose = []  # methods the source hands over without calling them
 
     # ---- the three ends ---------------------------------------------------------------------------------------
 
@@ -426,17 +498,18 @@ class _Run:
     def session(self):
         modules = {"rx": monty.ExternalModule({**{verb: _never for verb in VERBS}, "home": self.host.home}),
                    **{name: monty.ExternalModule(attrs) for name, attrs in LENT.items()}}
-        limits = monty.ResourceLimits(max_feed_duration_secs=self.limits["cpu"], max_memory=256_000_000)
+        limits = monty.ResourceLimits(max_feed_duration_secs=self.limits["cpu"], max_memory=256_000_000,
+                                      max_suspensions=100_000)  # the run's own budgets are the ones that count
         return _sandbox().checkout(external_modules=modules, limits=limits, script_name="reflex.py",
                                    os_policy={"timezone": _zone()})
 
-    def start(self, code: str, inputs: dict) -> Outcome:
+    def start(self, code: str, inputs: dict, more: dict | None = None) -> Outcome:
         try:
             with self.session() as session:
                 folder = getattr(self.host, "cwd", None)  # os.getcwd() and os.path.abspath() answer as the host
                 where = {"cwd": folder} if isinstance(folder, str) and folder.startswith("/") else {}
-                snap = session.feed_start(code, inputs={"__reflex_inputs__": inputs}, print_callback=self.heard,
-                                          **where)
+                snap = session.feed_start(code, inputs={"__reflex_inputs__": inputs, **(more or {})},
+                                          print_callback=self.heard, **where)
                 return self.drive(snap)
         except monty.MontyError as exc:
             return self.stopped(self.said(exc))
@@ -484,7 +557,7 @@ class _Run:
                 continue
             except _Pause as pause:
                 head = json.dumps({"dry": self.dry, "limits": self.limits, "min_confidence": self.min_confidence,
-                                   "shift": self.shift, "length": self.length,
+                                   "shift": self.shift, "length": self.length, "loose": self.loose,
                                    "cwd": getattr(self.host, "cwd", None),
                                    "effects": self.effects, "planned": self.planned, "output": self.printed,
                                    "ms": self.ms(), "pending": {**pause.pending, "asks": pause.asks}}, default=str)
@@ -492,7 +565,7 @@ class _Run:
             except _Stop as stop:
                 return self.stopped(str(stop))
             snap = snap.resume({"return_value": value})
-        result = snap.output
+        result = _fields(snap.output)
         if result is None and self.printed.strip():
             result = self.printed.strip()  # a reflex that prints its answer instead of returning it
         return self.outcome("done", result=result)
@@ -531,15 +604,15 @@ class _Run:
             every = list(exc.traceback())
         except Exception:  # an error with no frames to show
             every = []
-        frames = [f for f in every if f.function_name != "<module>"]
-        if not frames and every and 0 < every[-1].line - self.shift <= self.length:
-            frames = every[-1:]  # an error outside any function, in the author's own lines
+        own = [f for f in every if not self.length or 0 < f.line - self.shift <= self.length]  # the author's lines
+        frames = [f for f in own if f.function_name != "<module>"] or own[-1:]  # in a function, else outside any
         line = f" (line {frames[-1].line - self.shift} of the reflex)" if frames else ""
         hint = next((hint for said, hint in HINTS if said in text), "")
         taken = NO_VALUE.search(text)
         if taken and hasattr(getattr(builtins, taken[1], None), taken[2]):
-            hint = (f"if {taken[2]} is handed over without being called, the sandbox has no such value: write "
-                    f"lambda x: x.{taken[2]}(...)")
+            hint = (f"{taken[2]} is handed over without being called, and the sandbox has no such value: write "
+                    f"lambda x: x.{taken[2]}(...)" if taken[2] in self.loose else
+                    f"the sandbox has no {taken[1]}.{taken[2]}: write that step another way")
         return f"{text}{line}" + (f". {hint[0].upper()}{hint[1:]}" if hint else "")
 
     # ---- the verbs --------------------------------------------------------------------------------------------
@@ -830,6 +903,20 @@ def _key(item) -> str:
 def _text(verb: str, name: str, value) -> str:
     if not isinstance(value, str):
         raise _Raise(TypeError(f"rx.{verb}: {name} is a text, not {type(value).__name__}"))
+    return value
+
+
+def _fields(value):
+    """A result as plain data: an object of one of the reflex's own classes becomes the dict of its fields."""
+    try:
+        if isinstance(value, monty.MontyClassProxy):
+            return {str(name): _fields(field) for name, field in value.attributes.items()}
+        if isinstance(value, dict):
+            return {key: _fields(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return type(value)(_fields(item) for item in value)
+    except (RecursionError, TypeError, AttributeError):  # nested too deep, or a shape of its own: as it is
+        pass
     return value
 
 

@@ -672,3 +672,92 @@ rx.do(["echo", "z" * 50_000])
 return "ok"
 """), {}, host, dry=True)
     assert outcome.result == "ok" and len(str(outcome.effects)) + len(str(outcome.planned)) < 30_000
+
+
+def test_hasattr_and_round_answer_as_python_does(host):
+    outcome = run("""
+from dataclasses import dataclass
+
+@dataclass
+class Item:
+    name: str
+
+def kind(x):
+    if hasattr(x, "items"):
+        return "mapping"
+    if hasattr(x, "append"):
+        return "list"
+    if hasattr(x, "strip"):
+        return "text"
+    return "field" if hasattr(x, "name") else "other"
+
+def reflex(rx):
+    return [[kind(x) for x in ({}, [], "s", Item("a"), 3)],
+            [round(2.675, 2), round(0.05, 1), round(48.45, 1), round(2.5), round(1234.5678, -2), round(7, 2)],
+            list(map(round, [0.4, 1.6]))]
+""", {}, host)
+    assert outcome.result == [["mapping", "list", "text", "field", "other"],
+                              [2.67, 0.1, 48.5, 2, 1200.0, 7], [0, 2]], outcome.reason
+
+
+def test_a_reflex_with_its_own_round_keeps_it(host):
+    outcome = run("def round(x, n=0):\n    return 'mine'\n\ndef reflex(rx):\n    return round(2.675, 2)\n", {}, host)
+    assert outcome.result == "mine"
+
+
+def test_strptime_reads_what_python_reads(host):
+    outcome = run(reflex("""
+from datetime import datetime as when
+parsed = [datetime.datetime.strptime("2024-03-05T10", "%Y-%m-%dT%H"), when.strptime("14:30", "%H:%M"),
+          datetime.datetime.strptime("Mar 5 2024", "%b %d %Y") + datetime.timedelta(days=1)]
+try:
+    when.strptime("nope", "%Y")
+except ValueError as exc:
+    parsed.append("refused")
+return [str(p) for p in parsed]
+"""), {}, host)
+    assert outcome.result == ["2024-03-05 10:00:00", "1900-01-01 14:30:00", "2024-03-06 00:00:00", "refused"], \
+        outcome.reason
+
+
+def test_a_class_method_the_sandbox_never_calls_is_refused_before_the_run(host):
+    outcome = run("class Box:\n    def __init__(self):\n        self.items = []\n    def __bool__(self):\n"
+                  "        return bool(self.items)\n\ndef reflex(rx):\n    return 1 if Box() else 2\n", {}, host)
+    assert outcome.status == "stopped" and "class Box defines __bool__" in outcome.reason
+
+
+def test_an_object_of_the_reflex_comes_back_as_its_fields(host):
+    outcome = run("""
+from dataclasses import dataclass
+
+@dataclass
+class Item:
+    name: str
+    size: int = 0
+
+def reflex(rx):
+    return {"biggest": Item("a", 3), "all": [Item("a", 3), Item("b")]}
+""", {}, host)
+    assert outcome.result == {"biggest": {"name": "a", "size": 3},
+                              "all": [{"name": "a", "size": 3}, {"name": "b", "size": 0}]}
+
+
+@pytest.mark.parametrize("body, said", [
+    ("return (3.5).is_integer()", "The sandbox has no float.is_integer: write that step another way"),
+    ("return getattr('ab', 'upper')()", "handed over without being called"),
+    ("d = {'b': 2}\nreturn sorted(d, key=d.__getitem__)", "The sandbox has no dict.__getitem__"),
+    ("return str(datetime.timedelta(hours=0.5))", "take whole numbers here"),
+    ("return datetime.datetime.today()", "Use datetime.now()"),
+    ("import statistics", "sum(xs) / len(xs)"),
+    ("from functools import wraps", "part of the standard library only"),
+    ("import calendar", "part of the standard library only"),
+    ("return round('a', 2)", "(line 2 of the reflex)"),
+])
+def test_what_the_sandbox_lacks_is_said_as_it_is(host, body, said):
+    outcome = run(reflex(body), {}, host)
+    assert outcome.status == "stopped" and said in outcome.reason, outcome.reason
+
+
+def test_helpers_of_the_host_can_be_called_thousands_of_times(host):
+    outcome = run(reflex("import shlex\nreturn len([shlex.quote('a b') for _ in range(3000)])"), {}, host)
+    assert outcome.result == 3000

@@ -89,8 +89,15 @@ keeps its number, and a rewrite that does not parse is dropped):
 - a method handed over where a function is expected (`key=str.lower`, `key=counts.get`, `map(str.strip, lines)`):
   the sandbox has no such value.
 
+Three builtins answered wrongly without an error, which is the worst kind. `hasattr` was always False on a text, a
+list or a dict; `round(2.675, 2)` gave 2.68; `datetime.strptime` forgot a lone `%H` and refused a time without a
+date. The first two are defined again after the author's code, only when it uses them; the third is done by the
+host. A class that defines `__bool__`, `__len__` or `__format__`, which the sandbox never calls, is refused before
+the run. An object of the reflex's own class comes back as the dict of its fields.
+
 Where it cannot put things right, the error says what to write instead (a generator kept in a variable, `rx`
-called from inside `sorted(key=...)`, an error raised with two arguments, `re.sub` with a function).
+called from inside `sorted(key=...)`, an error raised with two arguments, `re.sub` with a function, a missing
+module, `timedelta(hours=0.5)`).
 
 ### Which commands only read
 
@@ -138,10 +145,11 @@ Open:
   The bar is 0.8 for now and must be fitted.
 - **Reads are not private.** A reflex can read what its user can read and a read can go outside (`curl`), so a dry
   run changes nothing but can tell. The journal marks the reads that left the machine.
-- **The sandbox knows part of Python**: no class inheritance, no `yield`, part of the library. A few answers
-  differ from CPython without an error: `round(2.675, 2)` gives 2.68 and `sum([0.1] * 10)` 0.9999999999999999; in
-  `re`, `$` does not match before a final newline and `\n` in a replacement text stays two characters; a generator
-  expression kept in a variable is a list and can be read twice. They are the sandbox's to fix, and to report.
+- **The sandbox knows part of Python**: no class inheritance, no `yield`, no `@property`, part of the library. A
+  few answers still differ from CPython without an error: `sum([0.1] * 10)` gives 0.9999999999999999 (as Python did
+  before 3.12); in `re`, `$` does not match before a final newline and `\n` in a replacement text stays two
+  characters; a generator expression kept in a variable is a list and can be read twice. They are the sandbox's to
+  fix, and to report. Each patch above is a debt to drop when the sandbox catches up.
 - **Only Claude models wrote and used reflexes so far.** A cheap model of another family is to measure.
 - **The name.** `reflex` and `reflexes` are taken on PyPI; the package is `agent-reflexes` for now, the command
   `reflex`.
