@@ -36,7 +36,7 @@ Hermes first.
 | Safety | reading shell text, and a guard of 3,574 lines | a sandbox with no file, network or process; every effect is a call the host answers | The sandbox refuses `open`, `os.system`, `subprocess`; an endless loop is cut |
 | Handing back | the run ends, the model finishes by hand | the run freezes on one question and carries on with the answer | A frozen run is about 5 to 10 KB and resumes in another process in 16 ms |
 | Writing a reflex | 12 to 41 model calls for "make it a habit" | four tool calls: read the guide, write the file, dry run, run | The use bench, 5 of 5 |
-| Size | 18,506 lines, 4,963 tests | about 1,900 lines, about 430 tests | |
+| Size | 18,506 lines, 4,963 tests | about 2,200 lines, about 480 tests | |
 
 | Dropped for now | Why |
 | --- | --- |
