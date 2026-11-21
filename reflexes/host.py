@@ -11,10 +11,20 @@ import signal
 import stat
 import subprocess
 import threading
+import time
 
 from . import readers
 
 MOST = 8_000_000  # bytes of one output or one file a reflex may be handed; past it the command is stopped
+LIVE, LOCK = set(), threading.Lock()  # the commands running now, in every host of this process
+
+
+def stop_all() -> None:
+    """Stop every command still running in this process (whoever asked for it gave up on their runs)."""
+    with LOCK:
+        running = list(LIVE)
+    for child in running:
+        _kill(child)
 
 
 class Local:
@@ -23,7 +33,7 @@ class Local:
     def __init__(self, cwd: str | None = None, extra_readers: dict | None = None, home: str | None = None,
                  env: dict | None = None):
         self.cwd = cwd or os.getcwd()  # OSError when the folder we are in is gone: there is nowhere to run
-        self.live, self.lock = set(), threading.Lock()  # the commands running now
+        self.live = set()  # the commands of this host running now
         self.home = home or os.path.expanduser("~")
         self.extra_readers = extra_readers or {}
         self.env = env or {}  # variables its commands get on top of this process's own
@@ -45,6 +55,10 @@ class Local:
         """Whether this read asks another machine."""
         return readers.outside(argv)
 
+    def as_read(self, argv: list) -> list:
+        """The form a command that passed as a read is run in (curl is kept to HTTP and HTTPS)."""
+        return readers.as_read(argv)
+
     def run(self, argv: list, seconds: float, input: str | None = None) -> tuple:
         """(output, errors, exit code) of one program, run without a shell. Its output is read as it comes and the
         program is stopped past MOST bytes: an endless one (cat /dev/zero) must not fill this process. Stopped
@@ -61,8 +75,9 @@ class Local:
         except NotADirectoryError:
             return "", f"{self.cwd}: not a folder", 126
         kept, over = {"out": bytearray(), "err": bytearray()}, threading.Event()
-        with self.lock:
+        with LOCK:
             self.live.add(child)
+            LIVE.add(child)
 
         def stop():
             _kill(child)
@@ -101,10 +116,12 @@ class Local:
             stop()
             raise
         finally:
-            with self.lock:
+            with LOCK:
                 self.live.discard(child)
-        for thread in threads:
-            thread.join(1.0)  # a child of the program may still hold the pipes: what came so far is the output
+                LIVE.discard(child)
+        patience = time.monotonic() + 1.0  # a child of the program may still hold the pipes: what came so far is
+        for thread in threads:  # the output, and one second in all is what we wait for the rest
+            thread.join(max(0.0, patience - time.monotonic()))
         out, err = (bytes(kept[name]).decode("utf-8", "replace") for name in ("out", "err"))
         if over.is_set():
             return "", f"more than {MOST // 1_000_000} MB of output: narrow the command", 125
@@ -114,7 +131,7 @@ class Local:
 
     def stop(self) -> None:
         """Stop every command still running (the run they belong to was interrupted)."""
-        with self.lock:
+        with LOCK:
             running = list(self.live)
         for child in running:
             _kill(child)
@@ -136,15 +153,32 @@ class Local:
         return data.decode("utf-8", "replace")
 
     def write(self, path: str, text: str, append: bool = False) -> None:
+        """Write a regular file. A pipe nobody reads would wait forever, a device is no place for a text."""
         full = os.path.join(self.cwd, path)
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
-        with open(full, "a" if append else "w", encoding="utf-8") as handle:
-            handle.write(text)
+        handle = os.open(full, os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK | (os.O_APPEND if append else 0), 0o666)
+        try:
+            if not stat.S_ISREG(os.fstat(handle).st_mode):
+                raise OSError("not a regular file")
+            if not append:
+                os.ftruncate(handle, 0)
+            file = os.fdopen(handle, "a" if append else "w", encoding="utf-8")
+        except BaseException:
+            os.close(handle)
+            raise
+        with file:
+            file.write(text)
 
 
 def _kill(child) -> None:
     """Kill a program and whatever it started. Its descendants are found while it still lives (once it is dead they
-    belong to nobody), from the table of processes; without `ps`, the program alone is killed."""
+    belong to nobody), from the table of processes; without `ps`, the program alone is killed. It is frozen first,
+    so that it starts nothing more while we look. A program that cut itself loose on purpose (a daemon) is not
+    found: that is what it asked for."""
+    try:
+        child.send_signal(signal.SIGSTOP)
+    except (OSError, ValueError, AttributeError):
+        pass
     try:
         table = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from . import decide, engine, store
+from . import host as hosts
 from .host import Local
 
 USAGE = """reflex list                           the reflexes here, one per line
@@ -27,12 +28,13 @@ reflex answer <id> <answer>           carry on a run that asked (- takes the ans
 reflex guide                          how to write a reflex
 Add --json to run, test and answer for the whole result as JSON."""
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+SHOWN = 20_000  # characters of a result or of a question shown to the caller; --json gives them whole
 GONE = "the folder you are in no longer exists: a reflex needs a folder to run in (cd somewhere first)"
 
 
 def main(argv=None) -> int:
-    try:  # a caller that gives up on us (a kill, a closed terminal) is an interruption like Ctrl-C: the run stops
-        for sign in (signal.SIGTERM, signal.SIGHUP):  # its commands and says what it had done
+    try:  # Ctrl-C, a kill, a closed terminal: the run stops its commands and says what it had done
+        for sign in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sign, _interrupted)
     except (ValueError, OSError, AttributeError):  # not the main thread, or no such signal here
         pass
@@ -49,8 +51,24 @@ def main(argv=None) -> int:
         return 0
 
 
+RUNNING = []  # not empty while a run is going on
+
+
 def _interrupted(sign, frame):
-    raise KeyboardInterrupt
+    """During a run nothing is raised (an error raised inside the sandbox's own calls gets lost, or is caught by
+    the reflex): the run is asked to stop, its commands are stopped, and it ends by itself with its journal."""
+    if not RUNNING:
+        raise KeyboardInterrupt
+    engine.CUT.set()
+    hosts.stop_all()
+
+
+def _run(work):
+    RUNNING.append(True)
+    try:
+        return work()
+    finally:
+        RUNNING.pop()
 
 
 def _main(args: list) -> int:
@@ -71,8 +89,11 @@ def _main(args: list) -> int:
         if not rest:
             return _fail(f"give the run and the answer: {_me()} answer <id> '<answer>'")
         words = rest[2:] if rest[1:2] == ["--"] else rest[1:]  # after --, an answer may start with a dash
-        text = sys.stdin.read() if rest[1:] == ["-"] else " ".join(words)  # a long answer comes by the input
-        return _answer(rest[0], text, as_json)
+        if rest[1:] == ["-"]:  # a long answer comes by the input
+            if sys.stdin is None:
+                return _fail("no input to take the answer from")
+            words = [sys.stdin.read()]
+        return _answer(rest[0], " ".join(words), as_json)
     if command not in ("show", "run", "test"):
         return _fail(f"reflex has no {command}.\n{USAGE}")
     as_json = "--json" in rest
@@ -97,7 +118,8 @@ def _main(args: list) -> int:
     host = _here()
     if host is None:
         return _fail(GONE)
-    outcome = engine.run(source, inputs, host, dry=command == "test", decider=decide.from_env())
+    decider = decide.from_env()
+    outcome = _run(lambda: engine.run(source, inputs, host, dry=command == "test", decider=decider))
     return _report(outcome, as_json)
 
 
@@ -166,6 +188,10 @@ def _answer(run_id: str, text: str, as_json: bool) -> int:
     if not text.strip():
         return _fail(f"give the answer: {_me()} answer {run_id} '<answer>'")
     answer, decider = _answer_value(text), decide.from_env()
+    try:  # an answer the run could not even be handed (half a character) is refused before the question is taken
+        json.dumps(answer, ensure_ascii=False).encode("utf-8")
+    except (UnicodeError, TypeError, ValueError):
+        return _fail("this answer is not a text that can be read: type it again")
     state = store.take(run_id)  # taken out of the store: an answer is given once, by one caller
     if state is None:
         return _fail(f"no run {run_id} waits for an answer (a question is kept one day, and answered once)")
@@ -174,7 +200,8 @@ def _answer(run_id: str, text: str, as_json: bool) -> int:
         store.put_back(run_id, state)  # nothing ran: the question still stands
         return _fail(f"the folder this run was started in is gone ({folder}): it cannot carry on" if folder else GONE)
     # from here the run carries on and may change things: whatever happens, this answer is not taken twice
-    outcome = engine.resume(state, answer, Local(cwd=folder), decider=decider)
+    host = Local(cwd=folder)
+    outcome = _run(lambda: engine.resume(state, answer, host, decider=decider))
     if outcome.status == "asks" and outcome.state == state and store.put_back(run_id, state):
         return _report(outcome, as_json, run_id)  # the answer did not fit: the same question, under the same id
     return _report(outcome, as_json)
@@ -275,7 +302,7 @@ def render(outcome, run_id: str | None = None) -> str:
         lines.append(_counts(outcome))
     elif outcome.status == "asks":
         asks = dict(outcome.asks or {})
-        lines.append(f"asks: {_line(asks.pop('question', ''))}")
+        lines.append(f"asks: {_cut(_line(asks.pop('question', '')))}")
         error, options, about = asks.pop("error", None), asks.pop("options", None), asks.pop("about", None)
         if error:
             lines.append(f"(the last answer did not fit: {_line(error)})")
@@ -283,11 +310,11 @@ def render(outcome, run_id: str | None = None) -> str:
             lines.append(f"options: {', '.join(_line(o) for o in options)}")
         for entry in about or []:
             context = " ".join(_line(entry.get("context", "")).split())
-            lines.append(f"- {_line(entry['item'])}" + (f"  [{context[:300]}]" if context else ""))
+            lines.append(f"- {_cut(_line(entry['item']), 300)}" + (f"  [{context[:300]}]" if context else ""))
         if asks:
-            lines.append(_line(json.dumps(_plain(asks), ensure_ascii=False, default=str)))
+            lines.append(_cut(_line(json.dumps(_plain(asks), ensure_ascii=False, default=str))))
         if about and len(about) > 1:
-            shown = json.dumps({str(e["item"]): "…" for e in about[:2]}, ensure_ascii=False)
+            shown = json.dumps({str(e["item"])[:300]: "…" for e in about[:2]}, ensure_ascii=False)
             form = shlex.quote(shown) + ("  (one answer for each item)" if len(about) > 2 else "")
         else:
             form = "<one option>" if options else "'<your answer>'"
@@ -309,11 +336,17 @@ def render(outcome, run_id: str | None = None) -> str:
 
 def _shown(result) -> str:
     if isinstance(result, str):
-        return result
+        return _cut(result)
     if isinstance(result, dict) and isinstance(result.get("message"), str):
         rest = {k: v for k, v in result.items() if k != "message"}
-        return result["message"] + ("\n" + json.dumps(_plain(rest), ensure_ascii=False, default=str) if rest else "")
-    return json.dumps(_plain(result), ensure_ascii=False, default=str)
+        return _cut(result["message"] + ("\n" + json.dumps(_plain(rest), ensure_ascii=False, default=str)
+                                         if rest else ""))
+    return _cut(json.dumps(_plain(result), ensure_ascii=False, default=str))
+
+
+def _cut(text: str, most: int = SHOWN) -> str:
+    """A text no longer than a caller can take in: what is printed goes into a model's context."""
+    return text if len(text) <= most else f"{text[:most]}… (cut: {len(text) - most} more characters)"
 
 
 def _counts(outcome) -> str:

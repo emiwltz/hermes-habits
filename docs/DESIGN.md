@@ -79,7 +79,7 @@ forgiving: the everyday modules are there without an import; a reach for `open`,
 up by itself. The clock is the machine's local time, and `os.getcwd()` and `os.getenv()` answer as the host does.
 
 The sandbox is not CPython, and a review that ran 450 small reflexes through both found where it shows. The engine
-puts three of those right in the source before it runs, by inserting text around whole expressions (every line
+puts four of those right in the source before it runs, by inserting text around whole expressions (every line
 keeps its number, and a rewrite that does not parse is dropped):
 
 - `any(...)`, `all(...)` and `next(...)` of a generator expression stop at the first item that settles them. The
@@ -88,6 +88,13 @@ keeps its number, and a rewrite that does not parse is dropped):
 - `next()` of `map`, `filter`, `zip`, `enumerate` or `reversed`, which are lists in the sandbox.
 - a method handed over where a function is expected (`sorted(key=str.lower)`, `max(key=counts.get)`,
   `map(str.strip, lines)`): the sandbox has no such value.
+- a generator expression, a `map` or a `zip` kept for later (`pairs = zip(a, b)`, `return (...)`) is read once, as
+  in Python, and `next()` takes it.
+
+One thing cannot be put right: a generator expression is not lazy in the sandbox. Read whole (`sum`, `list`,
+`sorted`, `join`) that changes nothing. Read by something that may stop early (a `for` with a `break`) it would
+run every item, so one that makes a change (`rx.do`, `rx.write`, a call that is handed `rx`) is refused before the
+run, with what to write instead. One that only reads runs, and reads more than Python would.
 
 A rewrite is a claim that the new text means what the old one meant, and the first version of this one claimed too
 much. A review that ran 155 sources through CPython and the engine side by side showed it: every `key=` argument
@@ -98,15 +105,19 @@ and `groupby` is a function. A name the author gave another meaning, anywhere, i
 `f"{x=}"`, which shows its own text. One difference is known and kept: in `next(search, default)` the default is
 computed after the search, not before.
 
-Three builtins answered wrongly without an error, which is the worst kind. `hasattr` was always False on a text, a
-list or a dict; `round(2.675, 2)` gave 2.68; `datetime.strptime` forgot a lone `%H` and refused a time without a
-date. The first two are defined again after the author's code, only when it uses them; the third is done by the
-host. A class that defines `__bool__`, `__len__` or `__format__`, which the sandbox never calls, is refused before
+Two builtins answered wrongly without an error, which is the worst kind: `hasattr` was always False on a text, a
+list or a dict, and `round(2.675, 2)` gave 2.68. Both are defined again before the author's code, when it uses
+them. A class that defines `__bool__`, `__len__` or `__format__`, which the sandbox never calls, is refused before
 the run. An object of the reflex's own class comes back as the dict of its fields.
 
-Where it cannot put things right, the error says what to write instead (a generator kept in a variable, `rx`
-called from inside `sorted(key=...)`, an error raised with two arguments, `re.sub` with a function, a missing
-module, `timedelta(hours=0.5)`).
+Where it cannot put things right, the error says what to write instead (`rx` called from inside
+`sorted(key=...)`, an error raised with two arguments, `re.sub` with a function, a missing module,
+`timedelta(hours=0.5)`, a `strptime` format the sandbox does not take).
+
+What was taken out matters as much. The fourth review kept finding faults in helpers lent from the host
+(`textwrap`, a `strptime` done by the host): they run outside the sandbox's limits, and each needed its own bound.
+Of the 176 reflexes that models wrote for the benches, none used either. They are gone; `shlex` and the constants
+of `string` stay. `curl -L`, on the other hand, is in 19 of the 176: it stays, and is made safe another way.
 
 ### Which commands only read
 
@@ -127,6 +138,11 @@ A third round found two more ways around `curl`, both closed: `-w @file` took it
 all, from a file the table could not read; and `a@dict.host` put a user name in front of a host from which curl
 guesses another protocol. A URL with no scheme is now a plain host, a port and a path, or it is refused.
 
+The fourth found one, of a kind no table can close: `curl -L` follows a redirect into `ftp://`, and what a server
+answers is not ours to read in advance. So the table no longer carries that alone: a command that passed as a read
+is run in a narrower form, and for curl that form says `--proto =http,https --proto-redir =http,https`. Four
+rounds found 8, then 2, then 1 hole in this table, the last three all in curl.
+
 What stays: a program's own caches. `git diff` may refresh the stat data of `.git/index`, `kubectl` writes its
 discovery cache. Nothing the user made changes, but "changes nothing" is true of their files, not of every byte.
 
@@ -141,8 +157,10 @@ only reads, how many commands it takes at once, its folder, its home and the env
 nothing a reflex reads can fill the memory or wait forever. A run that asked carries on in the folder it started
 in, wherever its answer is given. A command runs in its caller's own group of processes: a caller that gives up
 (Ctrl-C, a kill) stops it too, and the run ends "stopped: interrupted" with what it had done; a command that is
-late is killed with whatever it started. A caller that is killed outright with no chance to clean up leaves a
-running command to finish: nothing here can prevent that. A probe ran the engine inside
+late is killed with whatever it started. An interruption is not an error raised wherever the program happens to
+be (raised inside the sandbox's own calls it was lost, and the run went on to its next change): it is a flag the
+run reads between two steps. A caller that is killed outright with no chance to clean up leaves a running command
+to finish, and so does a program that cut itself loose as a daemon: nothing here can prevent that. A probe ran the engine inside
 Hermes's own Python (3.14) with Hermes's terminal tool as the host: the `hermes-health` example made its six reads
 through Hermes and gave its verdict in 2.5 s, with no model. Hermes runs the commands of one task in one shell, so
 its host takes one command at a time.
@@ -164,8 +182,8 @@ Open:
 - **The sandbox knows part of Python**: no class inheritance, no `yield`, no `@property`, part of the library. A
   few answers still differ from CPython without an error: `sum([0.1] * 10)` gives 0.9999999999999999 (as Python did
   before 3.12); in `re`, `$` does not match before a final newline and `\n` in a replacement text stays two
-  characters; a generator expression kept in a variable is a list and can be read twice. They are the sandbox's to
-  fix, and to report. Each patch above is a debt to drop when the sandbox catches up.
+  characters; `strptime` forgets an hour given without minutes; a generator expression that only reads runs whole.
+  They are the sandbox's to fix, and to report. Each patch above is a debt to drop when the sandbox catches up.
 - **Only Claude models wrote and used reflexes so far.** A cheap model of another family is to measure.
 - **The name.** `reflex` and `reflexes` are taken on PyPI; the package is `agent-reflexes` for now, the command
   `reflex`.

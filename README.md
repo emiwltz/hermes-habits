@@ -126,9 +126,11 @@ macOS in mind and reviewed against its manuals, but nothing has run on a Mac yet
 - Commands are lists of words and run without a shell: a value can never become a command.
 - `rx.sh` accepts only commands that a table knows as reads ([reflexes/readers.py](reflexes/readers.py)); so a dry
   run changes nothing, and what it plans is all the reflex would do.
-- A run has budgets: 120 s, 200 calls to `rx`, 10 s of its own computing, 8 MB for one output or one file.
-- Rounds of adversarial review (models set to break it, others to check each claim) are in the tests: every
-  hole they found is a test that now passes.
+- A run has budgets: 120 s, 200 calls to `rx`, 10 s of its own computing, 8 MB for one output or one file, 200
+  doubts in one question. Ctrl-C or a kill ends it "stopped: interrupted", with what it had done.
+- `curl` is run on HTTP and HTTPS only, wherever a redirect leads.
+- Four rounds of adversarial review (models set to break it, others to check each claim) are in the tests: every
+  fault they found is a test that now passes.
 
 Not covered: a reflex can read any file its user can read, and a read can go outside (`curl`), so a dry run is not
 private; commands and `os.getenv` get the environment the host gives them (the caller's own, for the local host); a

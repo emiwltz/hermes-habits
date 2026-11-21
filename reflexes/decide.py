@@ -39,9 +39,11 @@ class Typed:
 
     def __init__(self, key: str, url: str = JEV, model: str = "jev-latest", seconds: float = SECONDS, opener=_OPEN):
         self.key, self.url, self.model, self.seconds, self.opener = key, url, model, seconds, opener
-        self.name = model
+        self.name, self.until = model, None
 
-    def __call__(self, question: str, options: list, items: list) -> list:
+    def __call__(self, question: str, options: list, items: list, until: float | None = None) -> list:
+        """until: the moment (time.monotonic) after which nobody waits for the answers: no request is sent then."""
+        self.until = until
         yes_no = list(options) == ["yes", "no"]
         with_context = [at for at, (_, context) in enumerate(items) if context]
         answers = [None] * len(items)
@@ -85,7 +87,9 @@ class Typed:
         return found
 
     def _post(self, body: dict) -> dict:
-        deadline = time.monotonic() + self.seconds
+        deadline = min(time.monotonic() + self.seconds, self.until or float("inf"))
+        if deadline <= time.monotonic():
+            raise NoAnswer("out of time")
         data = json.dumps(body).encode()
         headers = {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
         for attempt in (1, 2):

@@ -19,7 +19,11 @@ KEPT = 24 * 3600  # seconds a run that asked waits for its answer
 
 def home() -> Path:
     """Where the user's own reflexes and the runs that wait are kept: the same place from any folder."""
-    return Path(os.path.abspath(os.path.expanduser(os.environ.get("REFLEX_HOME") or "~/.reflexes")))
+    place = os.path.expanduser(os.environ.get("REFLEX_HOME") or "~/.reflexes")
+    try:
+        return Path(os.path.abspath(place))
+    except OSError:  # a relative place, from a folder that is gone
+        return Path(place)
 
 
 def folders() -> list:

@@ -197,6 +197,14 @@ def outside(argv: list) -> bool:
     return bool(argv) and program(str(argv[0])) in OUTSIDE
 
 
+def as_read(argv: list) -> list:
+    """The command as it is run once it passed as a read. curl is told to speak HTTP and HTTPS only, also when it
+    follows a redirect: what a server answers is not ours to read in advance, and -L would follow it into FTP."""
+    if argv and program(str(argv[0])) == "curl":
+        return [argv[0], "--proto", "=http,https", "--proto-redir", "=http,https", *argv[1:]]
+    return list(argv)
+
+
 def why_not(argv: list, extra: dict | None = None) -> str:
     """"" when the command only reads; else why it does not pass as a read."""
     if not isinstance(argv, (list, tuple)) or not argv or not all(isinstance(word, str) for word in argv):

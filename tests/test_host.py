@@ -89,3 +89,63 @@ def test_a_command_stays_in_its_callers_group_and_can_be_stopped_from_outside(lo
     local.stop()
     worker.join(5)
     assert result["code"] != 0 and time.monotonic() - began < 5 and not local.live
+
+
+# ---- what a fourth review found -----------------------------------------------------------------------------------
+
+def test_a_text_is_written_to_a_regular_file_only(local, tmp_path):
+    local.write("notes/a.txt", "one\n")
+    local.write("notes/a.txt", "two\n", append=True)
+    assert (tmp_path / "notes" / "a.txt").read_text() == "one\ntwo\n"
+    local.write("notes/a.txt", "three\n")
+    assert (tmp_path / "notes" / "a.txt").read_text() == "three\n"
+    os.mkfifo(tmp_path / "pipe")
+    began = time.monotonic()
+    for path in ("pipe", "/dev/null"):
+        with pytest.raises(OSError):
+            local.write(path, "x")
+    assert time.monotonic() - began < 2  # a pipe nobody reads is refused at once, not waited for
+
+
+def test_every_command_of_the_process_can_be_stopped_at_once(local, tmp_path):
+    import threading
+    other, result = Local(cwd=str(tmp_path), home=str(tmp_path)), {}
+    workers = [threading.Thread(target=lambda h=h, n=n: result.update({n: h.run(["sleep", "30"], 60)[2]}))
+               for n, h in (("a", local), ("b", other))]
+    began = time.monotonic()
+    for worker in workers:
+        worker.start()
+    time.sleep(0.3)
+    hosts.stop_all()
+    for worker in workers:
+        worker.join(5)
+    assert result["a"] != 0 and result["b"] != 0 and time.monotonic() - began < 5 and not hosts.LIVE
+
+
+def test_curl_is_run_on_http_and_https_only_wherever_a_redirect_leads(local):
+    import shutil
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from reflexes import readers
+    assert readers.as_read(["curl", "-sL", "http://a"]) == ["curl", "--proto", "=http,https", "--proto-redir",
+                                                            "=http,https", "-sL", "http://a"]
+    assert readers.as_read(["ls", "-la"]) == ["ls", "-la"] and local.as_read(["curl", "x"])[1] == "--proto"
+    if not shutil.which("curl"):
+        pytest.skip("no curl here")
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", "ftp://user:secret@127.0.0.1:9/x")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+    server = HTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/"
+        out, err, code = local.run(local.as_read(["curl", "-sSL", "-m", "5", url]), 10)
+    finally:
+        server.shutdown()
+    assert code != 0 and "ftp" in err.lower() and "disabled" in err.lower(), (out, err, code)

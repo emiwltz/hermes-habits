@@ -28,7 +28,6 @@ import re
 import shlex
 import string
 import sys
-import textwrap
 import threading
 import time
 import types
@@ -48,6 +47,7 @@ NOTED = 2000  # characters of a command or of an error kept in the journal
 LENT_CHARS = 100_000  # characters a lent helper takes: it runs outside the sandbox and its limits
 CONTEXT = 2000  # characters of an item's context shown to whoever answers
 DOUBTS = 200  # things one question may send up: more than that, no caller answers in one go
+ASKED = 2000  # things one question may be about
 MARK = b"reflex/1\n"
 NOT_STARTED = "not started: the run was out of time"
 NO_FILES = ("the sandbox has no files of its own: read with rx.read(path), write with rx.write(path, text), list with "
@@ -68,11 +68,15 @@ NO_MODULE = {  # what a reflex reaches for by habit, and what does the job here
     "uuid": "use rx.sh(['uuidgen'])",
     "tempfile": "use rx.do(['mktemp'])",
     "difflib": "use rx.sh(['diff', a, b], ok=(0, 1))",
+    "textwrap": "use str methods: ' '.join(text.split()), text[:80], '\\n'.join('  ' + line for line in lines)",
 }
 HINTS = (  # what the sandbox says in its own words, and what the author should do about it
     ("cannot suspend in this synchronous context",
-     "rx cannot be called from inside sorted, min, max, map or filter: get the values first, in a list "
+     "rx (or shlex) cannot be called from inside sorted, min, max, map or filter: get the values first, in a list "
      "comprehension, then sort or pick"),
+    ("does not match format",
+     "the sandbox's strptime wants a whole date (%Y, %m and %d) and, for a time, %H with %M: cut the text yourself "
+     "for anything else"),
     ("is not an iterator",
      "in the sandbox a generator expression, map, filter and zip are lists: wrap it in iter(...), or take its "
      "items by index"),
@@ -93,25 +97,6 @@ HINTS = (  # what the sandbox says in its own words, and what the author should 
      "the sandbox does not call __lt__ and its kin: sort or compare with key=lambda x: x.field"),
 )
 NOT_CALLED = ("__bool__", "__len__", "__format__")  # the sandbox ignores them in a class, without a word
-# Builtins put right for the reflex: defined after its own code, so its line numbers stay, and only when it uses
-# them and has no function of that name itself. hasattr is always False on a built-in value in the sandbox, and
-# round(x, n) differs from Python's on halves (round(2.675, 2) gives 2.68).
-SHIMS = {
-    "hasattr": """_rx_hasattr, _rx_plain = hasattr, (str, bytes, list, dict, set, frozenset, tuple, int, float)
-def hasattr(thing, name):
-    if isinstance(thing, _rx_plain):
-        return name in _rx_names[type(thing).__name__]
-    return _rx_hasattr(thing, name)
-""",
-    "round": """_rx_round = round
-def round(number, ndigits=None):
-    if ndigits is None:
-        return _rx_round(number)
-    if isinstance(number, float) and isinstance(ndigits, int) and not isinstance(ndigits, bool) and 0 <= ndigits < 300:
-        return float(format(number, "." + str(ndigits) + "f"))
-    return _rx_round(number, ndigits)
-""",
-}
 NAMES = {kind.__name__: sorted(dir(kind)) for kind in (str, bytes, list, dict, set, frozenset, tuple, int, float, bool)}
 NO_VALUE = re.compile(r"'(\w+)'(?: object)? has no attribute '(\w+)'")  # a method taken without being called
 HIT = "_rx_hit"  # the name that any, all and next use to stop at the first item that settles them
@@ -135,42 +120,53 @@ class _rx_until:
     "unfit": """def _rx_unfit(kind, method, given):
     raise TypeError("descriptor '" + method + "' for '" + kind + "' objects doesn't apply to a '" + given + "' object")
 """,
+    # two builtins that answer wrongly without a word in the sandbox, defined again when the reflex uses them (its
+    # own function of that name, coming later, still wins). hasattr is always False on a built-in value there
+    "hasattr": """_rx_hasattr = hasattr
+def hasattr(thing, name):
+    for kind in (bool, int, float, str, bytes, list, tuple, dict, set, frozenset):
+        if isinstance(thing, kind):  # a Counter is a dict here: it has what a dict has, at least
+            return name in _rx_names[kind.__name__] or _rx_hasattr(thing, name)
+    return _rx_hasattr(thing, name)
+""",
+    # and round(x, n) differs from Python's on halves: round(2.675, 2) gives 2.68 there
+    "round": """_rx_round = round
+def round(number, ndigits=None):
+    if ndigits is None:
+        return _rx_round(number)
+    if isinstance(number, float) and isinstance(ndigits, int) and not isinstance(ndigits, bool) and 0 <= ndigits < 300:
+        return float(format(number, "." + str(ndigits) + "f"))
+    return _rx_round(number, ndigits)
+""",
 }
 
 
 def _lent(helper):
-    """A helper of the host, with a bound on what it is given and on what it can make of it (an indent of 40,000
-    characters on 20,000 lines is 800 MB): it runs here, outside the sandbox and its limits."""
-    def texts(value):
+    """A helper of the host, with a bound on what it is given: it runs here, outside the sandbox and its limits."""
+    def size(value) -> int:
         if isinstance(value, (str, bytes)):
-            yield len(value)
-        elif isinstance(value, (list, tuple, set, frozenset)):
-            for item in value:
-                yield from texts(item)
-        elif isinstance(value, dict):
-            for item in value.values():
-                yield from texts(item)
+            return len(value)
+        if isinstance(value, dict):
+            return sum(size(item) for item in value.values())
+        return sum(size(item) for item in value) if isinstance(value, (list, tuple, set, frozenset)) else 0
 
     def bounded(*args, **kwargs):
-        sizes = sorted(texts([args, kwargs]), reverse=True) + [0, 0]
-        if sum(sizes) > LENT_CHARS or sizes[0] * sizes[1] > 100 * LENT_CHARS:
+        if size([args, kwargs]) > LENT_CHARS:
             raise ValueError(f"{helper.__name__} takes {LENT_CHARS} characters at most here")
         return helper(*args, **kwargs)
     return bounded
 
 
-
-# Pure helpers Python has and the sandbox lacks: lent from the host, they touch nothing.
+# Pure helpers Python has and the sandbox lacks: lent from the host, they touch nothing. Few on purpose: each one
+# runs outside the sandbox's limits, and of 176 reflexes written by models not one called any of them.
 LENT = {
     "shlex": {"quote": _lent(shlex.quote), "split": _lent(shlex.split), "join": _lent(shlex.join)},
-    "textwrap": {"dedent": _lent(textwrap.dedent), "indent": _lent(textwrap.indent),
-                 "shorten": _lent(textwrap.shorten), "fill": _lent(textwrap.fill), "wrap": _lent(textwrap.wrap)},
     "string": {name: getattr(string, name) for name in ("ascii_letters", "ascii_lowercase", "ascii_uppercase",
                                                         "digits", "hexdigits", "punctuation", "whitespace")},
-    # the engine's own: datetime.strptime as Python has it (the sandbox's forgets a lone %H and wants a full date)
-    "_rx": {"strptime": _lent(datetime.datetime.strptime)},
 }
-TAIL = "\n\nimport rx\n__reflex_inputs__ = dict(__reflex_inputs__)\n{shims}{call}\n"
+TAIL = "\n\nimport rx\n__reflex_inputs__ = dict(__reflex_inputs__)\n{call}\n"
+CUT = threading.Event()  # set by whoever wants every run of this process to stop where it is (the command line does)
+INTERRUPTED = "interrupted: what the journal lists was done, and a change may be half made"
 READY = ("re", "json", "math", "datetime", "collections", "itertools", "functools", "os")  # there without an import
 
 
@@ -244,8 +240,8 @@ def _parsed(source: str):
 
 def _prepared(source: str) -> dict:
     """The code the sandbox runs, and what the engine keeps about it: where its own lines sit among the author's
-    (at, shift), the builtins to put right after the author's code (shims), the methods the author hands over
-    without calling them (loose).
+    (at, shift), which of its helpers they hold (needs), the methods the author hands over without calling them
+    (loose).
 
     The everyday modules the reflex did not bind itself are imported for it: a forgotten `import re` is not worth a
     failed run. The engine's lines go first, or right after a `from __future__` import, which must stay first."""
@@ -271,15 +267,15 @@ def _prepared(source: str) -> dict:
     future = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "__future__"]
     at = max((n.end_lineno for n in future), default=0)
     code, loose, needs = _as_meant(source, tree, modules | set(ready) | {"rx"}, _taken(tree))
-    if any(n.lineno <= at for n in tree.body if n not in future and not isinstance(n, ast.Expr)):
+    if any(n.lineno <= at for n in tree.body if n not in future
+           and not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))):  # a docstring may come before
         code, needs = source, set()  # code on the very line of the __future__ import would run before our own
-    ours = ["import " + ", ".join(["os.path" if name == "os" else name for name in ready] + ["_rx"])]
+    needs |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} & {"hasattr", "round"}
+    ours = ["import " + ", ".join("os.path" if name == "os" else name for name in ready) if ready else "pass"]
     ours += [line for name in OURS if name in needs for line in OURS[name].splitlines()]
-    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     lines = code.split("\n")
     lines[at:at] = ours
-    return {"code": "\n".join(lines), "at": at, "shift": len(ours), "loose": loose,
-            "shims": [name for name in SHIMS if name in used and name not in bound]}
+    return {"code": "\n".join(lines), "at": at, "shift": len(ours), "loose": loose, "needs": needs}
 
 
 def _taken(tree) -> set:
@@ -313,7 +309,11 @@ def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
     - next() of map, filter, zip, enumerate or reversed, which are lists in the sandbox.
     - a method handed over where a function is expected (sorted(key=str.lower), max(key=counts.get),
       map(str.strip, lines)): the sandbox has no such value.
-    - datetime.strptime, which the host does as Python does.
+    - a generator expression, a map, a zip kept for later (x = zip(a, b), return (...)) is read once, as in Python.
+
+    One thing is refused instead, because nothing can put it right: a generator expression that makes a change
+    (rx.do, rx.write, a call that is handed rx) and is read by something that may stop before its end. The sandbox
+    would make the change for every item.
 
     Text is only inserted, around whole expressions, so every line keeps its number. Nothing is touched where the
     author gave one of these names another meaning, nor in f"{x=}", which shows its own text; and no function is
@@ -343,15 +343,42 @@ def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
              if isinstance(field, ast.FormattedValue) and shown(field) for n in ast.walk(field)}
     classy = {id(n) for kind in ast.walk(tree) if isinstance(kind, ast.ClassDef) for line in kind.body
               if not isinstance(line, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(line)}
-    still = (ast.Name, ast.Attribute, ast.Subscript, ast.Constant, ast.Slice, ast.Tuple, ast.UnaryOp, ast.BinOp,
-             ast.expr_context, ast.operator, ast.unaryop)  # an owner made of these reads the same when copied
-    # under which names the source knows the datetime class, whose strptime the host does
-    imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
-    clocks = {a.asname or a.name for n in imports if isinstance(n, ast.Import) for a in n.names if a.name == "datetime"}
-    clocks |= {"datetime"} - taken
-    classes = {a.asname or a.name for n in imports if isinstance(n, ast.ImportFrom) and n.module == "datetime"
-               for a in n.names if a.name == "datetime"}
+    still = (ast.Name, ast.Attribute, ast.Subscript, ast.Constant, ast.Slice, ast.Tuple, ast.List, ast.Set,
+             ast.Dict, ast.UnaryOp, ast.BinOp, ast.expr_context, ast.operator, ast.unaryop)  # reads the same copied
+    groupers = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                and n.module == "itertools" for a in n.names if a.name == "groupby"}
     called, wrapped, needs = set(), set(), set()
+    parent = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+    def changes(node) -> bool:  # rx.do or rx.write in it, or a call that is handed rx and may do the same
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call):
+                func = call.func
+                if isinstance(func, ast.Attribute) and func.attr in ("do", "write") and root(func) == "rx":
+                    return True
+                if any(isinstance(a, ast.Name) and a.id == "rx" for a in call.args + [k.value for k in call.keywords]):
+                    return True
+        return False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.GeneratorExp, ast.Call)) or id(node) in apart:
+            continue
+        holder = parent.get(id(node))
+        lazy = isinstance(node, ast.GeneratorExp) or bool(builtin(node.func, LISTS_HERE))
+        if lazy and isinstance(holder, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.Return)) and holder.value is node:
+            needs.add("until")
+            around(node, "_rx_iter(", ")")  # kept for later: read once, and next() takes it
+        if not isinstance(node, ast.GeneratorExp) or not any(changes(part) for part in [node.elt] + [
+                c for g in node.generators for c in g.ifs] + [g.iter for g in node.generators[1:]]):
+            continue
+        whole = isinstance(holder, ast.Call) and holder.args[:1] == [node] and (
+            builtin(holder.func, set(SETTLED) | {"list", "tuple", "set", "frozenset", "dict", "sorted", "sum", "min",
+                                                 "max"}) or (isinstance(holder.func, ast.Attribute)
+                                                             and holder.func.attr == "join"))
+        if not whole:
+            raise Refused(f"the generator expression of line {node.lineno} makes a change (rx.do, rx.write), and the "
+                          "sandbox would make it for every item where Python may stop early: write a for loop, or a "
+                          "list ([... for ...]) if every item is meant")
     for node in ast.walk(tree):  # outer expressions before the ones they hold
         if not isinstance(node, ast.Call):
             continue
@@ -359,11 +386,6 @@ def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
         called.add(id(func))
         if id(node) in apart:
             continue
-        if isinstance(func, ast.Attribute) and func.attr == "strptime" and (
-                (isinstance(func.value, ast.Name) and func.value.id in classes) or
-                (isinstance(func.value, ast.Attribute) and func.value.attr == "datetime"
-                 and isinstance(func.value.value, ast.Name) and func.value.value.id in clocks)):
-            around(func, "(_rx.strptime if True else ", ")")
         name = builtin(func, SETTLED)
         plain = not node.keywords and len(node.args) == (2 if name == "next" and len(node.args) == 2 else 1)
         if name and plain and isinstance(first, ast.GeneratorExp) and not any(g.is_async for g in first.generators):
@@ -380,8 +402,9 @@ def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
             needs.add("until")
             around(first, "_rx_iter(", ")")
         handed = [first] if builtin(func, {"map", "filter"}) and first is not None else []
-        if builtin(func, KEYED) or (isinstance(func, ast.Attribute) and (
-                func.attr == "sort" or (func.attr == "groupby" and root(func) in modules))):
+        if builtin(func, KEYED) or (isinstance(func, ast.Name) and func.id in groupers) or (
+                isinstance(func, ast.Attribute) and (func.attr == "sort" or (
+                    func.attr == "groupby" and root(func) in modules))):
             handed += [k.value for k in node.keywords if k.arg == "key"]
         for value in handed:
             if not isinstance(value, ast.Attribute) or id(value) in classy or root(value) in modules - {""}:
@@ -442,9 +465,8 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
         return job.stopped(str(exc))
     call = "reflex(rx, **__reflex_inputs__)" if about["rx"] else "reflex(**__reflex_inputs__)"
     job.at, job.shift, job.loose, job.length = ready["at"], ready["shift"], ready["loose"], source.count("\n") + 1
-    more = {"_rx_names": NAMES} if "hasattr" in ready["shims"] else {}
-    tail = TAIL.format(shims="".join(SHIMS[name] for name in ready["shims"]), call=call)
-    return job.start(ready["code"] + tail, given, more)
+    more = {"_rx_names": NAMES} if "hasattr" in ready["needs"] else {}
+    return job.start(ready["code"] + TAIL.format(call=call), given, more)
 
 
 def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
@@ -597,8 +619,11 @@ class _Run:
                 snap = session.feed_start(code, inputs={"__reflex_inputs__": inputs, **(more or {})},
                                           print_callback=self.heard, **where)
                 return self.drive(snap)
-        except monty.MontyError as exc:
-            return self.stopped(self.said(exc))
+        except monty.MontyError as exc:  # the sandbox itself dies of a Ctrl-C sent to the whole group
+            return self.stopped(INTERRUPTED if CUT.is_set() else self.said(exc))
+        except KeyboardInterrupt:
+            self.halt()
+            return self.stopped(INTERRUPTED)
 
     def carry_on(self, snapshot: bytes, pending: dict, answer, state: bytes) -> Outcome:
         try:
@@ -610,7 +635,10 @@ class _Run:
                 snap = session.load_snapshot(snapshot, print_callback=self.heard)
                 return self.drive(snap.resume({"return_value": value}))
         except monty.MontyError as exc:
-            return self.stopped(self.said(exc))
+            return self.stopped(INTERRUPTED if CUT.is_set() else self.said(exc))
+        except KeyboardInterrupt:
+            self.halt()
+            return self.stopped(INTERRUPTED)
 
     def drive(self, snap) -> Outcome:
         try:
@@ -619,7 +647,7 @@ class _Run:
             raise
         except KeyboardInterrupt:  # cut by its caller: the run ends here, and says what it had done
             self.halt()
-            return self.stopped("interrupted: what the journal lists was done, and a change may be half made")
+            return self.stopped(INTERRUPTED)
         except Exception as exc:  # a fault of the engine or of a host: the run stops, and its journal is kept
             return self.stopped(f"the engine failed ({type(exc).__name__}: {exc}): what the journal lists was done")
 
@@ -634,6 +662,9 @@ class _Run:
 
     def driven(self, snap) -> Outcome:
         while not isinstance(snap, monty.MontyComplete):
+            if CUT.is_set():  # asked to stop: here, between two steps, where nothing is half read
+                self.halt()
+                return self.stopped(INTERRUPTED)
             if self.ms() > self.limits["seconds"] * 1000:
                 return self.stopped(f"budget: more than {self.limits['seconds']} s")
             name = getattr(snap, "function_name", None) or ""
@@ -664,6 +695,8 @@ class _Run:
             except _Stop as stop:
                 return self.stopped(str(stop))
             snap = snap.resume({"return_value": value})
+        if CUT.is_set():  # the reflex may have gone on to its end past the cut: it is not "done"
+            return self.stopped(INTERRUPTED)
         result = _fields(snap.output)
         if result is None and self.printed.strip():
             result = self.printed.strip()  # a reflex that prints its answer instead of returning it
@@ -810,12 +843,14 @@ class _Run:
         seconds = self.seconds(timeout)
         deadline = time.monotonic() + (self.limits["seconds"] - self.ms() / 1000)  # for the whole list
 
+        as_read = getattr(self.host, "as_read", None)  # a host may run a read in a narrower form (curl kept to HTTP)
+
         def one(argv):
             started = time.monotonic()
             left = deadline - started
             if left <= 0:
                 return argv, "", NOT_STARTED, 124, started
-            out, err, code = self.ran(argv, min(seconds, max(1.0, left)), input)
+            out, err, code = self.ran(as_read(argv) if as_read else argv, min(seconds, max(1.0, left)), input)
             return argv, out, err, code, started
         workers = min(int(getattr(self.host, "workers", 8)), len(commands))  # a host may take one command at a time
         if workers > 1:
@@ -902,6 +937,9 @@ class _Run:
             raise _Raise(TypeError("rx.ask: each thing in about is a text (a name, a line, a path)"))
         if many and len({_key(i) for i in items}) != len(items):
             raise _Raise(ValueError("rx.ask: the same thing is twice in about"))
+        if len(items) > ASKED:
+            raise _Raise(ValueError(f"rx.ask: {len(items)} things at once, and one question takes {ASKED}: ask in "
+                                    "smaller lists"))
 
         def context_of(item):
             # {item: text} gives each item of a list its own; anything else is the material of every question
@@ -944,14 +982,22 @@ class _Run:
         """The small model's answers, waited for no longer than the run has left."""
         box = {}
 
+        wait = max(0.0, (self.limits["seconds"] - self.ms() / 1000) / 2)  # the other half is for the rest
+        until = time.monotonic() + wait
+        try:  # a small model that takes a deadline stops asking once we stopped waiting
+            more = {"until": until} if "until" in inspect.signature(self.decider).parameters else {}
+        except (TypeError, ValueError):
+            more = {}
+
         def work():
             try:
-                box["answers"] = list(self.decider(question, choices, items))
+                box["answers"] = list(self.decider(question, choices, items, **more))
             except Exception as exc:
                 box["error"] = exc
         worker = threading.Thread(target=work, daemon=True)
         worker.start()
-        worker.join(max(0.0, (self.limits["seconds"] - self.ms() / 1000) / 2))  # the other half is for the rest
+        while worker.is_alive() and time.monotonic() < until and not CUT.is_set():
+            worker.join(0.1)
         if "error" in box:
             raise box["error"]
         if "answers" not in box:

@@ -337,13 +337,13 @@ return [next((x for x in xs if x > 1), None), next(x for x in xs), next((x for x
     assert outcome.result == [2, 1, "none"]
 
 
-def test_the_home_folder_a_short_sleep_and_three_pure_helpers_are_there(host):
+def test_the_home_folder_a_short_sleep_and_two_pure_helpers_are_there(host):
     outcome = run(reflex("""
-import os.path, time, shlex, textwrap, string
+import os.path, time, shlex, string
 time.sleep(0.01)
-return [os.path.expanduser('~/x'), shlex.quote('a b'), textwrap.shorten('hello wonderful world', 12), string.digits]
+return [os.path.expanduser('~/x'), shlex.quote('a b'), shlex.split("a 'b c'"), string.digits]
 """), {}, host)
-    assert outcome.result == ["/home/me/x", "'a b'", "hello [...]", "0123456789"]
+    assert outcome.result == ["/home/me/x", "'a b'", ["a", "b c"], "0123456789"]
 
 
 @pytest.mark.parametrize("body, said", [
@@ -430,7 +430,9 @@ return [max(counts, key=counts.get), sorted(map(str.strip, words), key=str.lower
 
 @pytest.mark.parametrize("body, said", [
     ("get = {'a': 1}.get\nreturn get('a')", "handed over without being called"),
-    ("g = (x for x in [1, 2])\nreturn next(g)", "are lists: wrap it in iter"),
+    ("first = lambda found: next(found)\nreturn first(x for x in [1, 2])", "are lists: wrap it in iter"),
+    ("import textwrap", "use str methods"),
+    ("return str(datetime.datetime.strptime('14:30', '%H:%M'))", "wants a whole date"),
     ("return sorted(['a'], key=lambda n: rx.sh(['stat', n]))", "get the values first"),
     ("raise ValueError('bad', 3)", "takes one text"),
     ("return re.sub('a', lambda m: 'b', 'aa')", "re.finditer"),
@@ -707,19 +709,13 @@ def test_a_reflex_with_its_own_round_keeps_it(host):
     assert outcome.result == "mine"
 
 
-def test_strptime_reads_what_python_reads(host):
+def test_a_date_with_its_time_is_parsed_also_as_a_sort_key(host):
     outcome = run(reflex("""
-from datetime import datetime as when
-parsed = [datetime.datetime.strptime("2024-03-05T10", "%Y-%m-%dT%H"), when.strptime("14:30", "%H:%M"),
-          datetime.datetime.strptime("Mar 5 2024", "%b %d %Y") + datetime.timedelta(days=1)]
-try:
-    when.strptime("nope", "%Y")
-except ValueError as exc:
-    parsed.append("refused")
-return [str(p) for p in parsed]
+stamps = ["2024-03-05 10:11:12", "2023-01-01 00:00:00"]
+first = min(stamps, key=lambda s: datetime.datetime.strptime(s, "%Y-%m-%d %H:%M:%S"))
+return [first, str(datetime.datetime.strptime("2024-03-05", "%Y-%m-%d") + datetime.timedelta(days=1))]
 """), {}, host)
-    assert outcome.result == ["2024-03-05 10:00:00", "1900-01-01 14:30:00", "2024-03-06 00:00:00", "refused"], \
-        outcome.reason
+    assert outcome.result == ["2023-01-01 00:00:00", "2024-03-06 00:00:00"], outcome.reason
 
 
 def test_a_class_method_the_sandbox_never_calls_is_refused_before_the_run(host):
@@ -859,10 +855,11 @@ def test_a_line_is_the_authors_line_wherever_the_engine_put_its_own(host, head):
     assert f"(line {line - 1} of the reflex)" in wrong.reason, wrong.reason
 
 
-def test_a_lent_helper_is_bounded_by_what_it_would_make(host):
-    outcome = run(reflex("import textwrap\nreturn len(textwrap.indent('a\\n' * 20000, prefix='x' * 40000))"), {}, host)
+def test_a_lent_helper_is_bounded_however_its_text_comes(host):
+    outcome = run(reflex("import shlex\nreturn len(shlex.join(['a' * 60_000, 'b' * 60_000]))"), {}, host)
     assert outcome.status == "stopped" and "characters at most" in outcome.reason
-    assert run(reflex("import textwrap\nreturn textwrap.indent('a\\nb', prefix='  ')"), {}, host).result == "  a\n  b"
+    again = run(reflex("import shlex\nreturn len(shlex.split(s='a' * 200_000))"), {}, host)
+    assert again.status == "stopped" and "characters at most" in again.reason
 
 
 def test_a_small_model_that_is_late_leaves_time_to_act_on_the_answer(host):
@@ -889,3 +886,129 @@ def test_an_interrupted_run_ends_with_what_it_had_done(host):
     outcome = run(reflex("rx.do(['first'])\nrx.do(['second'])\nrx.do(['third'])"), {}, host)
     assert outcome.status == "stopped" and outcome.reason.startswith("interrupted")
     assert [e["what"] for e in outcome.effects] == ["first"] and stopped == [True]
+
+
+# ---- what a fourth review found, each kept as a test ----------------------------------------------------------
+
+def test_what_is_kept_for_later_is_read_once_as_in_python(host):
+    outcome = run("""
+def pairs(xs):
+    return zip(xs, range(len(xs)))
+
+def reflex(rx):
+    numbered = enumerate(["a", "b", "c", "d"])
+    for at, name in numbered:
+        if name == "b":
+            break
+    kept = (n * 2 for n in [1, 2, 3])
+    lengths = map(len, ["a", "bb"])
+    return [list(numbered), next(kept), list(kept), list(kept), next(lengths), list(pairs("xy")), dict(zip("ab", [1, 2])),
+            sorted(n for n in [3, 1]), [i for i, _ in enumerate("xy")]]
+""", {}, host)
+    assert outcome.result == [[(2, "c"), (3, "d")], 2, [4, 6], [], 1, [("x", 0), ("y", 1)], {"a": 1, "b": 2},
+                              [1, 3], [0, 1]], outcome.reason
+
+
+@pytest.mark.parametrize("body", [
+    "for done in (rx.do(['touch', n]) for n in ['a', 'b', 'c']):\n    break",
+    "made = (rx.write(n, 'x') for n in ['a', 'b'])\nreturn next(iter(made))",
+    "return next(iter(install(rx, n) for n in ['a', 'b']))",
+    "return any(ok for ok in (rx.do(['touch', n]) for n in ['a', 'b']))",
+])
+def test_a_change_inside_a_generator_that_may_stop_early_is_refused_before_the_run(host, body):
+    outcome = run("def install(rx, name):\n    return rx.do(['touch', name])\n\n" + reflex(body), {}, host)
+    assert outcome.status == "stopped" and "would make it for every item" in outcome.reason, outcome.reason
+    assert host.ran == []
+
+
+def test_a_change_inside_a_generator_that_is_read_whole_runs(host):
+    outcome = run(reflex("""
+made = list(rx.do(["touch", n]) for n in ["a", "b"])
+first = next(n for n in ["c", "d"] if rx.do(["touch", n]) == "")
+read = [line for line in (rx.sh(["cat", n]) for n in ["e", "f"])]
+return [len(made), first, len(read)]
+"""), {}, host)
+    assert outcome.result == [2, "c", 2], outcome.reason
+    assert [argv[-1] for argv in host.ran] == ["a", "b", "c", "e", "f"]
+
+
+def test_round_and_hasattr_are_right_from_the_first_line(host):
+    outcome = run("""
+RATE = round(2.675, 2)
+HAS = hasattr({}, "items")
+if RATE:
+    def clip(x):
+        return "mine"
+
+class Box:
+    size = round(0.05, 1)
+
+def reflex(rx, rate=round(48.45, 1)):
+    import collections
+    return [RATE, HAS, Box.size, rate, clip(1), hasattr(collections.Counter("aab"), "items"), hasattr(3, "items")]
+""", {}, host)
+    assert outcome.result == [2.67, True, 0.1, 48.5, "mine", True, False], outcome.reason
+    own = run("if True:\n    def round(x, n=0):\n        return 'mine'\n\ndef reflex(rx):\n    return round(2.5, 1)\n",
+              {}, host)
+    assert own.result == "mine"
+
+
+def test_more_owners_of_a_method_handed_over(host):
+    outcome = run("""
+from itertools import groupby
+
+def reflex(rx):
+    counts = {"x": 2, "y": 1}
+    order = sorted(["low", "high", "mid"], key=["high", "mid", "low"].index)
+    return [order, [(k, len(list(g))) for k, g in groupby(["x", "x", "y"], key=counts.get)]]
+""", {}, host)
+    assert outcome.result == [["high", "mid", "low"], [(2, 2), (1, 1)]], outcome.reason
+
+
+def test_code_on_the_line_of_the_future_import_runs_as_it_is(host):
+    outcome = run("from __future__ import annotations; print(any(x for x in [1]))\ndef reflex(rx):\n    return 1\n",
+                  {}, host)
+    assert outcome.result == 1 and outcome.output.strip() == "True", outcome.reason
+
+
+def test_a_run_asked_to_stop_stops_between_two_steps_and_is_never_done(host):
+    from reflexes import engine
+
+    def cut(argv):
+        engine.CUT.set()
+        return ""
+    host.commands = {"second": cut}
+    try:
+        outcome = run(reflex("rx.do(['first'])\nrx.do(['second'])\nrx.do(['third'])\nreturn 'all'"), {}, host)
+        last = run(reflex("return 'computed'"), {}, host)
+    finally:
+        engine.CUT.clear()
+    assert outcome.status == "stopped" and outcome.reason.startswith("interrupted")
+    assert [e["what"] for e in outcome.effects] == ["first", "second"]
+    assert last.status == "stopped" and last.reason.startswith("interrupted")
+
+
+def test_a_question_is_about_a_bounded_number_of_things(host):
+    calls = []
+    outcome = run(reflex("return rx.ask('keep?', about=[f'f{n}' for n in range(2500)])"), {}, host,
+                  decider=lambda q, o, items: calls.append(len(items)) or [("yes", 1.0)] * len(items))
+    assert outcome.status == "stopped" and "one question takes 2000" in outcome.reason and calls == []
+
+
+def test_a_small_model_is_told_when_nobody_waits_any_more(host):
+    import time
+    seen = {}
+
+    def slow(question, options, items, until=None):
+        seen["until"] = until
+        time.sleep(5)
+        return [("yes", 1.0)] * len(items)
+    began = time.monotonic()
+    outcome = run(reflex("return rx.ask('ok?')"), {}, host, decider=slow, limits={"seconds": 2})
+    assert outcome.status == "asks" and began < seen["until"] < began + 1.5
+
+
+def test_a_read_runs_in_the_form_the_host_gives_it(host):
+    host.as_read = lambda argv: [argv[0], "--narrow"] + argv[1:]
+    outcome = run(reflex("return rx.sh(['curl', '-sL', 'https://a'])"), {}, host)
+    assert host.ran == [["curl", "--narrow", "-sL", "https://a"]] and outcome.effects[0]["what"] == "curl -sL https://a"

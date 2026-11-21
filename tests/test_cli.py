@@ -404,3 +404,69 @@ def test_the_place_where_runs_wait_is_the_same_from_any_folder(world, tmp_path, 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("REFLEX_HOME", ".state")
     assert store.home() == tmp_path / ".state"
+
+
+# ---- what a fourth review found -----------------------------------------------------------------------------------
+
+def test_an_answer_that_is_no_readable_text_leaves_the_question(world, tmp_path, monkeypatch, capsys):
+    (world / "reflexes" / "purge.py").write_text(PURGE)
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = call(capsys, "run", "purge")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    code, _, err = call(capsys, "answer", run_id, '"\\ud800"')
+    assert code == 2 and "type it again" in err
+    monkeypatch.setattr(sys, "stdin", None)
+    assert cli.main(["answer", run_id, "-"]) == 2
+    capsys.readouterr()
+    code, out, _ = call(capsys, "answer", run_id, "no")
+    assert code == 0 and "0 deleted" in out
+
+
+def test_what_is_printed_fits_in_a_callers_context(world, capsys):
+    (world / "reflexes" / "big.py").write_text("def reflex(rx, ask=False):\n    text = 'x' * 50_000\n"
+                                               "    if ask:\n        rx.up(text, material=text)\n    return text\n")
+    code, out, _ = call(capsys, "run", "big")
+    assert code == 0 and len(out) < 21_000 and "(cut: 30000 more characters)" in out
+    code, out, _ = call(capsys, "run", "big", "ask=true")
+    assert code == 3 and len(out) < 42_000 and out.count("more characters)") == 2
+    code, out, _ = call(capsys, "run", "big", "--json")
+    assert len(json.loads(out)["result"]) == 50_000  # a program that asks for it gets it whole
+
+
+def test_a_kill_during_a_run_stops_it_with_its_journal(world, tmp_path):
+    """SIGTERM while the reflex is inside a helper of the host: the run must not go on to its next change."""
+    import signal
+    import time
+    (world / "reflexes" / "slow.py").write_text('''import shlex
+def reflex(rx):
+    rx.do(["touch", "before"])
+    words = 0
+    for _ in range(400_000):
+        try:
+            words += len(shlex.split("a 'b c' d"))
+        except BaseException:
+            pass
+    rx.do(["touch", "after"])
+    return words
+''')
+    env = {**os.environ, "PYTHONPATH": os.path.dirname(os.path.dirname(cli.__file__))}
+    child = subprocess.Popen([sys.executable, "-m", "reflexes", "run", "slow"], cwd=tmp_path, env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + 20
+    while not (tmp_path / "before").exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.5)
+    child.send_signal(signal.SIGTERM)
+    out, err = child.communicate(timeout=60)
+    assert child.returncode == 1 and out.startswith("stopped: interrupted") and "touch before" in out, (out, err)
+    assert not (tmp_path / "after").exists()
+
+
+def test_a_relative_place_from_a_folder_that_is_gone_is_no_crash(world, tmp_path, monkeypatch, capsys):
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    monkeypatch.setenv("REFLEX_HOME", ".state")
+    assert cli.main(["list"]) == 0
+    capsys.readouterr()
