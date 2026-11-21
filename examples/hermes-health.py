@@ -33,7 +33,10 @@ def reflex(rx, home="~/.hermes"):
         problems.append(f"a model call failed in the last 30 minutes: {failures[-1][:300]} (next: hermes model)")
     if not internet.isdigit() or int(internet) == 0:
         problems.append("github.com cannot be reached (next: check the network)")
-    used = int(re.search(r"(\d+)%", disk.splitlines()[-1]).group(1))
+    found = re.search(r"(\d+)%", disk.splitlines()[-1] if disk else "")
+    if not found:
+        raise RuntimeError(f"df gave no figure for {home}")
+    used = int(found.group(1))
     if used > 89:
         problems.append(f"the disk is {used}% used (next: df -h {home})")
     counted = collections.Counter(re.sub(r"\d+", "N", line[25:125]) for line in errors.splitlines()

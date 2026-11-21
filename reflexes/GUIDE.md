@@ -8,11 +8,11 @@ It runs in a sandbox with no files, no network and no processes of its own. It t
 - `rx.sh(cmd)` runs a command that only READS, and returns its output (a text, without the last newline).
 - `rx.do(cmd)` runs a command that CHANGES something, and returns its output.
 - `rx.read(path)` returns the text of a file. `rx.write(path, text)` writes one (`append=True` adds to it).
-- `rx.ask(question, options, about=items, context=texts)` puts a closed question to a small, fast model.
-  With a list in `about` it asks once per item and returns `{item: option}`. Without `options` the question is yes
-  or no and the answers are True or False. `context` is optional: `{item: text}`, what the model reads for that item
-  (it sees nothing else). You never handle doubts: what the small model is unsure of goes up to the big model, and
-  its answer comes back in the same place.
+- `rx.ask(question, options)` puts a closed question to a small, fast model and returns the option it picks.
+  Without `options` the question is yes or no and the answer is True or False. `context=text` gives it something
+  to read. To ask the same question of several things, `about=items` returns `{item: answer}`, and `context` is
+  then `{item: text}`, what the model reads for each (it sees nothing else). You never handle doubts: what the
+  small model is unsure of goes up to the big model, and its answer comes back in the same place.
 - `rx.up(question, options=None, **context)` asks the big model one precise thing and returns its answer. With
   `options` the answer is one of them. Rarely needed.
 

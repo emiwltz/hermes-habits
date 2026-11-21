@@ -459,11 +459,12 @@ class _Run:
             started = time.monotonic()
             out, err, code = self.ran(argv, seconds, input)
             return argv, out, err, code, started
-        if len(commands) > 1:
-            with ThreadPoolExecutor(max_workers=min(8, len(commands))) as pool:
+        workers = min(int(getattr(self.host, "workers", 8)), len(commands))  # a host may take one command at a time
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
                 results = list(pool.map(one, commands))
         else:
-            results = [one(commands[0])]
+            results = [one(argv) for argv in commands]
         outputs, failure = [], ""
         for argv, out, err, code, started in results:
             problem = self.failed("sh", argv, out, err, code, ok)
@@ -539,7 +540,8 @@ class _Run:
             raise _Raise(ValueError("rx.ask: the same thing is twice in about"))
 
         def context_of(item):
-            found = context.get(item, "") if isinstance(context, dict) else (context or "")
+            # {item: text} gives each item of a list its own; anything else is the material of every question
+            found = context.get(item, "") if many and isinstance(context, dict) else (context or "")
             return found if isinstance(found, str) else json.dumps(found, default=str, ensure_ascii=False)
         began, answers, by = time.monotonic(), None, "nobody"
         if self.decider is not None:
@@ -561,6 +563,8 @@ class _Run:
             if many or about is not None:
                 asks["about"] = [{"item": i, **({"context": context_of(i)[:CONTEXT]} if context_of(i) else {})}
                                  for i in unsure]
+            elif context_of(None):
+                asks["context"] = context_of(None)[:CONTEXT]  # what the one question is about
             raise _Pause({"verb": "ask", "many": many, "yes_no": yes_no, "options": choices, "sure": sure,
                           "items": items, "unsure": [_key(i) for i in unsure]}, asks)
         return _answers(sure, items, many, yes_no)

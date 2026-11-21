@@ -2,44 +2,78 @@ import pytest
 
 from reflexes.readers import why_not
 
-READS = [
-    "ls -la /tmp", "cat a b", "head -n 5 x", "wc -l x", "stat x", "df -Pk /", "du -sh x", "ps aux", "echo hi",
-    "grep -rc a|b notes", "jq .a x.json", "find . -name *.py -maxdepth 2", "tail -n 5 x", "sort -k2,2n x", "uniq -c",
-    "date +%s", "date -d yesterday +%F", "sleep 3", "hostname -s", "ping -c 2 example.com",
-    "curl -sI -m 5 -o /dev/null -w %{http_code} https://github.com", "curl -sfL --max-time 10 https://a/b",
-    "curl -X HEAD https://a", "curl example.com",
-    "git status", "git -C /repo log -p -3", "git --no-pager diff --stat", "git branch --show-current", "git branch",
-    "git tag -l", "git remote -v", "git config --get user.name", "git stash list", "git --version",
-    "systemctl --user is-active x", "journalctl -u x -n 20", "docker ps", "docker logs x", "kubectl get pods",
-    "npm ls", "pip list", "python3 --version", "node -v", "hermes logs agent --since 30m", "crontab -l",
-    "vcgencmd measure_temp", "/usr/bin/ls -la", "rg --version",
-]
+READS = """
+ls -la /tmp | cat a b | head -n 5 x | wc -l x | stat -c %Y x | df -Pk / | du -sh x | ps aux | ps -p 12 -o pid=
+echo hi | grep -rc --include=*.py TODO /p | jq .a x.json | find . -maxdepth 1 -type f -name *.tmp -mtime +7
+tail -n 5 x | tail -20 x | tail -c 100 x | tail +5 x | sort -k2,2n -t, x | sort -rn x | uniq -c | uniq -c in
+date +%s | date -d yesterday +%F | date -u | date -Iseconds | date -j -f %Y 2020 +%s | sleep 3 | hostname -s
+ping -c 2 example.com | file -b x | tree -L 2 x | sysctl -n kern.ostype | lsof -i :8080 | rg -n TODO src
+curl -sI -m 5 -o /dev/null -w %{http_code} https://github.com | curl -sfL --max-time 10 https://a/b
+curl -X HEAD https://a | curl example.com | curl -sL -r 0-0 -o /dev/null -w %{http_code} -m 10 https://a
+git status --porcelain | git -C /repo log -p -3 --stat | git -C /repo log -5 --format=%s | git --no-pager diff --stat
+git branch --show-current | git branch | git branch -a | git branch --list feat* | git tag -l | git tag -n5
+git remote -v | git remote get-url origin | git config --get user.name | git config get user.name | git stash list
+git stash show | git reflog | git --version | git log --exclude=x --all | git diff --text
+systemctl --user is-active x | systemctl status x --no-pager -n 20 | journalctl -u x -n 20 --no-pager
+journalctl -b -1 -p err | docker ps -a --format {{.Names}} | docker logs --tail 50 x | kubectl get pods -n ns -o json
+hermes logs agent --since 30m -n 5000 | hermes --version | crontab -l | pmset -g batt | vcgencmd measure_temp
+python3 --version | node -v | java -version | /usr/bin/ls -la | /bin/cat x
+"""
 NOT_READS = [
+    # programs that are not readers at all
     ("rm -rf x", "rm is not known"), ("mv a b", "mv is not known"), ("sh -c ls", "sh is not known"),
     ("xargs rm", "xargs is not known"), ("env", "env is not known"), ("sed -n 1p f", "sed is not known"),
-    ("tee out", "tee is not known"), ("ssh host uptime", "ssh is not known"),
-    ("find . -delete", "find -delete"), ("find . -exec rm {} ;", "find -exec"), ("tail -f x", "tail -f"),
-    ("tail -fn 5 x", "tail -fn"), ("tail --follow=name x", "tail --follow=name"), ("sort -o out x", "sort -o"),
-    ("sort -uo out x", "sort -uo"), ("sort --output=out x", "sort --output=out"), ("uniq a b", "second file"),
-    ("date 010112002026", "sets the clock"), ("date -s 12:00", "date -s"), ("sleep 30", "10 at most"),
-    ("hostname new", "sets the name"), ("ping example.com", "never ends"), ("ping -c 50 x", "never ends"),
-    ("curl -d x https://a", "curl -d"), ("curl -o file https://a", "writes a file"),
+    ("tee out", "tee is not known"), ("ssh host uptime", "ssh is not known"), ("unknown --version", "is not known"),
+    # a reader named from somewhere else is another program
+    ("./ls -la", "a program of its own"), ("/tmp/evil/cat x", "a program of its own"),
+    # options that write, run something or never end; cut short, bundled, or with their value attached
+    ("find . -delete", "find -delete"), ("find . -exec rm {} ;", "find -exec"), ("find . -fprint out", "find -fprint"),
+    ("tail -f x", "tail -f"), ("tail -fn 5 x", "tail -f"), ("tail --follow=name x", "tail --follow"),
+    ("tail --fo x", "tail --fo"), ("tail +1f x", "a number only"),
+    ("sort -o out x", "sort -o"), ("sort -uo out x", "sort -o"), ("sort --output=out x", "sort --output"),
+    ("sort --o out x", "sort --o"), ("sort --outp=out x", "sort --outp"), ("sort --compress-prog=evil x", "sort --compress-prog"),
+    ("uniq a b", "takes 1 name"), ("uniq -- in out", "takes 1 name"),
+    ("date 010112002026", "sets the clock"), ("date -s 12:00", "date -s"), ("date -s2001-01-01", "date -s"),
+    ("date --se=2001-01-01", "date --se"), ("sleep 30", "10 at most"),
+    ("hostname new", "takes 0 names"), ("hostname --file=F", "hostname --file"), ("hostname -F f", "hostname -F"),
+    ("sysctl -w a=1", "sysctl -w"), ("sysctl kern.x=1", "sets a value"), ("sysctl -qp FILE", "sysctl -p"),
+    ("ping example.com", "never ends"), ("ping -c 50 x", "never ends"), ("ping -f -c 2 x", "ping -f"),
+    ("file -C -m magic", "file -C"), ("tree -o out", "tree -o"), ("rg --pre cat x", "rg --pre"),
+    ("journalctl -f", "journalctl -f"), ("journalctl -xef", "journalctl -f"), ("journalctl --rot", "journalctl --rot"),
+    ("journalctl --vacuum-time=1d", "journalctl --vacuum-time"),
+    ("curl -d x https://a", "curl -d"), ("curl -o file https://a", "writes a file"), ("curl -so f https://a", "curl -so"),
     ("curl -X POST https://a", "not a GET or a HEAD"), ("curl file:///etc/passwd", "http and https only"),
     ("curl -K cfg https://a", "curl -K"), ("curl -T f https://a", "curl -T"), ("curl", "no URL"),
-    ("git push", "git push is not listed"), ("git commit -m x", "git commit"), ("git branch new", "creates a branch"),
-    ("git tag v1", "creates a tag"), ("git -c alias.x=!rm log", "git -c"), ("git diff --output=x", "git --output=x"),
-    ("git config user.name x", "sets a value"), ("git stash drop", "git stash drop"), ("git remote add o u", "not a read"),
-    ("systemctl restart x", "systemctl restart"), ("journalctl -f", "journalctl -f"), ("journalctl -xef", "-xef"),
-    ("journalctl --vacuum-time=1d", "--vacuum-time=1d"), ("docker rm x", "docker rm"), ("docker logs -f x", "follows"),
-    ("kubectl delete pod x", "kubectl delete"), ("npm install", "npm install"), ("pip install x", "pip install"),
-    ("python3 -c print(1)", "runs code"), ("python3 script.py", "runs code"), ("sysctl -w a=1", "sysctl -w"),
-    ("sysctl kern.x=1", "sets a value"), ("file -C -m magic", "file -C"), ("tree -o out", "tree -o"),
-    ("rg --pre cat x", "rg --pre"), ("crontab -r", "only crontab -l"), ("hermes config set a b", "hermes config"),
-    ("unknown-tool --version", "is not known"),
+    ("curl -w %output{/tmp/x}hi https://a", "writes a file"), ("curl --url gopher://h:1/_x https://a", "http and https only"),
+    ("curl -D headers https://a", "curl -D"), ("curl -c jar https://a", "curl -c"),
+    # git: what changes something, and what can write a file or run a program, however it is spelt
+    ("git push", "git push is not listed"), ("git commit -m x", "git commit"), ("git grep -n TODO", "git grep"),
+    ("git grep --open=evil x", "git --open"), ("git log --outp=x", "git --outp"), ("git show --ext", "git --ext"),
+    ("git cat-file --textconv a", "git --textconv"), ("git diff --output=x", "git --output"),
+    ("git -c alias.x=!rm log", "git -c"), ("git --git-dir=x status", "git --git-dir=x"),
+    ("git branch new", "creates a branch"), ("git branch -r -D origin/x", "creates a branch"), ("git branch -D --list x", "git branch -D"),
+    ("git branch -M a b -a", "creates a branch"), ("git branch -a -M", "git branch -M"), ("git tag v1", "creates a tag"), ("git tag -d v1 -l", "git tag -d"),
+    ("git config user.name x", "git config reads only"), ("git config --unset user.name", "git config reads only"),
+    ("git config --get a --add b", "git config reads only"), ("git remote add o u", "git remote reads only"),
+    ("git remote set-url origin x", "git remote reads only"), ("git stash", "git stash reads only"),
+    ("git stash -u", "git stash reads only"), ("git stash drop", "git stash reads only"),
+    ("git worktree add x", "git worktree reads only"), ("git reflog expire --all", "git reflog expire"),
+    # a subcommand hidden behind an option, and subcommands that change something
+    ("pip --log list uninstall x", "pip runs code"), ("docker -l info context create x", "the subcommand comes first"),
+    ("kubectl -n get delete pod x", "the subcommand comes first"), ("npm --prefix ls install", "npm runs code"),
+    ("go env -w GOFLAGS=x", "go runs code"), ("cargo metadata --config build.rustc=x", "cargo runs code"),
+    ("systemctl restart x", "systemctl restart"), ("systemctl -H host status x", "the subcommand comes first"),
+    ("systemctl status x -H host", "systemctl status -H"), ("docker rm x", "docker rm"),
+    ("docker logs -f x", "never ends"), ("docker logs -tf x", "never ends"), ("kubectl get pods -w", "never ends"),
+    ("kubectl delete pod x", "kubectl delete"), ("hermes config set a b", "hermes config"),
+    ("crontab -r", "only `crontab -l`"), ("pmset sleepnow", "only `pmset -g`"),
+    # an interpreter reads only when it says its version
+    ("python3 -c print(1)", "runs code"), ("python3 script.py", "runs code"), ("python3 version", "runs code"),
+    ("make version", "runs code"), ("npm install", "runs code"), ("pip install x", "runs code"),
 ]
 
 
-@pytest.mark.parametrize("line", READS)
+@pytest.mark.parametrize("line", [line.strip() for chunk in READS.strip().splitlines() for line in chunk.split(" | ")])
 def test_reads(line):
     assert why_not(line.split()) == ""
 
@@ -53,6 +87,7 @@ def test_a_host_can_teach_its_own_readers():
     extra = {"notes": ["list", "show"], "mytool": True}
     assert why_not(["notes", "list"], extra) == ""
     assert why_not(["notes", "delete", "x"], extra) == "notes delete is not listed as a read"
+    assert why_not(["notes", "--all", "list"], extra) == "notes --all is not listed as a read"
     assert why_not(["mytool", "anything"], extra) == ""
     assert why_not(["notes", "list"]) == "notes is not known as a command that only reads"
 

@@ -1,7 +1,7 @@
 """The local host: what a reflex's effects do on this machine.
 
 The engine decides what an effect means (a read runs in a dry run, a change is only planned, a question may go up);
-a host only carries it out. Another host, an agent's own tools for one, has the same five members.
+a host only carries it out. Another host, an agent's own tools for one, has the same members.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from . import readers
 
 
 class Local:
+    workers = 8  # commands of one rx.sh that may run side by side
+
     def __init__(self, cwd: str | None = None, extra_readers: dict | None = None, home: str | None = None,
                  env: dict | None = None):
         self.cwd = cwd or os.getcwd()

@@ -2,6 +2,7 @@
 
     python bench/use.py make <folder>     build one throwaway world per scenario, print the prompts as JSON
     python bench/use.py check <folder>    say what each world shows afterwards
+    python bench/use.py stats <records>   count each agent's tool calls from a workflow's records
 
 Each world is a home folder with a few reflexes installed and a `reflex` command that logs every call. A fresh
 agent gets the scenario's request and the short note a host would put in its prompt (INDEX, below), and works with
@@ -190,11 +191,46 @@ def check(root: Path) -> dict:
     return report
 
 
+def stats(transcripts: Path) -> dict:
+    """label -> the tool calls an agent made, from a workflow's records: how many shell commands in all, how many of
+    them were the reflex command, and the others (what it did by hand)."""
+    labels = {}
+    for line in (transcripts / "journal.jsonl").read_text().splitlines():
+        entry = json.loads(line)
+        if entry.get("type") == "started":
+            labels[entry["agentId"]] = entry["label"]
+    found = {}
+    for agent, label in labels.items():
+        path = transcripts / f"agent-{agent}.jsonl"
+        if not path.exists():
+            continue
+        shell, turns, other_tools = [], 0, []
+        for line in path.read_text().splitlines():
+            entry = json.loads(line)
+            if entry.get("type") != "assistant":
+                continue
+            turns += 1
+            for part in entry.get("message", {}).get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "tool_use":
+                    if part["name"] == "Bash":
+                        shell.append(str(part["input"].get("command", "")))
+                    elif part["name"] not in ("StructuredOutput",):
+                        other_tools.append(part["name"])
+        reflex = [c for c in shell if "/reflex " in c or c.rstrip().endswith("/reflex")]
+        found[label] = {"turns": turns, "shell": len(shell), "reflex": len(reflex),
+                        "by_hand": [c[:100] for c in shell if c not in reflex], "tools": other_tools}
+    return found
+
+
 if __name__ == "__main__":
     command, root = sys.argv[1], Path(sys.argv[2]).resolve()
     if command == "make":
         root.mkdir(parents=True, exist_ok=True)
         print(json.dumps(make(root), indent=1))
+    elif command == "stats":
+        for label, row in sorted(stats(root).items()):
+            print(f"{label:18} {row['turns']:2} model turns, {row['shell']:2} shell commands ({row['reflex']} reflex), "
+                  f"tools {row['tools']}" + (f", by hand: {row['by_hand'][:3]}" if row["by_hand"] else ""))
     else:
         for name, result in check(root).items():
             print(f"{'ok  ' if result['ok'] else 'FAIL'} {name:8} {len(result['calls'])} reflex calls: "

@@ -403,3 +403,20 @@ def test_up_with_options_takes_only_one_of_them(host):
     again = resume(asked.state, "the minor one", host)
     assert again.status == "asks" and again.asks["error"] == "'the minor one' is not one of major, minor"
     assert resume(asked.state, " minor ", host).result == "minor"
+
+
+def test_a_host_that_takes_one_command_at_a_time_gets_them_in_order():
+    host = FakeHost({"echo": lambda argv: argv[1]})
+    host.workers = 1
+    assert run(reflex("return rx.sh([['echo', 'a'], ['echo', 'b'], ['echo', 'c']])"), {}, host).result == ["a", "b", "c"]
+    assert host.ran == [["echo", "a"], ["echo", "b"], ["echo", "c"]]
+
+
+def test_one_question_reads_its_whole_context(host):
+    asked = run(reflex("return rx.ask('Which part?', ['major', 'minor'], context={'commits': 'Add export'})"), {}, host)
+    assert asked.asks == {"question": "Which part?", "options": ["major", "minor"],
+                          "context": '{"commits": "Add export"}'}
+    small = decider({"": ("minor", 0.9)})
+    done = run(reflex("return rx.ask('Which part?', ['major', 'minor'], context={'commits': 'Add export'})"), {}, host,
+               decider=small)
+    assert done.result == "minor" and small.calls[0][2] == [("", '{"commits": "Add export"}')]
