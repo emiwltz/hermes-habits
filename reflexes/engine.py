@@ -18,10 +18,16 @@ from __future__ import annotations
 
 import ast
 import atexit
+import builtins
+import datetime
 import inspect
+import itertools
 import json
+import os
+import re
 import shlex
 import string
+import sys
 import textwrap
 import threading
 import time
@@ -50,7 +56,24 @@ NO_MODULE = {  # what a reflex reaches for by habit, and what does the job here
     "requests": "fetch with rx.sh(['curl', '-s', url])",
     "urllib": "fetch with rx.sh(['curl', '-s', url]); take a URL apart with re or str methods",
     "http": "fetch with rx.sh(['curl', '-s', url])",
+    "operator": "write the function out: key=lambda x: x[1]",
 }
+HINTS = (  # what the sandbox says in its own words, and what the author should do about it
+    ("cannot suspend in this synchronous context",
+     "rx cannot be called from inside sorted, min, max, map or filter: get the values first, in a list "
+     "comprehension, then sort or pick"),
+    ("is not an iterator",
+     "in the sandbox a generator expression, map, filter and zip are lists: wrap it in iter(...), or take its "
+     "items by index"),
+    ("exceptions can only be called with zero or one string argument",
+     "an error takes one text here: raise ValueError(f'...')"),
+    ("callable replacement is not yet supported", "build the text from re.finditer(...) instead"),
+)
+NO_VALUE = re.compile(r"'(\w+)'(?: object)? has no attribute '(\w+)'")  # a method taken without being called
+HIT = "_rx_hit"  # the name that any, all and next use to stop at the first item that settles them
+SETTLED = {"any": f") and not {HIT}.append(1))", "all": f") or {HIT}.append(1))", "next": f"), {HIT}.append(1))[0]"}
+LISTS_HERE = {"map", "filter", "zip", "enumerate", "reversed"}  # iterators in Python, lists in the sandbox
+TYPES = {"str", "bytes", "dict", "list", "set", "tuple", "int", "float"}
 # Pure helpers Python has and the sandbox lacks: lent from the host, they touch nothing.
 LENT = {
     "shlex": {"quote": shlex.quote, "split": shlex.split, "join": shlex.join},
@@ -132,10 +155,12 @@ def _prepared(source: str) -> tuple:
     failed run. The import is one line put first; after a `from __future__` import, which must stay first, it goes
     on that same line instead and adds none."""
     tree = ast.parse(source)
-    bound = set()
+    bound, modules = set(), set()
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            bound |= {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+            names = {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+            bound |= names
+            modules |= names
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.add(node.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
@@ -143,7 +168,7 @@ def _prepared(source: str) -> tuple:
             bound |= {n.id for target in targets for n in ast.walk(target) if isinstance(n, ast.Name)}
     names = [("os.path" if name == "os" else name) for name in READY if name not in bound]
     ready = "import " + ", ".join(names) if names else "pass"
-    code = _first_of(source)
+    code = _as_meant(source, tree, modules | {name for name in READY if name not in bound} | {"rx"}, bound)
     future = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "__future__"]
     if not future:
         return ready + "\n" + code, 1
@@ -154,24 +179,69 @@ def _prepared(source: str) -> tuple:
     return "\n".join(lines), 0
 
 
-def _first_of(source: str) -> str:
-    """next(x for x in ...) as Python means it. The sandbox builds a generator expression as a list, which next()
-    refuses: the expression is wrapped in iter(), in place, so every line keeps its number."""
-    edits = []  # (line, byte column, text to insert there)
-    for node in ast.walk(ast.parse(source)):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "next" and node.args
-                and isinstance(node.args[0], ast.GeneratorExp)):
-            arg = node.args[0]
-            # next(x for x in xs): the expression borrows the call's own brackets, and its span holds them
-            shared = (arg.lineno, arg.col_offset) == (node.func.end_lineno, node.func.end_col_offset)
-            edits.append((arg.lineno, arg.col_offset, b"(iter" if shared else b"iter("))
-            edits.append((arg.end_lineno, arg.end_col_offset, b")"))
+def _as_meant(source: str, tree, modules: set, bound: set) -> str:
+    """Ordinary Python that the sandbox takes otherwise, put right in the source before it runs.
+
+    - any(...), all(...) and next(...) of a generator expression stop at the first item that settles them. The
+      sandbox builds a generator expression as a whole list first: rx.do in it would run for every item.
+    - next() of map, filter, zip, enumerate or reversed, which are lists in the sandbox.
+    - a method handed over without being called where a function is expected (key=str.lower, key=counts.get,
+      map(str.strip, lines)): the sandbox has no such value.
+
+    Text is only inserted, around whole expressions, so every line keeps its number."""
+    lines = [line.encode() for line in source.split("\n")]
+    edits, order = [], itertools.count(1)  # (line, byte column, rank among those at the same place, text)
+
+    def around(node, before: str, after: str):
+        edits.append((node.lineno, node.col_offset, next(order), before))  # at one place, the outer comes first
+        edits.append((node.end_lineno, node.end_col_offset, -next(order), after))  # and closes last
+
+    def root(node):
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return node.id if isinstance(node, ast.Name) else ""
+
+    inner = set()  # inside an f-string an expression's place is not reliable before Python 3.12: left as it is
+    if sys.version_info < (3, 12):
+        inner = {id(n) for text in ast.walk(tree) if isinstance(text, ast.JoinedStr) for n in ast.walk(text)}
+    for node in ast.walk(tree):  # outer expressions before the ones they hold
+        if not isinstance(node, ast.Call) or id(node) in inner:
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) and node.func.id not in bound else ""
+        first = node.args[0] if node.args else None
+        if name in SETTLED and isinstance(first, ast.GeneratorExp) and not any(g.is_async for g in first.generators):
+            opens, closes = (first.lineno, first.col_offset), (first.end_lineno, first.end_col_offset - 1)
+            if lines[opens[0] - 1][opens[1]:opens[1] + 1] == b"(" and lines[closes[0] - 1][closes[1]:closes[1] + 1] == b")":
+                around(node, "[", f" for {HIT} in [[]]][0]")
+                edits.append((opens[0], opens[1] + 1, next(order), "iter([" if name == "next" else "["))
+                edits.append((*closes, -next(order), f" if not {HIT}])" if name == "next" else f" if not {HIT}]"))
+                around(first.elt, "((", SETTLED[name])
+                for at, part in enumerate(first.generators):
+                    if at:
+                        around(part.iter, f"(() if {HIT} else (", "))")
+                    for condition in part.ifs:
+                        around(condition, f"(not {HIT} and (", "))")
+        elif (name == "next" and isinstance(first, ast.Call) and isinstance(first.func, ast.Name)
+                and first.func.id in LISTS_HERE):
+            around(first, "iter(", ")")
+        handed = [k.value for k in node.keywords if k.arg == "key"] + ([first] if name in ("map", "filter") else [])
+        for value in handed:
+            if not isinstance(value, ast.Attribute) or root(value) in modules:
+                continue  # a module's function (os.path.basename) is a value the sandbox has
+            if isinstance(value.value, ast.Name) and value.value.id in TYPES:
+                around(value, f"(lambda _s, *_a: _s.{value.attr}(*_a) if True else ", ")")
+            else:
+                around(value, "(lambda *_a, **_k: ", "(*_a, **_k))")
     if not edits:
         return source
-    lines = [line.encode() for line in source.split("\n")]
-    for line, col, text in sorted(edits, reverse=True):  # from the end: what is still to place keeps its offset
-        lines[line - 1] = lines[line - 1][:col] + text + lines[line - 1][col:]
-    return "\n".join(line.decode() for line in lines)
+    for line, col, _, text in sorted(edits, reverse=True):  # from the end: what is still to place keeps its offset
+        lines[line - 1] = lines[line - 1][:col] + text.encode() + lines[line - 1][col:]
+    code = "\n".join(line.decode() for line in lines)
+    try:
+        ast.parse(code)
+    except SyntaxError:  # never hand over a rewrite that does not read: the author's own text then runs as it is
+        return source
+    return code
 
 
 def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False, decider=None,
@@ -238,6 +308,31 @@ def _close():
             _pool = None
 
 
+_zone_found = None
+
+
+def _zone():
+    """This machine's time zone, for the sandbox's clock: by name when the system gives one the sandbox knows
+    (the daylight-saving rules come with it), else today's offset from UTC."""
+    global _zone_found
+    if _zone_found is None:
+        now = datetime.datetime.now().astimezone()
+        fixed = {"offset_seconds": int(now.utcoffset().total_seconds()), "name": now.tzname() or "local"}
+        name = os.environ.get("TZ", "").lstrip(":")
+        if not name:
+            link = os.path.realpath("/etc/localtime")
+            name = link.split("/zoneinfo/", 1)[1] if "/zoneinfo/" in link else ""
+        _zone_found = fixed
+        if name:
+            try:
+                with _sandbox().checkout(os_policy={"timezone": name}) as session:
+                    session.feed_start("0")
+                _zone_found = name
+            except Exception:  # a name the sandbox does not know
+                pass
+    return _zone_found
+
+
 def _never(*args, **kwargs):
     """Stands for each verb inside the sandbox: every call stops the sandbox before it gets here."""
     raise RuntimeError("rx is answered by the engine")
@@ -289,12 +384,16 @@ class _Run:
         modules = {"rx": monty.ExternalModule({**{verb: _never for verb in VERBS}, "home": self.host.home}),
                    **{name: monty.ExternalModule(attrs) for name, attrs in LENT.items()}}
         limits = monty.ResourceLimits(max_feed_duration_secs=self.limits["cpu"], max_memory=256_000_000)
-        return _sandbox().checkout(external_modules=modules, limits=limits, script_name="reflex.py")
+        return _sandbox().checkout(external_modules=modules, limits=limits, script_name="reflex.py",
+                                   os_policy={"timezone": _zone()})
 
     def start(self, code: str, inputs: dict) -> Outcome:
         try:
             with self.session() as session:
-                snap = session.feed_start(code, inputs={"__reflex_inputs__": inputs}, print_callback=self.heard)
+                folder = getattr(self.host, "cwd", None)  # os.getcwd() and os.path.abspath() answer as the host
+                where = {"cwd": folder} if isinstance(folder, str) and folder.startswith("/") else {}
+                snap = session.feed_start(code, inputs={"__reflex_inputs__": inputs}, print_callback=self.heard,
+                                          **where)
                 return self.drive(snap)
         except monty.MontyError as exc:
             return self.stopped(self.said(exc))
@@ -325,7 +424,10 @@ class _Run:
                 return self.stopped(f"budget: more than {self.limits['seconds']} s")
             name = getattr(snap, "function_name", None) or ""
             if getattr(snap, "is_os_function", False):
-                answer = self.system(name, snap.args)
+                try:
+                    answer = self.system(name, snap.args)
+                except _Stop as stop:
+                    return self.stopped(str(stop))
                 snap = snap.resume(answer) if answer else snap.resume_auto()  # else the sandbox's own rules
                 continue
             if not name.startswith("rx."):
@@ -352,13 +454,19 @@ class _Run:
         return self.outcome("done", result=result)
 
     def system(self, name: str, args) -> dict | None:
-        """What the sandbox asks of the system: the home folder and a short sleep are given, files and the modules
-        that reach outside are refused with what to use instead. None: the sandbox's own answer stands."""
-        if name == "os.getenv":
-            return {"return_value": self.host.home if args[:1] == ("HOME",) else (args[1] if len(args) > 1 else None)}
+        """What the sandbox asks of the system: the environment its commands run in and a sleep are given, files and
+        the modules that reach outside are refused with what to use instead. None: the sandbox's own answer stands."""
+        if name in ("os.getenv", "os.environ"):
+            given = getattr(self.host, "environment", None)
+            env = dict(given()) if given else {"HOME": self.host.home}
+            if name == "os.environ":
+                return {"return_value": env}
+            return {"return_value": env.get(str(args[0]), args[1] if len(args) > 1 else None)}
         if name == "system.sleep":
-            left = self.limits["seconds"] - self.ms() / 1000  # a sleep spends the run's time like anything else
-            time.sleep(max(0.0, min(float(args[0]), 10.0, left + 0.05)))
+            asked, left = float(args[0]), self.limits["seconds"] - self.ms() / 1000
+            time.sleep(max(0.0, min(asked, left)))  # a sleep spends the run's time like anything else
+            if asked > left:
+                raise _Stop(f"budget: more than {self.limits['seconds']} s")
             return {"return_value": None}
         if name == "import" and str(args[0]).split(".")[0] in NO_MODULE:
             root = str(args[0]).split(".")[0]
@@ -380,7 +488,12 @@ class _Run:
         except Exception:  # an error with no frames to show
             frames = []
         line = f" (line {frames[-1].line - self.shift} of the reflex)" if frames else ""
-        return f"{text}{line}"
+        hint = next((hint for said, hint in HINTS if said in text), "")
+        taken = NO_VALUE.search(text)
+        if taken and hasattr(getattr(builtins, taken[1], None), taken[2]):
+            hint = (f"if {taken[2]} is handed over without being called, the sandbox has no such value: write "
+                    f"lambda x: x.{taken[2]}(...)")
+        return f"{text}{line}" + (f". {hint[0].upper()}{hint[1:]}" if hint else "")
 
     # ---- the verbs --------------------------------------------------------------------------------------------
 

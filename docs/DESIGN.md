@@ -74,9 +74,23 @@ text than as a command fed on its input.
 ### What the engine does for the author
 
 The author is a model writing ordinary Python. So the engine does not ask it to be careful where it can simply be
-forgiving: the everyday modules are there without an import; `next(x for x in ...)` reads as Python means it (the
-sandbox builds a generator expression as a list); a reach for `open`, `pathlib`, `subprocess` or `requests` is
-answered with what to use instead; `~` is the home folder everywhere; a doubt of the small model goes up by itself.
+forgiving: the everyday modules are there without an import; a reach for `open`, `pathlib`, `subprocess` or
+`requests` is answered with what to use instead; `~` is the home folder everywhere; a doubt of the small model goes
+up by itself. The clock is the machine's local time, and `os.getcwd()` and `os.getenv()` answer as the host does.
+
+The sandbox is not CPython, and a review that ran 450 small reflexes through both found where it shows. The engine
+puts three of those right in the source before it runs, by inserting text around whole expressions (every line
+keeps its number, and a rewrite that does not parse is dropped):
+
+- `any(...)`, `all(...)` and `next(...)` of a generator expression stop at the first item that settles them. The
+  sandbox builds a generator expression as a whole list, so `any(install(rx, n) for n in names)` ran `rx.do` for
+  every name. That one was a real fault: changes Python would never have made.
+- `next()` of `map`, `filter`, `zip`, `enumerate` or `reversed`, which are lists in the sandbox.
+- a method handed over where a function is expected (`key=str.lower`, `key=counts.get`, `map(str.strip, lines)`):
+  the sandbox has no such value.
+
+Where it cannot put things right, the error says what to write instead (a generator kept in a variable, `rx`
+called from inside `sorted(key=...)`, an error raised with two arguments, `re.sub` with a function).
 
 ### Which commands only read
 
@@ -112,7 +126,10 @@ Open:
   The bar is 0.8 for now and must be fitted.
 - **Reads are not private.** A reflex can read what its user can read and a read can go outside (`curl`), so a dry
   run changes nothing but can tell. The journal marks the reads that left the machine.
-- **The sandbox knows part of Python**: no class inheritance, no `yield`, part of the library.
+- **The sandbox knows part of Python**: no class inheritance, no `yield`, part of the library. A few answers
+  differ from CPython without an error: `round(2.675, 2)` gives 2.68 and `sum([0.1] * 10)` 0.9999999999999999; in
+  `re`, `$` does not match before a final newline and `\n` in a replacement text stays two characters; a generator
+  expression kept in a variable is a list and can be read twice. They are the sandbox's to fix, and to report.
 - **Only Claude models wrote and used reflexes so far.** A cheap model of another family is to measure.
 - **The name.** `reflex` and `reflexes` are taken on PyPI; the package is `agent-reflexes` for now, the command
   `reflex`.

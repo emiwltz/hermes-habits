@@ -302,7 +302,6 @@ def test_a_reflex_that_computes_forever_is_cut(host):
     ("import os\nreturn os.system('echo hi')", "AttributeError"),
     ("import subprocess", "ModuleNotFoundError"),
     ("import socket", "ModuleNotFoundError"),
-    ("import os\nreturn list(os.environ)", "not supported"),
     ("return rx.nope(1)", "has no attribute 'nope'"),
 ])
 def test_the_sandbox_has_no_file_no_process_and_no_network_of_its_own(host, body, said):
@@ -363,9 +362,103 @@ def test_the_journal_says_which_reads_left_the_machine():
     assert [e.get("outside", False) for e in outcome.effects] == [True, False]
 
 
-def test_the_environment_stays_outside(host):
-    outcome = run(reflex("import os\nreturn [os.getenv('SECRET_KEY'), os.getenv('HOME')]"), {}, host)
-    assert outcome.result == [None, "/home/me"]
+def test_the_environment_is_the_one_the_host_gives(host):
+    body = "import os\nreturn [os.getenv('EDITOR'), os.getenv('EDITOR', 'vi'), os.getenv('HOME'), os.environ.get('LANG')]"
+    assert run(reflex(body), {}, host).result == [None, "vi", "/home/me", None]  # a host that gives none: the home only
+    host.environment = lambda: {"HOME": "/home/me", "EDITOR": "nano", "LANG": "fr_FR.UTF-8"}
+    assert run(reflex(body), {}, host).result == ["nano", "nano", "/home/me", "fr_FR.UTF-8"]
+
+
+def test_any_all_and_next_stop_at_the_first_item_that_settles_them(host):
+    outcome = run("""
+def tried(rx, name):
+    rx.do(["touch", name])
+    return name == "b"
+
+def reflex(rx):
+    found = any(tried(rx, n) for n in ["a", "b", "c"])
+    every = all(tried(rx, n) for n in ["b", "x", "y"])
+    first = next(n for n in ["p", "q", "r"] if tried(rx, n) or n == "q")
+    pair = any(tried(rx, a + b) for a in ["k", "l"] for b in ["1", "2"] if a + b == "k2" or b == "1")
+    return [found, every, first, pair]
+""", {}, host)
+    assert outcome.result == [True, False, "q", False]
+    assert [argv[1] for argv in host.ran] == ["a", "b", "b", "x", "p", "q", "k1", "k2", "l1"]
+
+
+def test_a_witness_kept_with_a_walrus_is_the_first_one(host):
+    outcome = run(reflex("""
+lines = ["port 80", "port 443", "none"]
+if any((found := re.search(r"\\d+", line)) for line in lines):
+    return found.group()
+"""), {}, host)
+    assert outcome.result == "80"
+
+
+def test_the_source_is_left_alone_where_putting_it_right_is_not_safe(host):
+    outcome = run("""
+def any(xs):
+    return "mine"
+
+def reflex(rx):
+    return [any(x for x in [0]), f"{all(x for x in [1, 0])} {next(iter([7]))}", "any(x for x in y)"]
+""", {}, host)
+    assert outcome.result == ["mine", "False 7", "any(x for x in y)"]
+
+
+def test_next_of_a_map_a_filter_or_a_zip(host):
+    outcome = run(reflex("""
+xs = [" a ", "b"]
+return [next(map(len, xs)), next(filter(None, ["", "x"])), next(zip(xs, [1, 2]))[1], next(enumerate(xs))[0],
+        next(reversed(xs)), next(iter(xs))]
+"""), {}, host)
+    assert outcome.result == [3, "x", 1, 0, "b", " a "]
+
+
+def test_a_method_handed_over_without_being_called(host):
+    outcome = run(reflex("""
+counts = {"a": 2, "b": 5}
+order = ["z", "y"]
+words = [" b", "A ", "c"]
+return [max(counts, key=counts.get), sorted(map(str.strip, words), key=str.lower), sorted(["y", "z"], key=order.index),
+        list(map(os.path.basename, ["/x/a", "/y/b"])), list(filter(str.isdigit, ["1", "a"])), sorted(words, key=len)]
+"""), {}, host)
+    assert outcome.result == ["b", ["A", "b", "c"], ["z", "y"], ["a", "b"], ["1"], ["c", " b", "A "]]
+
+
+@pytest.mark.parametrize("body, said", [
+    ("get = {'a': 1}.get\nreturn get('a')", "handed over without being called"),
+    ("g = (x for x in [1, 2])\nreturn next(g)", "are lists: wrap it in iter"),
+    ("return sorted(['a'], key=lambda n: rx.sh(['stat', n]))", "get the values first"),
+    ("raise ValueError('bad', 3)", "takes one text"),
+    ("return re.sub('a', lambda m: 'b', 'aa')", "re.finditer"),
+    ("import operator", "key=lambda x: x[1]"),
+])
+def test_what_the_sandbox_cannot_do_says_what_to_write_instead(host, body, said):
+    outcome = run(reflex(body), {}, host)
+    assert outcome.status == "stopped" and said in outcome.reason, outcome.reason
+
+
+def test_the_clock_is_the_machines_local_time(host):
+    import datetime
+    outcome = run(reflex("import time\nreturn [str(datetime.date.today()), datetime.datetime.now().hour, "
+                         "time.strftime('%z')]"), {}, host)
+    here = datetime.datetime.now().astimezone()
+    assert outcome.result[0] == str(here.date()) and outcome.result[2] == here.strftime("%z")
+
+
+def test_the_working_folder_is_the_hosts(host):
+    host.cwd = "/work/project"
+    outcome = run(reflex("return [os.getcwd(), os.path.abspath('notes/a.md'), os.path.expanduser('~/x')]"), {}, host)
+    assert outcome.result == ["/work/project", "/work/project/notes/a.md", "/home/me/x"]
+    host.commands = {}
+    asked = run(reflex("answer = rx.up('go on?')\nreturn [answer, os.getcwd()]"), {}, host)
+    assert resume(asked.state, "yes", host).result == ["yes", "/work/project"]
+
+
+def test_a_sleep_is_as_long_as_asked_within_the_budget(host):
+    outcome = run(reflex("import time\ntime.sleep(0.2)\ntime.sleep(30)\nreturn 'late'"), {}, host, limits={"seconds": 1})
+    assert outcome.status == "stopped" and "budget" in outcome.reason and 1000 <= outcome.ms < 3000
 
 
 def test_the_everyday_modules_are_there_without_an_import(host):

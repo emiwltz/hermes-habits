@@ -26,6 +26,10 @@ class Local:
         """A path or a command word with its ~ written out."""
         return self.home + word[1:] if word == "~" or word.startswith("~/") else word
 
+    def environment(self) -> dict:
+        """The variables its commands run with; os.getenv in a reflex reads the same."""
+        return {**os.environ, "HOME": self.home, **self.env}
+
     def reads_only(self, argv: list) -> str:
         """"" when the command only reads, else why it is not a read."""
         return readers.why_not(argv, self.extra_readers)
@@ -39,7 +43,7 @@ class Local:
         try:
             done = subprocess.run(argv, cwd=self.cwd, input=input, capture_output=True, text=True, errors="replace",
                                   timeout=seconds, stdin=None if input is not None else subprocess.DEVNULL,
-                                  env={**os.environ, "HOME": self.home, **self.env})
+                                  env=self.environment())
         except FileNotFoundError:
             return "", f"{argv[0]}: command not found", 127
         except PermissionError:

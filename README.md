@@ -124,8 +124,8 @@ From Python: `from reflexes import run, resume, Local`.
 - A run has budgets: 120 s, 200 calls to `rx`, 10 s of its own computing.
 
 Not covered: a reflex can read any file its user can read, and a read can go outside (`curl`), so a dry run is not
-private; commands get the caller's environment; a reflex does what its caller could do, no more and no less. Who may
-approve what is each host's business.
+private; commands and `os.getenv` get the environment the host gives them (the caller's own, for the local host); a
+reflex does what its caller could do, no more and no less. Who may approve what is each host's business.
 
 ## Where this is going
 
