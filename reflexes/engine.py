@@ -39,6 +39,7 @@ OUTPUT = 2_000_000  # characters one read may hand to the reflex
 SHOWN = 300  # characters of an output kept in the journal
 CONTEXT = 2000  # characters of an item's context shown to whoever answers
 MARK = b"reflex/1\n"
+NOT_STARTED = "not started: the run was out of time"
 NO_FILES = ("the sandbox has no files of its own: read with rx.read(path), write with rx.write(path, text), list with "
             "rx.sh(['ls', folder]), move or delete with rx.do([...])")
 NO_MODULE = {  # what a reflex reaches for by habit, and what does the job here
@@ -156,23 +157,21 @@ def _prepared(source: str) -> tuple:
 def _first_of(source: str) -> str:
     """next(x for x in ...) as Python means it. The sandbox builds a generator expression as a list, which next()
     refuses: the expression is wrapped in iter(), in place, so every line keeps its number."""
-    spans = []
+    edits = []  # (line, byte column, text to insert there)
     for node in ast.walk(ast.parse(source)):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "next" and node.args
                 and isinstance(node.args[0], ast.GeneratorExp)):
             arg = node.args[0]
             # next(x for x in xs): the expression borrows the call's own brackets, and its span holds them
             shared = (arg.lineno, arg.col_offset) == (node.func.end_lineno, node.func.end_col_offset)
-            spans.append((arg.lineno, arg.col_offset, arg.end_lineno, arg.end_col_offset, shared))
-    if not spans:
+            edits.append((arg.lineno, arg.col_offset, b"(iter" if shared else b"iter("))
+            edits.append((arg.end_lineno, arg.end_col_offset, b")"))
+    if not edits:
         return source
-    lines = source.split("\n")
-    for line, col, end_line, end_col, shared in sorted(spans, reverse=True):  # from the end: offsets stay true
-        row = lines[end_line - 1].encode()
-        lines[end_line - 1] = (row[:end_col] + b")" + row[end_col:]).decode()
-        row = lines[line - 1].encode()
-        lines[line - 1] = (row[:col] + (b"(iter" if shared else b"iter(") + row[col:]).decode()
-    return "\n".join(lines)
+    lines = [line.encode() for line in source.split("\n")]
+    for line, col, text in sorted(edits, reverse=True):  # from the end: what is still to place keeps its offset
+        lines[line - 1] = lines[line - 1][:col] + text + lines[line - 1][col:]
+    return "\n".join(line.decode() for line in lines)
 
 
 def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False, decider=None,
@@ -313,7 +312,17 @@ class _Run:
             return self.stopped(self.said(exc))
 
     def drive(self, snap) -> Outcome:
+        try:
+            return self.driven(snap)
+        except monty.MontyError:
+            raise
+        except Exception as exc:  # a fault of the engine or of a host: the run stops, and its journal is kept
+            return self.stopped(f"the engine failed ({type(exc).__name__}: {exc}): what the journal lists was done")
+
+    def driven(self, snap) -> Outcome:
         while not isinstance(snap, monty.MontyComplete):
+            if self.ms() > self.limits["seconds"] * 1000:
+                return self.stopped(f"budget: more than {self.limits['seconds']} s")
             name = getattr(snap, "function_name", None) or ""
             if getattr(snap, "is_os_function", False):
                 answer = self.system(name, snap.args)
@@ -348,7 +357,8 @@ class _Run:
         if name == "os.getenv":
             return {"return_value": self.host.home if args[:1] == ("HOME",) else (args[1] if len(args) > 1 else None)}
         if name == "system.sleep":
-            time.sleep(max(0.0, min(float(args[0]), 10.0)))
+            left = self.limits["seconds"] - self.ms() / 1000  # a sleep spends the run's time like anything else
+            time.sleep(max(0.0, min(float(args[0]), 10.0, left + 0.05)))
             return {"return_value": None}
         if name == "import" and str(args[0]).split(".")[0] in NO_MODULE:
             root = str(args[0]).split(".")[0]
@@ -455,10 +465,14 @@ class _Run:
         if len(self.effects) + len(commands) > self.limits["effects"]:
             raise _Stop(f"budget: more than {self.limits['effects']} calls to rx")
         seconds = self.seconds(timeout)
+        deadline = time.monotonic() + (self.limits["seconds"] - self.ms() / 1000)  # for the whole list
 
         def one(argv):
             started = time.monotonic()
-            out, err, code = self.ran(argv, seconds, input)
+            left = deadline - started
+            if left <= 0:
+                return argv, "", NOT_STARTED, 124, started
+            out, err, code = self.ran(argv, min(seconds, max(1.0, left)), input)
             return argv, out, err, code, started
         workers = min(int(getattr(self.host, "workers", 8)), len(commands))  # a host may take one command at a time
         if workers > 1:
@@ -466,6 +480,10 @@ class _Run:
                 results = list(pool.map(one, commands))
         else:
             results = [one(argv) for argv in commands]
+        if any(err == NOT_STARTED for _, _, err, _, _ in results):  # some of the list never ran: no result to give
+            for argv, out, err, code, started in results:
+                self.note("sh", shlex.join(argv), started, code=code, **({"error": err} if code else {}))
+            raise _Stop(f"budget: more than {self.limits['seconds']} s")
         outputs, failure = [], ""
         for argv, out, err, code, started in results:
             problem = self.failed("sh", argv, out, err, code, ok)
@@ -528,16 +546,14 @@ class _Run:
         about: one thing, or a list (one question each, {item: answer} back). What it is unsure of goes up."""
         question = _text("ask", "question", question)
         yes_no = options is None
-        choices = ["yes", "no"] if yes_no else [str(o) for o in options]
-        if len(choices) < 2 or len(set(choices)) != len(choices):
-            raise _Raise(ValueError("rx.ask needs at least two different options"))
+        choices = ["yes", "no"] if yes_no else _options("ask", options)
         many = isinstance(about, (list, tuple))
         items = list(about) if many else [about]
         if many and not items:
             return {}
         if any(not isinstance(i, (str, int, float, type(None))) for i in items):
             raise _Raise(TypeError("rx.ask: each thing in about is a text (a name, a line, a path)"))
-        if many and len(set(items)) != len(items):
+        if many and len({_key(i) for i in items}) != len(items):
             raise _Raise(ValueError("rx.ask: the same thing is twice in about"))
 
         def context_of(item):
@@ -547,13 +563,17 @@ class _Run:
         began, answers, by = time.monotonic(), None, "nobody"
         if self.decider is not None:
             try:
-                answers = self.decider(question, choices, [("" if i is None else str(i), context_of(i)) for i in items])
+                answers = list(self.decider(question, choices, [(_key(i), context_of(i)) for i in items]))
                 by = getattr(self.decider, "name", "small model")
             except Exception as exc:  # no small model answered: every item is a doubt
-                by = f"nobody ({type(exc).__name__}: {str(exc)[:80]})"
+                answers, by = None, f"nobody ({type(exc).__name__}: {str(exc)[:80]})"
         sure, unsure = {}, []
         for at, item in enumerate(items):
-            answer, confidence = (answers[at] if answers and at < len(answers) else (None, 0.0))
+            try:  # an answer in any other shape than (option, confidence) is a doubt too
+                answer, confidence = answers[at]
+                confidence = float(confidence)
+            except Exception:
+                answer, confidence = None, 0.0
             if answer in choices and confidence >= self.min_confidence:
                 sure[_key(item)] = answer
             else:
@@ -574,9 +594,10 @@ class _Run:
         """One precise question for the big model. The run freezes; it carries on with the answer.
         With options the answer is one of them; without, it is whatever the big model gives."""
         question = _text("up", "question", question)
-        choices = None if options is None else [str(o) for o in options]
-        if choices is not None and (len(choices) < 2 or len(set(choices)) != len(choices)):
-            raise _Raise(ValueError("rx.up: options are at least two different answers"))
+        choices = None if options is None else _options("up", options)
+        taken = sorted({"about", "error", "question"} & set(context))
+        if taken:
+            raise _Raise(ValueError(f"rx.up: {taken[0]} is a name of the question itself; give that value another name"))
         self.note("up", question, time.monotonic())
         raise _Pause({"verb": "up", "options": choices},
                      {"question": question, **({"options": choices} if choices else {}), **context})
@@ -611,6 +632,15 @@ def _answers(found: dict, items: list, many: bool, yes_no: bool):
     """What rx.ask gives back: the caller's own items as keys, True or False for a yes-or-no question."""
     values = {item: (found[_key(item)] == "yes" if yes_no else found[_key(item)]) for item in items}
     return values if many else values[items[0]]
+
+
+def _options(verb: str, options) -> list:
+    if not isinstance(options, (list, tuple)):
+        raise _Raise(TypeError(f"rx.{verb}: options is a list of answers, such as ['task', 'idea']"))
+    choices = [str(o) for o in options]
+    if len(choices) < 2 or len(set(choices)) != len(choices):
+        raise _Raise(ValueError(f"rx.{verb}: options are at least two different answers"))
+    return choices
 
 
 def _key(item) -> str:

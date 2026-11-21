@@ -438,3 +438,68 @@ def test_a_damaged_state_is_refused_without_a_crash(host, state):
 def test_a_default_that_is_no_literal_is_shown_as_written():
     about = describe("def reflex(rx, a={1, 2}, b={[1]: 2}, c=len('x')):\n    pass\n")
     assert [i["default"] for i in about["inputs"]] == [{1, 2}, "{[1]: 2}", "len('x')"]
+
+
+# ---- what a review of the engine found, each kept as a test -------------------------------------------------------
+
+def test_a_reflex_that_sleeps_in_a_loop_is_stopped_by_the_run_budget(host):
+    began = __import__("time").monotonic()
+    outcome = run(reflex("import time\nwhile True:\n    time.sleep(0.2)"), {}, host, limits={"seconds": 1})
+    assert outcome.status == "stopped" and outcome.reason == "budget: more than 1 s"
+    assert __import__("time").monotonic() - began < 3
+
+
+@pytest.mark.parametrize("answers", ["task", [("task",)], [None], [{"a": 1}], [("task", "very sure")], iter([]), 5])
+def test_a_small_model_that_answers_in_another_shape_is_a_doubt(host, answers):
+    host.commands["touch"] = ""
+    outcome = run(reflex("rx.do(['touch', 'x'])\nreturn rx.ask('Kind?', ['task', 'idea'], about='a')"), {}, host,
+                  decider=lambda q, o, i: answers)
+    assert outcome.status == "asks" and [e["verb"] for e in outcome.effects] == ["do", "ask"]
+
+
+def test_a_list_of_commands_shares_the_time_that_is_left():
+    import time
+
+    class Slow(FakeHost):
+        def run(self, argv, seconds, input=None):
+            time.sleep(min(seconds, 0.6))
+            return "", "timed out", 124
+    began = time.monotonic()
+    outcome = run(reflex("return rx.sh([['ls', str(n)] for n in range(40)], ok=None)"), {}, Slow(),
+                  limits={"seconds": 1})
+    assert time.monotonic() - began < 4 and outcome.status == "stopped" and "budget" in outcome.reason
+
+
+@pytest.mark.parametrize("call, said", [
+    ("rx.ask('Kind?', 5)", "rx.ask: options is a list of answers"),
+    ("rx.up('Which?', 'ab')", "rx.up: options is a list of answers"),
+    ("rx.ask('Kind?', ['a'])", "at least two different answers"),
+    ("rx.ask('Kind?', ['a', 'b'], about=[1, '1'])", "the same thing is twice in about"),
+    ("rx.up('Which?', about=['main', 'dev'])", "about is a name of the question itself"),
+    ("rx.up('Which?', error='x')", "error is a name of the question itself"),
+])
+def test_a_question_asked_wrongly_is_an_error_the_reflex_sees(host, call, said):
+    outcome = run(reflex(f"return {call}"), {}, host)
+    assert outcome.status == "stopped" and said in outcome.reason
+    caught = run(reflex(f"try:\n    {call}\nexcept (TypeError, ValueError) as error:\n    return 'caught'"), {}, host)
+    assert caught.result == "caught"
+
+
+def test_first_match_inside_first_match(host):
+    source = reflex("""
+rows = [[1, 2], [3, 4]]
+return next((next((x for x in row if x > 2), None) for row in rows if next(x for x in row) > 1), 'none')
+""")
+    assert run(source, {}, host).result == 3
+
+
+def test_a_fault_of_the_host_keeps_the_journal():
+    class Odd(FakeHost):
+        def reads_only(self, argv):
+            if argv[0] == "ls":
+                raise KeyError("boom")
+            return ""
+    host = Odd({"touch": ""})
+    outcome = run(reflex("rx.do(['touch', 'x'])\nreturn rx.sh(['ls'])"), {}, host)
+    assert outcome.status == "stopped" and "the engine failed (KeyError" in outcome.reason
+    assert [e["what"] for e in outcome.effects] == ["touch x"]
