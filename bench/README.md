@@ -25,11 +25,13 @@ python bench/run.py --all <folder>                          # <folder>/<guide>/<
 | --- | --- | --- |
 | three guides, Haiku and Sonnet | 96 | 91: the full guide 31 of 32, four verbs only 32 of 32, a 300-token card 28 of 32 |
 | the final guide | 48 | 46: Haiku 22 of 24, Sonnet 16 of 16, Opus 8 of 8 |
+| the final guide, after the reviews | 32 | 31: Haiku 24 of 24, Sonnet 7 of 8 |
 
 What failed: a `df` column read wrongly (twice), a reflex that read back in a dry run what it had only planned, a
 missing-file case not caught, a sub-folder moved with the files, a command that is no reader (`printenv`), and one
 misuse of `rx.ask`. A forgotten `import re` failed once before the engine made the everyday modules available
-without an import.
+without an import. In the last round the one failure was `curl --max-redirs`, which the table of reads refused:
+harmless options like it were added, and all 32 pass when replayed.
 
 ## Using (`use.py`)
 

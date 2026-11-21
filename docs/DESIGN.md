@@ -36,7 +36,7 @@ Hermes first.
 | Safety | reading shell text, and a guard of 3,574 lines | a sandbox with no file, network or process; every effect is a call the host answers | The sandbox refuses `open`, `os.system`, `subprocess`; an endless loop is cut |
 | Handing back | the run ends, the model finishes by hand | the run freezes on one question and carries on with the answer | A frozen run is about 5 to 10 KB and resumes in another process in 16 ms |
 | Writing a reflex | 12 to 41 model calls for "make it a habit" | four tool calls: read the guide, write the file, dry run, run | The use bench, 5 of 5 |
-| Size | 18,506 lines, 4,963 tests | about 1,500 lines, about 350 tests | |
+| Size | 18,506 lines, 4,963 tests | about 1,900 lines, about 430 tests | |
 
 | Dropped for now | Why |
 | --- | --- |
@@ -101,13 +101,25 @@ rest: for each program whose options matter, the options known to only read; a s
 name or from a system folder. It is safe at the price of being incomplete: a read it does not know goes through
 `rx.do`, which a dry run plans instead of running.
 
+A second review attacked the new table and found one more family: an option whose value is optional
+(`journalctl -n`, `date --iso-8601`, `git branch --color`). The table took the next word as its value without
+reading it, and the program read that word as another option: `journalctl -n --vacuum-files=1` passed. Such an
+option never takes the next word now. The same round took out `arch` (on macOS it runs a program) and `go`, `cargo`
+and `rustc` (their `--version` can download a toolchain), and closed `curl gopher:/host`, a scheme with one slash.
+
+What stays: a program's own caches. `git diff` may refresh the stat data of `.git/index`, `kubectl` writes its
+discovery cache. Nothing the user made changes, but "changes nothing" is true of their files, not of every byte.
+
 The sturdier answer is the operating system's: run every read in a sandbox that cannot write (bubblewrap, Landlock,
 Seatbelt), and the table is only needed for the network. That is for later, and for hosts that already have one.
 
 ## Hosts
 
 The engine knows nothing of its host but a few members: run a command, read and write a file, say whether a command
-only reads, how many commands it takes at once. `reflexes/host.py` is the local one. A probe ran the engine inside
+only reads, how many commands it takes at once, its folder, its home and the environment it gives.
+`reflexes/host.py` is the local one: it stops a command past 8 MB of output and reads regular files only, so
+nothing a reflex reads can fill the memory or wait forever. A run that asked carries on in the folder it started
+in, wherever its answer is given. A probe ran the engine inside
 Hermes's own Python (3.14) with Hermes's terminal tool as the host: the `hermes-health` example made its six reads
 through Hermes and gave its verdict in 2.5 s, with no model. Hermes runs the commands of one task in one shell, so
 its host takes one command at a time.

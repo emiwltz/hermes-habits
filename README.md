@@ -72,15 +72,16 @@ throwaway home, dry and live, and what is on disk is checked):
 
 | Written by | Reflexes that work, first try |
 | --- | --- |
-| Claude Haiku 5.5 | 22 of 24 |
-| Claude Sonnet 5.5 | 16 of 16 |
+| Claude Haiku 5.5 | 46 of 48 |
+| Claude Sonnet 5.5 | 23 of 24 |
 | Claude Opus 5.5 | 8 of 8 |
-| all | 46 of 48 |
+| all | 77 of 80 |
 
-The two that fail read a `df` column wrongly and misuse `rx.ask` once. An earlier round compared three guides on 96
-reflexes written by Haiku and Sonnet: 91 worked (this guide 31 of 32, one with four verbs only 32 of 32, a
-300-token card 28 of 32). Each writer made three tool calls (read the guide, read the task, write the file); five of the 96 then edited their
-file once more. None could run or check its reflex.
+Two rounds, 48 then 32 reflexes. The three that fail: a `df` column read wrongly, one misuse of `rx.ask`, and a
+harmless `curl` option that the table of reads did not know (it does now). An earlier round compared three guides on
+96 reflexes written by Haiku and Sonnet: 91 worked (this guide 31 of 32, one with four verbs only 32 of 32, a
+300-token card 28 of 32). Each writer made three tool calls (read the guide, read the task, write the file); five of
+the 96 then edited their file once more. None could run or check its reflex.
 
 **Using reflexes** (a request, the lines above in the prompt, a shell; six situations: a plain call, a question to
 answer, a dry run asked for, an input to pass, a request no reflex fits, and "make that a reflex"):
@@ -121,7 +122,9 @@ From Python: `from reflexes import run, resume, Local`.
 - Commands are lists of words and run without a shell: a value can never become a command.
 - `rx.sh` accepts only commands that a table knows as reads ([reflexes/readers.py](reflexes/readers.py)); so a dry
   run changes nothing, and what it plans is all the reflex would do.
-- A run has budgets: 120 s, 200 calls to `rx`, 10 s of its own computing.
+- A run has budgets: 120 s, 200 calls to `rx`, 10 s of its own computing, 8 MB for one output or one file.
+- Two rounds of adversarial review (models paid to break it, others to check each claim) are in the tests: every
+  hole they found is a test that now passes.
 
 Not covered: a reflex can read any file its user can read, and a read can go outside (`curl`), so a dry run is not
 private; commands and `os.getenv` get the environment the host gives them (the caller's own, for the local host); a
