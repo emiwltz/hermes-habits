@@ -21,6 +21,8 @@ import atexit
 import inspect
 import json
 import shlex
+import string
+import textwrap
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +39,25 @@ OUTPUT = 2_000_000  # characters one read may hand to the reflex
 SHOWN = 300  # characters of an output kept in the journal
 CONTEXT = 2000  # characters of an item's context shown to whoever answers
 MARK = b"reflex/1\n"
+NO_FILES = ("the sandbox has no files of its own: read with rx.read(path), write with rx.write(path, text), list with "
+            "rx.sh(['ls', folder]), move or delete with rx.do([...])")
+NO_MODULE = {  # what a reflex reaches for by habit, and what does the job here
+    "subprocess": "run a command with rx.sh (it only reads) or rx.do (it changes something)",
+    "shutil": "move, copy or delete with rx.do(['mv', ...]), rx.do(['cp', ...]), rx.do(['rm', ...])",
+    "glob": "list files with rx.sh(['ls', folder]) or rx.sh(['find', folder, '-name', '*.txt'])",
+    "socket": "fetch with rx.sh(['curl', '-s', url])",
+    "requests": "fetch with rx.sh(['curl', '-s', url])",
+    "urllib": "fetch with rx.sh(['curl', '-s', url]); take a URL apart with re or str methods",
+    "http": "fetch with rx.sh(['curl', '-s', url])",
+}
+# Pure helpers Python has and the sandbox lacks: lent from the host, they touch nothing.
+LENT = {
+    "shlex": {"quote": shlex.quote, "split": shlex.split, "join": shlex.join},
+    "textwrap": {"dedent": textwrap.dedent, "indent": textwrap.indent, "shorten": textwrap.shorten,
+                 "fill": textwrap.fill, "wrap": textwrap.wrap},
+    "string": {name: getattr(string, name) for name in ("ascii_letters", "ascii_lowercase", "ascii_uppercase",
+                                                        "digits", "hexdigits", "punctuation", "whitespace")},
+}
 TAIL = "\n\nimport rx\n__reflex_inputs__ = dict(__reflex_inputs__)\n{call}\n"
 
 
@@ -102,6 +123,28 @@ def describe(source: str) -> dict:
     return {"doc": doc.strip(), "inputs": inputs, "rx": takes_rx, "open": args.kwarg is not None}
 
 
+def _first_of(source: str) -> str:
+    """next(x for x in ...) as Python means it. The sandbox builds a generator expression as a list, which next()
+    refuses: the expression is wrapped in iter(), in place, so every line keeps its number."""
+    spans = []
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "next" and node.args
+                and isinstance(node.args[0], ast.GeneratorExp)):
+            arg = node.args[0]
+            # next(x for x in xs): the expression borrows the call's own brackets, and its span holds them
+            shared = (arg.lineno, arg.col_offset) == (node.func.end_lineno, node.func.end_col_offset)
+            spans.append((arg.lineno, arg.col_offset, arg.end_lineno, arg.end_col_offset, shared))
+    if not spans:
+        return source
+    lines = source.split("\n")
+    for line, col, end_line, end_col, shared in sorted(spans, reverse=True):  # from the end: offsets stay true
+        row = lines[end_line - 1].encode()
+        lines[end_line - 1] = (row[:end_col] + b")" + row[end_col:]).decode()
+        row = lines[line - 1].encode()
+        lines[line - 1] = (row[:col] + (b"(iter" if shared else b"iter(") + row[col:]).decode()
+    return "\n".join(lines)
+
+
 def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False, decider=None,
         limits: dict | None = None, min_confidence: float = MIN_CONFIDENCE) -> Outcome:
     """Run a reflex from its source. dry: reads and questions happen, changes are only planned."""
@@ -120,7 +163,7 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
     except Refused as exc:
         return job.stopped(str(exc))
     call = "reflex(rx, **__reflex_inputs__)" if about["rx"] else "reflex(**__reflex_inputs__)"
-    return job.start(source + TAIL.format(call=call), given)
+    return job.start(_first_of(source) + TAIL.format(call=call), given)
 
 
 def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
@@ -210,9 +253,10 @@ class _Run:
     # ---- driving the sandbox ----------------------------------------------------------------------------------
 
     def session(self):
-        module = monty.ExternalModule({**{verb: _never for verb in VERBS}, "home": self.host.home})
+        modules = {"rx": monty.ExternalModule({**{verb: _never for verb in VERBS}, "home": self.host.home}),
+                   **{name: monty.ExternalModule(attrs) for name, attrs in LENT.items()}}
         limits = monty.ResourceLimits(max_feed_duration_secs=self.limits["cpu"], max_memory=256_000_000)
-        return _sandbox().checkout(external_modules={"rx": module}, limits=limits, script_name="reflex.py")
+        return _sandbox().checkout(external_modules=modules, limits=limits, script_name="reflex.py")
 
     def start(self, code: str, inputs: dict) -> Outcome:
         try:
@@ -237,8 +281,12 @@ class _Run:
     def drive(self, snap) -> Outcome:
         while not isinstance(snap, monty.MontyComplete):
             name = getattr(snap, "function_name", None) or ""
-            if not name.startswith("rx.") or getattr(snap, "is_os_function", False):
-                snap = snap.resume_auto()  # an import, the clock: the sandbox's own rules answer
+            if getattr(snap, "is_os_function", False):
+                answer = self.system(name, snap.args)
+                snap = snap.resume(answer) if answer else snap.resume_auto()  # else the sandbox's own rules
+                continue
+            if not name.startswith("rx."):
+                snap = snap.resume_auto()  # a lent helper (shlex.quote), an unknown name
                 continue
             try:
                 value = self.effect(name[3:], snap.args, snap.kwargs)
@@ -258,6 +306,21 @@ class _Run:
         if result is None and self.printed.strip():
             result = self.printed.strip()  # a reflex that prints its answer instead of returning it
         return self.outcome("done", result=result)
+
+    def system(self, name: str, args) -> dict | None:
+        """What the sandbox asks of the system: the home folder and a short sleep are given, files and the modules
+        that reach outside are refused with what to use instead. None: the sandbox's own answer stands."""
+        if name == "os.getenv":
+            return {"return_value": self.host.home if args[:1] == ("HOME",) else (args[1] if len(args) > 1 else None)}
+        if name == "system.sleep":
+            time.sleep(max(0.0, min(float(args[0]), 10.0)))
+            return {"return_value": None}
+        if name == "import" and str(args[0]).split(".")[0] in NO_MODULE:
+            root = str(args[0]).split(".")[0]
+            return {"exception": ModuleNotFoundError(f"no {root} in the sandbox: {NO_MODULE[root]}")}
+        if name == "open" or name.startswith("Path."):
+            return {"exception": PermissionError(NO_FILES)}
+        return None
 
     def heard(self, stream, text):
         self.printed = (self.printed + text)[-20_000:]
@@ -320,6 +383,14 @@ class _Run:
         asked = timeout if isinstance(timeout, (int, float)) and timeout > 0 else COMMAND_SECONDS
         return max(1.0, min(float(asked), left))
 
+    def ran(self, argv, seconds, input) -> tuple:
+        """The host's (output, errors, exit code); a host that raises counts as a command that failed."""
+        try:
+            out, err, code = self.host.run(argv, seconds, input)
+            return str(out or ""), str(err or ""), int(code)
+        except Exception as exc:
+            return "", f"{type(exc).__name__}: {exc}", 126
+
     def failed(self, verb, argv, out, err, code, ok) -> str:
         if ok is None or code in ok:
             return ""
@@ -348,11 +419,11 @@ class _Run:
                                         "rx.do; if it only computes, do it in Python"))
         if len(self.effects) + len(commands) > self.limits["effects"]:
             raise _Stop(f"budget: more than {self.limits['effects']} calls to rx")
-        began, seconds = time.monotonic(), self.seconds(timeout)
+        seconds = self.seconds(timeout)
 
         def one(argv):
             started = time.monotonic()
-            out, err, code = self.host.run(argv, seconds, input)
+            out, err, code = self.ran(argv, seconds, input)
             return argv, out, err, code, started
         if len(commands) > 1:
             with ThreadPoolExecutor(max_workers=min(8, len(commands))) as pool:
@@ -362,7 +433,9 @@ class _Run:
         outputs, failure = [], ""
         for argv, out, err, code, started in results:
             problem = self.failed("sh", argv, out, err, code, ok)
-            self.note("sh", shlex.join(argv), started, code=code, out=_short(out), **({"error": problem} if problem else {}))
+            self.note("sh", shlex.join(argv), started, code=code, out=_short(out),
+                      **({"outside": True} if self.host.reads_outside(argv) else {}),
+                      **({"error": problem} if problem else {}))
             failure = failure or problem
             outputs.append(_cut(out).rstrip("\n"))
         if failure:
@@ -377,7 +450,7 @@ class _Run:
             self.planned.append(shlex.join(argv))
             self.note("do", shlex.join(argv), began, planned=True)
             return ""
-        out, err, code = self.host.run(argv, self.seconds(timeout), input)
+        out, err, code = self.ran(argv, self.seconds(timeout), input)
         problem = self.failed("do", argv, out, err, code, ok)
         self.note("do", shlex.join(argv), began, code=code, out=_short(out), **({"error": problem} if problem else {}))
         if problem:
@@ -389,8 +462,8 @@ class _Run:
         began, full = time.monotonic(), self.host.path(_text("read", "path", path))
         try:
             text = self.host.read(full)
-        except OSError as exc:
-            problem = f"rx.read {full}: {exc.strerror or exc}"
+        except Exception as exc:
+            problem = f"rx.read {full}: {getattr(exc, 'strerror', None) or exc}"
             self.note("read", full, began, error=problem)
             raise _Raise(FileNotFoundError(problem) if isinstance(exc, FileNotFoundError) else OSError(problem))
         self.note("read", full, began, chars=len(text))
@@ -407,8 +480,8 @@ class _Run:
             return None
         try:
             self.host.write(full, text, bool(append))
-        except OSError as exc:
-            problem = f"rx.write {full}: {exc.strerror or exc}"
+        except Exception as exc:
+            problem = f"rx.write {full}: {getattr(exc, 'strerror', None) or exc}"
             self.note("write", full, began, error=problem)
             raise _Raise(OSError(problem))
         self.note("write", full, began, chars=len(text))
@@ -455,8 +528,8 @@ class _Run:
                 asks["about"] = [{"item": i, **({"context": context_of(i)[:CONTEXT]} if context_of(i) else {})}
                                  for i in unsure]
             raise _Pause({"verb": "ask", "many": many, "yes_no": yes_no, "options": choices, "sure": sure,
-                          "items": [_key(i) for i in items], "unsure": [_key(i) for i in unsure]}, asks)
-        return _answers(sure, [_key(i) for i in items], many, yes_no)
+                          "items": items, "unsure": [_key(i) for i in unsure]}, asks)
+        return _answers(sure, items, many, yes_no)
 
     def rx_up(self, question, **context):
         """One precise question for the big model. The run freezes; it carries on with the answer."""
@@ -487,7 +560,8 @@ class _Run:
 
 
 def _answers(found: dict, items: list, many: bool, yes_no: bool):
-    values = {item: (found[item] == "yes" if yes_no else found[item]) for item in items}
+    """What rx.ask gives back: the caller's own items as keys, True or False for a yes-or-no question."""
+    values = {item: (found[_key(item)] == "yes" if yes_no else found[_key(item)]) for item in items}
     return values if many else values[items[0]]
 
 

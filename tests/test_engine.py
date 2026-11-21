@@ -308,3 +308,61 @@ def test_a_reflex_that_computes_forever_is_cut(host):
 def test_the_sandbox_has_no_file_no_process_and_no_network_of_its_own(host, body, said):
     outcome = run(reflex(body), {}, host)
     assert outcome.status == "stopped" and said in outcome.reason and host.ran == []
+
+
+# ---- details that matter to the reflex's author -------------------------------------------------------------------
+
+def test_ask_gives_back_the_callers_own_items_as_keys(host):
+    small = decider({"1": ("a", 0.9)})
+    asked = run(reflex("return rx.ask('Kind?', ['a', 'b'], about=[1, 2])"), {}, host, decider=small)
+    assert asked.asks["about"] == [{"item": 2}]
+    done = resume(asked.state, {"2": "b"}, host)
+    assert done.result == {1: "a", 2: "b"}
+
+
+def test_a_host_that_raises_is_a_failed_command_not_a_crash():
+    class Broken(FakeHost):
+        def run(self, argv, seconds, input=None):
+            raise OSError("the disk is gone")
+    outcome = run(reflex("return rx.sh(['ls'])"), {}, Broken())
+    assert outcome.status == "stopped" and "exit 126: OSError: the disk is gone" in outcome.reason
+
+
+def test_first_match_reads_as_python_means_it(host):
+    outcome = run(reflex("""
+xs = [1, 2, 3]
+return [next((x for x in xs if x > 1), None), next(x for x in xs), next((x for x in xs if x > 9), 'none')]
+"""), {}, host)
+    assert outcome.result == [2, 1, "none"]
+
+
+def test_the_home_folder_a_short_sleep_and_three_pure_helpers_are_there(host):
+    outcome = run(reflex("""
+import os.path, time, shlex, textwrap, string
+time.sleep(0.01)
+return [os.path.expanduser('~/x'), shlex.quote('a b'), textwrap.shorten('hello wonderful world', 12), string.digits]
+"""), {}, host)
+    assert outcome.result == ["/home/me/x", "'a b'", "hello [...]", "0123456789"]
+
+
+@pytest.mark.parametrize("body, said", [
+    ("from pathlib import Path\nreturn Path('/etc/passwd').read_text()", "no files of its own: read with rx.read(path)"),
+    ("import os\nreturn os.listdir('/')", "no files of its own"),
+    ("import subprocess", "no subprocess in the sandbox: run a command with rx.sh"),
+    ("import requests", "no requests in the sandbox: fetch with rx.sh(['curl', '-s', url])"),
+    ("from urllib.parse import urlparse", "no urllib in the sandbox"),
+])
+def test_what_the_sandbox_lacks_says_what_to_use_instead(host, body, said):
+    outcome = run(reflex(body), {}, host)
+    assert outcome.status == "stopped" and said in outcome.reason
+
+
+def test_the_journal_says_which_reads_left_the_machine():
+    host = FakeHost({"curl": "200", "ls": ""})
+    outcome = run(reflex("rx.sh(['curl', '-s', 'https://a'])\nrx.sh(['ls'])"), {}, host)
+    assert [e.get("outside", False) for e in outcome.effects] == [True, False]
+
+
+def test_the_environment_stays_outside(host):
+    outcome = run(reflex("import os\nreturn [os.getenv('SECRET_KEY'), os.getenv('HOME')]"), {}, host)
+    assert outcome.result == [None, "/home/me"]

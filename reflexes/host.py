@@ -13,10 +13,12 @@ from . import readers
 
 
 class Local:
-    def __init__(self, cwd: str | None = None, extra_readers: dict | None = None, home: str | None = None):
+    def __init__(self, cwd: str | None = None, extra_readers: dict | None = None, home: str | None = None,
+                 env: dict | None = None):
         self.cwd = cwd or os.getcwd()
         self.home = home or os.path.expanduser("~")
         self.extra_readers = extra_readers or {}
+        self.env = env or {}  # variables its commands get on top of this process's own
 
     def path(self, word: str) -> str:
         """A path or a command word with its ~ written out."""
@@ -26,12 +28,16 @@ class Local:
         """"" when the command only reads, else why it is not a read."""
         return readers.why_not(argv, self.extra_readers)
 
+    def reads_outside(self, argv: list) -> bool:
+        """Whether this read asks another machine."""
+        return readers.outside(argv)
+
     def run(self, argv: list, seconds: float, input: str | None = None) -> tuple:
         """(output, errors, exit code) of one program, run without a shell."""
         try:
             done = subprocess.run(argv, cwd=self.cwd, input=input, capture_output=True, text=True, errors="replace",
                                   timeout=seconds, stdin=None if input is not None else subprocess.DEVNULL,
-                                  env={**os.environ, "HOME": self.home})
+                                  env={**os.environ, "HOME": self.home, **self.env})
         except FileNotFoundError:
             return "", f"{argv[0]}: command not found", 127
         except PermissionError:

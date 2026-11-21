@@ -62,8 +62,9 @@ INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "uv", "java", "rust
 
 GIT = {"status", "log", "diff", "show", "blame", "describe", "ls-files", "ls-tree", "shortlog", "rev-parse",
        "rev-list", "cat-file", "merge-base", "name-rev", "for-each-ref", "count-objects", "grep", "whatchanged"}
-GIT_NEVER = {"-c", "--output", "--ext-diff", "--textconv", "--exec-path", "--upload-pack", "-O",
+GIT_NEVER = {"-c", "--output", "--ext-diff", "--textconv", "--filters", "--exec-path", "--upload-pack",
              "--open-files-in-pager"}
+OUTSIDE = {"curl", "dig", "nslookup", "host", "ping"}  # reads that leave this machine
 CURL_PLAIN = {"-s", "-S", "-L", "-f", "-I", "-i", "-k", "--silent", "--show-error", "--location", "--fail", "--head",
               "--include", "--compressed", "--http1.1", "--http2", "-4", "-6", "-g", "--globoff"}
 CURL_VALUED = {"-m", "--max-time", "-A", "--user-agent", "-H", "--header", "-w", "--write-out", "-r", "--range",
@@ -73,6 +74,11 @@ SHORT_BUNDLE = re.compile(r"^-[sSLfIik46g]+$")
 
 def program(word: str) -> str:
     return os.path.basename(word)
+
+
+def outside(argv: list) -> bool:
+    """A read that asks another machine (the answer is anyone's text, and the question itself leaves this one)."""
+    return bool(argv) and program(str(argv[0])) in OUTSIDE
 
 
 def why_not(argv: list, extra: dict | None = None) -> str:
@@ -143,6 +149,8 @@ def _git(args: list) -> str:
     if rest in (["--version"], ["version"]):
         return ""
     sub, tail = rest[0], rest[1:]
+    if sub == "grep" and any(w.startswith("-O") for w in tail):
+        return "git grep -O opens a program on the files it finds"
     if sub in GIT:
         return ""
     names = [w for w in tail if not w.startswith("-")]

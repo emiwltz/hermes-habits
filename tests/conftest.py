@@ -19,6 +19,9 @@ class FakeHost:
     def reads_only(self, argv):
         return readers.why_not(argv)
 
+    def reads_outside(self, argv):
+        return readers.outside(argv)
+
     def run(self, argv, seconds, input=None):
         self.ran.append(list(argv))
         self.inputs.append(input)
