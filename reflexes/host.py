@@ -7,6 +7,7 @@ a host only carries it out. Another host, an agent's own tools for one, has the 
 from __future__ import annotations
 
 import os
+import signal
 import stat
 import subprocess
 import threading
@@ -45,10 +46,11 @@ class Local:
 
     def run(self, argv: list, seconds: float, input: str | None = None) -> tuple:
         """(output, errors, exit code) of one program, run without a shell. Its output is read as it comes and the
-        program is stopped past MOST bytes: an endless one (cat /dev/zero) must not fill this process."""
+        program is stopped past MOST bytes: an endless one (cat /dev/zero) must not fill this process. Stopped
+        means the program and whatever it started: it runs in a group of its own, and the group is killed."""
         try:
             child = subprocess.Popen(argv, cwd=self.cwd, env=self.environment(), stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, start_new_session=True,
                                      stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL)
         except FileNotFoundError:
             return "", f"{argv[0]}: command not found", 127
@@ -58,12 +60,18 @@ class Local:
             return "", f"{self.cwd}: not a folder", 126
         kept, over = {"out": bytearray(), "err": bytearray()}, threading.Event()
 
+        def stop():
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except (OSError, AttributeError):
+                child.kill()
+
         def drain(stream, name):
             try:
                 while chunk := stream.read1(65536):
                     if len(kept[name]) + len(chunk) > MOST:
                         over.set()
-                        child.kill()
+                        stop()
                         break
                     kept[name] += chunk
             except (OSError, ValueError):
@@ -86,8 +94,11 @@ class Local:
             child.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
             late = True
-            child.kill()
+            stop()
             child.wait()
+        except BaseException:  # interrupted (Ctrl-C): nothing of the command is left behind
+            stop()
+            raise
         for thread in threads:
             thread.join(1.0)  # a child of the program may still hold the pipes: what came so far is the output
         out, err = (bytes(kept[name]).decode("utf-8", "replace") for name in ("out", "err"))

@@ -25,6 +25,13 @@ def test_a_command_that_is_late_is_stopped_and_what_it_said_is_kept(local):
     assert (out, code) == ("first\n", 124) and "timed out" in err and time.monotonic() - began < 5
 
 
+def test_a_late_command_is_stopped_with_what_it_started(local, tmp_path):
+    out, err, code = local.run(["sh", "-c", "(sleep 2; touch later) & echo started; wait"], 0.5)
+    assert (out, code) == ("started\n", 124)
+    time.sleep(2.5)
+    assert not (tmp_path / "later").exists()  # the child of the shell did not outlive it
+
+
 def test_an_output_without_end_is_stopped_before_it_fills_the_memory(local, monkeypatch):
     monkeypatch.setattr(hosts, "MOST", 100_000)
     began = time.monotonic()

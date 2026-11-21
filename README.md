@@ -123,7 +123,7 @@ From Python: `from reflexes import run, resume, Local`.
 - `rx.sh` accepts only commands that a table knows as reads ([reflexes/readers.py](reflexes/readers.py)); so a dry
   run changes nothing, and what it plans is all the reflex would do.
 - A run has budgets: 120 s, 200 calls to `rx`, 10 s of its own computing, 8 MB for one output or one file.
-- Two rounds of adversarial review (models paid to break it, others to check each claim) are in the tests: every
+- Rounds of adversarial review (models set to break it, others to check each claim) are in the tests: every
   hole they found is a test that now passes.
 
 Not covered: a reflex can read any file its user can read, and a read can go outside (`curl`), so a dry run is not
