@@ -45,7 +45,8 @@ python bench/use.py check <folder>     # afterwards: which reflex calls were mad
 python bench/use.py stats <records>    # tool calls per agent, from a workflow's records
 ```
 
-On 21 November 2026, five runs per world (Haiku twice, Sonnet twice, Opus once): 30 of 30 right. A request a reflex
+On 21 November 2026, five runs per world (Haiku twice, Sonnet twice, Opus once): 30 of 30 right; then three more on
+the command line as the reviews left it (Haiku twice, Sonnet once): 18 of 18. A request a reflex
 fits took one `reflex run` and nothing by hand; a reflex that asks was answered through `reflex answer`; "show me
 first" was a `reflex test`; a request no reflex fits ran none; "make that a reflex" took `guide`, one file written,
 `test`, `run`.

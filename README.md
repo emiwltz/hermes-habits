@@ -86,16 +86,17 @@ the 96 then edited their file once more. None could run or check its reflex.
 **Using reflexes** (a request, the lines above in the prompt, a shell; six situations: a plain call, a question to
 answer, a dry run asked for, an input to pass, a request no reflex fits, and "make that a reflex"):
 
-| Situation | Right, of 5 | What the model did |
+| Situation | Right, of 8 | What the model did |
 | --- | --- | --- |
-| a request a reflex fits | 5 | `reflex run`, nothing by hand |
-| a reflex that asks | 5 | `run`, then `answer` with the five notes classified; the reflex moved them |
-| "show me first" | 5 | `reflex test`, nothing changed |
-| an input to pass | 5 | `test` then `run` with `days=20` |
-| a request no reflex fits | 5 | no reflex; one command by hand |
-| "make that a reflex" | 5 | `guide`, wrote the file, `test`, `run`: four tool calls for a new working reflex |
+| a request a reflex fits | 8 | `reflex run`, nothing by hand |
+| a reflex that asks | 8 | `run`, then `answer` with the five notes classified; the reflex moved them |
+| "show me first" | 8 | `reflex test`, nothing changed |
+| an input to pass | 8 | `run` with `days=20`, often after a `test` |
+| a request no reflex fits | 8 | no reflex; one command by hand |
+| "make that a reflex" | 8 | `guide`, wrote the file, `test`, `run`: four tool calls for a new working reflex |
 
-Five runs per situation: Haiku twice, Sonnet twice, Opus once.
+Eight runs per situation, in two rounds: five before the reviews (Haiku twice, Sonnet twice, Opus once), three on
+the command line as it is now (Haiku twice, Sonnet once).
 
 What these numbers are not: a comparison with another format on the same tasks (an earlier, smaller trial of the 0.1
 YAML format gave 1 working reflex in 6 against 6 in 6), or a measure on a cheap non-Claude model. Both are to do.
