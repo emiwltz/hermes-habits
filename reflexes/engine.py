@@ -117,7 +117,7 @@ def describe(source: str) -> dict:
         if default is not None:
             try:
                 entry["default"] = ast.literal_eval(default)
-            except ValueError:
+            except Exception:  # not a literal (a name, a call, a set of lists): shown as it is written
                 entry["default"] = ast.unparse(default)
         inputs.append(entry)
     doc = ast.get_docstring(fn) or ast.get_docstring(tree) or ""
@@ -200,16 +200,17 @@ def run(source: str, inputs: dict | None = None, host=None, *, dry: bool = False
 def resume(state: bytes, answer, host=None, *, decider=None) -> Outcome:
     """Carry on a run that asked, with the answer."""
     try:
-        if not state.startswith(MARK):
+        if not isinstance(state, bytes) or not state.startswith(MARK):
             raise ValueError("not a frozen run")
         head, _, snapshot = state[len(MARK):].partition(b"\n")
         meta = json.loads(head)
-    except ValueError as exc:
-        return Outcome("stopped", reason=f"this run cannot be carried on: {exc}")
-    job = _Run(host, decider, meta["dry"], meta["limits"], meta["min_confidence"])
-    job.effects, job.planned, job.printed, job.spent = meta["effects"], meta["planned"], meta["output"], meta["ms"]
-    job.shift = meta.get("shift", 0)
-    return job.carry_on(snapshot, meta["pending"], answer, state)
+        job = _Run(host, decider, meta["dry"], meta["limits"], meta["min_confidence"])
+        job.effects, job.planned, job.printed, job.spent = meta["effects"], meta["planned"], meta["output"], meta["ms"]
+        job.shift, pending = meta.get("shift", 0), meta["pending"]
+        pending["verb"], pending["asks"]
+    except (ValueError, KeyError, TypeError) as exc:
+        return Outcome("stopped", reason=f"this run cannot be carried on: its saved state is damaged ({exc})")
+    return job.carry_on(snapshot, pending, answer, state)
 
 
 # ---- the sandbox ---------------------------------------------------------------------------------------------
@@ -597,11 +598,12 @@ class _Run:
             if item not in answer:
                 raise Refused(f"no answer for {item!r}")
             value = answer[item]
-            if pending["yes_no"] and isinstance(value, bool):
-                value = "yes" if value else "no"
-            if str(value) not in options:
+            text = str(value).strip()
+            if pending["yes_no"]:
+                text = {"true": "yes", "y": "yes", "false": "no", "n": "no"}.get(text.lower(), text.lower())
+            if text not in options:
                 raise Refused(f"{value!r} for {item!r} is not one of {', '.join(options)}")
-            given[item] = str(value)
+            given[item] = text
         return _answers({**pending["sure"], **given}, pending["items"], pending["many"], pending["yes_no"])
 
 

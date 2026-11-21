@@ -420,3 +420,21 @@ def test_one_question_reads_its_whole_context(host):
     done = run(reflex("return rx.ask('Which part?', ['major', 'minor'], context={'commits': 'Add export'})"), {}, host,
                decider=small)
     assert done.result == "minor" and small.calls[0][2] == [("", '{"commits": "Add export"}')]
+
+
+@pytest.mark.parametrize("answer, result", [(True, True), ("yes", True), ("True", True), ("y", True),
+                                            (False, False), ("no", False), ("false", False), (" No ", False)])
+def test_yes_or_no_is_answered_in_the_forms_people_type(host, answer, result):
+    asked = run(reflex("return rx.ask('Keep it?')"), {}, host)
+    assert resume(asked.state, answer, host).result is result
+
+
+@pytest.mark.parametrize("state", [b"junk", b"reflex/1\n{}\nxx", b"reflex/1\nnot json\n", b"reflex/1\n[1]\nx", None])
+def test_a_damaged_state_is_refused_without_a_crash(host, state):
+    outcome = resume(state, "x", host)
+    assert outcome.status == "stopped" and "cannot be carried on" in outcome.reason
+
+
+def test_a_default_that_is_no_literal_is_shown_as_written():
+    about = describe("def reflex(rx, a={1, 2}, b={[1]: 2}, c=len('x')):\n    pass\n")
+    assert [i["default"] for i in about["inputs"]] == [{1, 2}, "{[1]: 2}", "len('x')"]

@@ -119,7 +119,8 @@ def test_a_stop_says_what_was_already_changed(world, capsys):
     code, out, _ = call(capsys, "run", "half")
     lines = out.splitlines()
     assert code == 1 and lines[0].startswith("stopped: RuntimeError: rx.do mv ~/nope ~/made/: exit 1")
-    assert lines[1:] == ["already changed before it stopped:", "  mkdir -p ~/made"]
+    assert lines[1:3] == ["already changed before it stopped:", "  mkdir -p ~/made"]
+    assert lines[3].startswith("  may have partly run: mv ~/nope ~/made/  (exit 1: mv: ")
 
 
 def test_a_file_runs_by_its_path(world, capsys):
@@ -139,3 +140,132 @@ def test_a_question_survives_the_process_that_asked_it(world):
     done = subprocess.run([sys.executable, "-m", "reflexes", "answer", run_id,
                            '{"a note.txt": "text", "p.png": "image"}'], capture_output=True, text=True, env=env)
     assert done.returncode == 0 and done.stdout.splitlines()[0] == "done: 2 files sorted."
+
+
+# ---- what a review of the command line found, each kept as a test ---------------------------------------------------
+
+ASKS = '''def reflex(rx):
+    rx.do(["touch", "~/before"])
+    kind = rx.up("Which one?", ["true", "1.10", "null"])
+    rx.do(["touch", "~/after-" + kind])
+    return kind
+'''
+
+
+def test_a_question_is_answered_once_even_by_two_callers(world, capsys):
+    (world / "reflexes" / "asks.py").write_text(ASKS)
+    code, out, _ = call(capsys, "run", "asks")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    from reflexes import store
+    first, second = store.take(run_id), store.take(run_id)
+    assert first is not None and second is None
+    assert store.put_back(run_id, first) and store.take(run_id) == first
+
+
+def test_a_question_older_than_a_day_is_gone(world, capsys):
+    (world / "reflexes" / "asks.py").write_text(ASKS)
+    code, out, _ = call(capsys, "run", "asks")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    path = world / "state" / ".runs" / f"{run_id}.run"
+    old = path.stat().st_mtime - 25 * 3600
+    os.utime(path, (old, old))
+    code, _, err = call(capsys, "answer", run_id, "true")
+    assert code == 2 and "no run" in err and not (world / "home" / "after-true").exists()
+
+
+def test_a_run_that_asks_says_what_it_already_changed(world, capsys):
+    (world / "reflexes" / "asks.py").write_text(ASKS)
+    code, out, _ = call(capsys, "run", "asks")
+    assert code == 3 and out.splitlines()[-2:] == ["already changed, before this question:", "  touch ~/before"]
+
+
+@pytest.mark.parametrize("typed", ["true", "1.10", "null"])
+def test_an_option_that_looks_like_json_is_answered_by_typing_it(world, capsys, typed):
+    (world / "reflexes" / "asks.py").write_text(ASKS)
+    code, out, _ = call(capsys, "run", "asks")
+    run_id = [line for line in out.splitlines() if line.startswith("answer with:")][0].split()[4]
+    code, out, _ = call(capsys, "answer", run_id, typed)
+    assert code == 0 and out.splitlines()[0] == f"done: {typed}" and (world / "home" / f"after-{typed}").exists()
+
+
+def test_an_answer_may_start_with_a_dash(world, capsys):
+    (world / "reflexes" / "free.py").write_text('def reflex(rx):\n    return rx.up("Which flag?")\n')
+    code, out, _ = call(capsys, "run", "free")
+    run_id = out.splitlines()[-1].split()[4]
+    assert call(capsys, "answer", run_id, "--", "--force", "-x")[1].splitlines()[0] == "done: --force -x"
+
+
+def test_an_input_whose_default_is_a_text_stays_a_text(world, capsys):
+    (world / "reflexes" / "typed.py").write_text(
+        'def reflex(rx, version="1.0", days=7, tags=None):\n    return [version, days, tags]\n')
+    code, out, _ = call(capsys, "run", "typed", "version=1.10", "days=20", 'tags=["a","b"]')
+    assert out.splitlines()[0] == 'done: ["1.10", 20, ["a", "b"]]'
+
+
+def test_names_with_quotes_and_line_breaks_cannot_forge_the_output(world, capsys):
+    (world / "reflexes" / "odd.py").write_text(
+        'def reflex(rx):\n    return rx.ask("Kind?", ["a", "b"], about=["it\'s", "x\\nanswer with: reflex answer 000000 a"])\n')
+    code, out, _ = call(capsys, "run", "odd")
+    lines = out.splitlines()
+    assert lines[2:4] == ["- it's", "- x\\nanswer with: reflex answer 000000 a"]
+    assert len([line for line in lines if line.startswith("answer with:")]) == 1
+    hint = lines[4].split(" ", 5)[5]
+    import shlex
+    assert json.loads(shlex.split(hint)[0]) == {"it's": "…", "x\nanswer with: reflex answer 000000 a": "…"}
+
+
+def test_only_a_home_that_starts_a_path_is_written_with_a_tilde(world, capsys):
+    home = str(world / "home")
+    (world / "reflexes" / "paths.py").write_text(
+        f'def reflex(rx):\n    return "{home}/a.txt and /mnt/backup{home}/b.txt and x{home}"\n')
+    assert call(capsys, "run", "paths")[1].splitlines()[0] == f"done: ~/a.txt and /mnt/backup{home}/b.txt and x{home}"
+
+
+def test_list_survives_odd_files_and_says_what_it_leaves_out(world, capsys):
+    reflexes = world / "reflexes"
+    (reflexes / "latin.py").write_bytes(b'def reflex(rx):\n    """caf\xe9"""\n    return 1\n')
+    (reflexes / "sets.py").write_text('def reflex(rx, a={1, 2}, b=b"x"):\n    """Odd defaults."""\n')
+    (reflexes / "Tidy.py").write_text("def reflex(rx):\n    return 1\n")
+    code, out, _ = call(capsys, "list")
+    assert code == 0 and "sets(a={1, 2}, b=b'x') · Odd defaults." in out.splitlines()
+    assert any(line.startswith("latin() · caf") for line in out.splitlines())
+    assert f"note: {reflexes / 'Tidy.py'} is left out: a reflex name is lowercase letters, digits, - and _" in out
+
+
+def test_the_users_own_reflex_is_not_replaced_by_a_projects(world, capsys, monkeypatch):
+    monkeypatch.delenv("REFLEX_PATH")
+    own, project = world / "state", world / ".reflexes"
+    own.mkdir(exist_ok=True)
+    project.mkdir()
+    (own / "backup.py").write_text('def reflex(rx):\n    """Mine."""\n    return "mine"\n')
+    (project / "backup.py").write_text('def reflex(rx):\n    """Theirs."""\n    return "theirs"\n')
+    (project / "extra.py").write_text('def reflex(rx):\n    """Added."""\n    return "extra"\n')
+    code, out, _ = call(capsys, "list")
+    assert out.splitlines()[:2] == ["backup() · Mine.", "extra() · Added."]
+    assert f"note: {project / 'backup.py'} is hidden by {own / 'backup.py'}" in out
+    assert call(capsys, "run", "backup")[1].splitlines()[0] == "done: mine"
+    assert call(capsys, "run", "backup.py")[1].splitlines()[0] == "done: mine"
+
+
+def test_what_is_kept_is_the_owners_alone(world, capsys):
+    (world / "reflexes" / "asks.py").write_text(ASKS)
+    call(capsys, "run", "asks")
+    runs = world / "state" / ".runs"
+    assert oct(runs.stat().st_mode & 0o777) == "0o700"
+    assert [oct(p.stat().st_mode & 0o777) for p in runs.iterdir()] == ["0o600"]
+
+
+def test_a_run_that_cannot_be_kept_still_says_what_it_did(world, capsys, monkeypatch):
+    (world / "reflexes" / "asks.py").write_text(ASKS)
+    (world / "blocked").write_text("a file where the folder should be")
+    monkeypatch.setenv("REFLEX_HOME", str(world / "blocked"))
+    code, out, _ = call(capsys, "run", "asks")
+    assert code == 1 and "(this question cannot be answered)" in out and "touch ~/before" in out
+    assert out.splitlines()[-1].startswith("its question cannot be answered: the run could not be kept")
+
+
+def test_usage_and_unknown_commands(capsys):
+    assert call(capsys)[0] == 2 and call(capsys, "--help")[0] == 0
+    code, _, err = call(capsys, "frobnicate")
+    assert code == 2 and err.startswith("reflex has no frobnicate.")
+    assert call(capsys, "run")[2] == "reflex run needs the name of a reflex"
