@@ -24,8 +24,14 @@ def home() -> Path:
 def folders() -> list:
     listed = os.environ.get("REFLEX_PATH")
     if listed:
-        return [Path(p).expanduser() for p in listed.split(os.pathsep) if p]
-    return [home(), Path.cwd() / ".reflexes"]
+        found = [Path(p).expanduser() for p in listed.split(os.pathsep) if p]
+    else:
+        found = [home()]
+        try:
+            found.append(Path.cwd() / ".reflexes")
+        except OSError:  # the folder we are in is gone: the user's own reflexes are still there
+            pass
+    return list(dict.fromkeys(found))  # each folder once (at home, both are the same)
 
 
 def survey() -> tuple:

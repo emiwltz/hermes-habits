@@ -17,8 +17,11 @@ class Local:
 
     def __init__(self, cwd: str | None = None, extra_readers: dict | None = None, home: str | None = None,
                  env: dict | None = None):
-        self.cwd = cwd or os.getcwd()
         self.home = home or os.path.expanduser("~")
+        try:
+            self.cwd = cwd or os.getcwd()
+        except OSError:  # the folder we were started in is gone
+            self.cwd = self.home
         self.extra_readers = extra_readers or {}
         self.env = env or {}  # variables its commands get on top of this process's own
 

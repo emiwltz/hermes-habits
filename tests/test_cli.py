@@ -269,3 +269,22 @@ def test_usage_and_unknown_commands(capsys):
     code, _, err = call(capsys, "frobnicate")
     assert code == 2 and err.startswith("reflex has no frobnicate.")
     assert call(capsys, "run")[2] == "reflex run needs the name of a reflex"
+
+
+def test_from_a_folder_that_is_gone_the_users_own_reflexes_still_run(world, tmp_path, monkeypatch, capsys):
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    monkeypatch.delenv("REFLEX_PATH")
+    monkeypatch.setenv("REFLEX_HOME", str(tmp_path / "reflexes"))
+    assert cli.main(["list"]) == 0 and "tidy(" in capsys.readouterr().out
+    assert cli.main(["run", "disk"]) == 0 and "done:" in capsys.readouterr().out
+
+
+def test_at_home_the_folder_of_reflexes_is_named_once(world, tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("REFLEX_PATH")
+    monkeypatch.delenv("REFLEX_HOME")
+    monkeypatch.chdir(tmp_path / "home")
+    assert cli.main(["list"]) == 0
+    assert capsys.readouterr().out.count(".reflexes") == 1
