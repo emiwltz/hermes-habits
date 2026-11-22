@@ -72,12 +72,13 @@ throwaway home, dry and live, and what is on disk is checked):
 
 | Written by | Reflexes that work, first try |
 | --- | --- |
-| Claude Haiku 5.5 | 46 of 48 |
-| Claude Sonnet 5.5 | 23 of 24 |
+| Claude Haiku 5.5 | 62 of 64 |
+| Claude Sonnet 5.5 | 31 of 32 |
 | Claude Opus 5.5 | 8 of 8 |
-| all | 77 of 80 |
+| all | 101 of 104 |
 
-Two rounds, 48 then 32 reflexes. The three that fail: a `df` column read wrongly, one misuse of `rx.ask`, and a
+Three rounds, 48, 32 then 24 reflexes, the last one (24 of 24) with the guide and the engine as they are now. The
+three that fail: a `df` column read wrongly, one misuse of `rx.ask`, and a
 harmless `curl` option that the table of reads did not know (it does now). An earlier round compared three guides on
 96 reflexes written by Haiku and Sonnet: 91 worked (this guide 31 of 32, one with four verbs only 32 of 32, a
 300-token card 28 of 32). Each writer made three tool calls (read the guide, read the task, write the file); five of
