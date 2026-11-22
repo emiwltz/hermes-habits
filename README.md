@@ -65,7 +65,8 @@ A reflex is a file `<name>.py` in `./.reflexes` or `~/.reflexes`.
 
 ## Measured
 
-Two benches, in [bench/](bench/), run on 21 November 2026 with fresh model instances that had never seen the project.
+Two benches, in [bench/](bench/), run on 21 and 22 November 2026 with fresh model instances that had never seen the
+project.
 
 **Writing a reflex, first try, from the guide alone** (eight small real tasks; the reflex is then run for real in a
 throwaway home, dry and live, and what is on disk is checked):
