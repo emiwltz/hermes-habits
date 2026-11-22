@@ -24,6 +24,9 @@ lsof -nP -iTCP -sTCP:LISTEN | lsof -i | ss -tlnp | ss -tulpn state listening | n
 ping -c1 example.com | ip addr | ip -br a | ip route show | ip -4 addr show dev eth0 | ip route get 1.1.1.1
 curl -s --max-redirs 3 https://a | curl -s localhost:8080/health | curl -sN --no-progress-meter https://a
 curl -s wttr.in/Paris?format=3 | curl -s https://user:pw@example.com/x | curl -s -w %{http_code} 127.0.0.1:8000
+zcat app.log.1.gz | gzip -dc app.log.1.gz | gunzip -c x.gz | gzip -l x.gz | tar -tzf backup.tar.gz | tar tf a.tar docs
+git reflog -n 3 | git reflog show HEAD | kubectl get pods -A -o wide | kubectl logs web -c app --tail=50
+kubectl get pods --namespace prod -l app=web | kubectl describe pod web -n prod
 """
 NOT_READS = [
     # programs that are not readers at all
@@ -69,6 +72,14 @@ NOT_READS = [
     ("curl -s -w @- https://a", "takes its format from somewhere"),
     ("curl -s a@dict.localhost:6390/SET:x:y", "http and https only"),
     ("curl a@ftp.example.com/f", "http and https only"), ("curl -s [::1]:6379/x", "http and https only"),
+    # what a fifth review found: flags of kubectl that write a file, and everyday reads of archives kept narrow
+    ("kubectl get pods --profile=cpu --profile-output=/home/me/notes.md", "kubectl get --profile"),
+    ("kubectl version --log-file /x", "kubectl version --log-file"), ("kubectl get pods --cache-dir /x", "--cache-dir"),
+    ("gzip app.log", "replaces the file"), ("gunzip x.gz", "replaces the file"), ("gzip -c -S .z x", "gzip takes only"),
+    ("tar -xzf a.tar.gz", "tar reads only"), ("tar -tf a.tar --to-command=sh", "no option after it"),
+    ("tar -tf host:a.tar", "no host:archive"), ("tar --use-compress-program=sh -tf a", "tar reads only"),
+    ("tar -cf a.tar x", "tar reads only"), ("git reflog expire --all", "git reflog expire"),
+    ("git reflog delete HEAD@{1}", "git reflog delete"),
     # programs that run or fetch another one behind an innocent word
     ("arch -arm64 /bin/rm x", "arch is not known"), ("go --version", "go is not known"),
     ("cargo --version", "cargo is not known"), ("git log --show-signature", "git --show-signature"),

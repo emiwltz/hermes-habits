@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 
 import pydantic_monty as monty
 
+from . import readers
+
 VERBS = ("sh", "do", "read", "write", "ask", "up")
 LIMITS = {"seconds": 120, "effects": 200, "cpu": 10}  # wall time, calls to rx, seconds of the reflex's own computing
 COMMAND_SECONDS = 30  # one command, unless the call says timeout=
@@ -48,6 +50,7 @@ LENT_CHARS = 100_000  # characters a lent helper takes: it runs outside the sand
 CONTEXT = 2000  # characters of an item's context shown to whoever answers
 DOUBTS = 200  # things one question may send up: more than that, no caller answers in one go
 ASKED = 2000  # things one question may be about
+CARRIED = 200_000  # characters one question to the big model may carry (it is kept with the frozen run)
 MARK = b"reflex/1\n"
 NOT_STARTED = "not started: the run was out of time"
 NO_FILES = ("the sandbox has no files of its own: read with rx.read(path), write with rx.write(path, text), list with "
@@ -212,18 +215,25 @@ def describe(source: str) -> dict:
     if isinstance(fn, ast.AsyncFunctionDef):
         raise Refused("reflex is a plain function (def), not async def")
     args = fn.args
-    names = [a.arg for a in args.posonlyargs + args.args]
+    plain = args.posonlyargs + args.args
+    names = [a.arg for a in plain]
     defaults = [None] * (len(names) - len(args.defaults)) + list(args.defaults)
     takes_rx = bool(names) and names[0] == "rx"
     inputs = []
-    for name, default in list(zip(names, defaults))[1 if takes_rx else 0:] + list(zip(
-            [a.arg for a in args.kwonlyargs], args.kw_defaults)):
-        entry = {"name": name, "required": default is None}
+    for arg, default in list(zip(plain, defaults))[1 if takes_rx else 0:] + list(zip(args.kwonlyargs,
+                                                                                    args.kw_defaults)):
+        entry = {"name": arg.arg, "required": default is None}
         if default is not None:
             try:
                 entry["default"] = ast.literal_eval(default)
             except Exception:  # not a literal (a name, 24 * 7, a call): shown as it is written
                 entry["default"], entry["written"] = ast.unparse(default), True
+        said = arg.annotation.id if isinstance(arg.annotation, ast.Name) else None  # version: str
+        kind = said if said in ("str", "bool", "int", "float") else None
+        if kind is None and "default" in entry and not entry.get("written"):
+            kind = {str: "str", bool: "bool", int: "int", float: "float"}.get(type(entry["default"]))
+        if kind:
+            entry["kind"] = kind  # what a value given as a text is to be read as
         inputs.append(entry)
     doc = ast.get_docstring(fn) or ast.get_docstring(tree) or ""
     return {"doc": doc.strip(), "inputs": inputs, "rx": takes_rx, "open": args.kwarg is not None}
@@ -311,9 +321,9 @@ def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
       map(str.strip, lines)): the sandbox has no such value.
     - a generator expression, a map, a zip kept for later (x = zip(a, b), return (...)) is read once, as in Python.
 
-    One thing is refused instead, because nothing can put it right: a generator expression that makes a change
-    (rx.do, rx.write, a call that is handed rx) and is read by something that may stop before its end. The sandbox
-    would make the change for every item.
+    One thing is refused instead, because nothing can put it right: a generator expression in which rx.do or
+    rx.write is written, read by something that may stop before its end. The sandbox would make the change for
+    every item. (A change hidden in a helper the generator calls is not seen: the sandbox makes them all.)
 
     Text is only inserted, around whole expressions, so every line keeps its number. Nothing is touched where the
     author gave one of these names another meaning, nor in f"{x=}", which shows its own text; and no function is
@@ -349,32 +359,40 @@ def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
                 and n.module == "itertools" for a in n.names if a.name == "groupby"}
     called, wrapped, needs = set(), set(), set()
     parent = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))} | {
+        t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and isinstance(n.value, ast.Lambda)
+        for t in n.targets if isinstance(t, ast.Name)}  # the functions the source makes itself
 
-    def changes(node) -> bool:  # rx.do or rx.write in it, or a call that is handed rx and may do the same
-        for call in ast.walk(node):
-            if isinstance(call, ast.Call):
-                func = call.func
-                if isinstance(func, ast.Attribute) and func.attr in ("do", "write") and root(func) == "rx":
-                    return True
-                if any(isinstance(a, ast.Name) and a.id == "rx" for a in call.args + [k.value for k in call.keywords]):
-                    return True
-        return False
+    def changes(node) -> bool:  # rx.do or rx.write written in it (one hidden in a helper is not seen from here)
+        return any(isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                   and call.func.attr in ("do", "write") and root(call.func) == "rx" for call in ast.walk(node))
 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.GeneratorExp, ast.Call)) or id(node) in apart:
             continue
         holder = parent.get(id(node))
         lazy = isinstance(node, ast.GeneratorExp) or bool(builtin(node.func, LISTS_HERE))
-        if lazy and isinstance(holder, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.Return)) and holder.value is node:
-            needs.add("until")
-            around(node, "_rx_iter(", ")")  # kept for later: read once, and next() takes it
+        kept = (isinstance(holder, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.Return)) and holder.value is node
+                or isinstance(holder, (ast.Tuple, ast.List, ast.Dict, ast.IfExp, ast.Lambda))
+                or isinstance(holder, ast.keyword) and isinstance(parent.get(id(holder)), ast.Call)
+                and isinstance(parent[id(holder)].func, ast.Name) and parent[id(holder)].func.id in defined
+                or isinstance(holder, ast.Call) and node in holder.args and isinstance(holder.func, ast.Name)
+                and holder.func.id in defined)
+        if lazy and kept and id(node) not in classy:
+            needs.add("until")  # kept for later, or handed to the reflex's own function: read once
+            if isinstance(holder, ast.Call) and (node.lineno, node.col_offset) == (
+                    holder.func.end_lineno, holder.func.end_col_offset):  # f(x for x in xs): inside f's own brackets
+                edits.append((node.lineno, node.col_offset + 1, next(order), "_rx_iter("))
+                edits.append((node.end_lineno, node.end_col_offset - 1, -next(order), ")"))
+            else:
+                around(node, "_rx_iter(", ")")
         if not isinstance(node, ast.GeneratorExp) or not any(changes(part) for part in [node.elt] + [
                 c for g in node.generators for c in g.ifs] + [g.iter for g in node.generators[1:]]):
             continue
         whole = isinstance(holder, ast.Call) and holder.args[:1] == [node] and (
             builtin(holder.func, set(SETTLED) | {"list", "tuple", "set", "frozenset", "dict", "sorted", "sum", "min",
-                                                 "max"}) or (isinstance(holder.func, ast.Attribute)
-                                                             and holder.func.attr == "join"))
+                                                 "max"}) or (isinstance(holder.func, ast.Attribute) and
+                                                             holder.func.attr in ("join", "extend", "update")))
         if not whole:
             raise Refused(f"the generator expression of line {node.lineno} makes a change (rx.do, rx.write), and the "
                           "sandbox would make it for every item where Python may stop early: write a for loop, or a "
@@ -421,7 +439,9 @@ def _as_meant(source: str, tree, modules: set, taken: set) -> tuple:
             elif kind:
                 wrapped.add(id(value))  # bytes.fromhex: a function of the type itself
                 around(value, "(lambda *_a, **_k: ", "(*_a, **_k))")
-            elif all(isinstance(n, still) for n in ast.walk(owner)):
+            elif all(isinstance(n, still + (ast.Call, ast.keyword)) for n in ast.walk(owner)) and not any(
+                    isinstance(n, ast.Name) and n.id in set(SETTLED) | LISTS_HERE | KEYED | {"iter"}
+                    for n in ast.walk(owner)):  # w.split().count: the call is made once, here
                 wrapped.add(id(value))  # counts.get: the owner is read once, here, as Python reads it
                 around(value, f"([(lambda *_a, **_k: _o.{value.attr}(*_a, **_k)) for _o in [{ast.unparse(owner)}]][0]"
                               " if True else ", ")")
@@ -588,6 +608,7 @@ class _Run:
         self.shift, self.at = 0, 0  # lines the engine put among the author's, and after which of them
         self.length = 0  # lines of the author's source
         self.loose = []  # methods the source hands over without calling them
+        self.cut = False  # this run was interrupted: it stops at its next step
 
     # ---- the three ends ---------------------------------------------------------------------------------------
 
@@ -609,7 +630,7 @@ class _Run:
         limits = monty.ResourceLimits(max_feed_duration_secs=self.limits["cpu"], max_memory=256_000_000,
                                       max_suspensions=100_000)  # the run's own budgets are the ones that count
         return _sandbox().checkout(external_modules=modules, limits=limits, script_name="reflex.py",
-                                   os_policy={"timezone": _zone()})
+                                   os_policy={"timezone": _zone(), "sleep_system_max": float("inf")})
 
     def start(self, code: str, inputs: dict, more: dict | None = None) -> Outcome:
         try:
@@ -620,7 +641,7 @@ class _Run:
                                           print_callback=self.heard, **where)
                 return self.drive(snap)
         except monty.MontyError as exc:  # the sandbox itself dies of a Ctrl-C sent to the whole group
-            return self.stopped(INTERRUPTED if CUT.is_set() else self.said(exc))
+            return self.ended(exc)
         except KeyboardInterrupt:
             self.halt()
             return self.stopped(INTERRUPTED)
@@ -635,10 +656,17 @@ class _Run:
                 snap = session.load_snapshot(snapshot, print_callback=self.heard)
                 return self.drive(snap.resume({"return_value": value}))
         except monty.MontyError as exc:
-            return self.stopped(INTERRUPTED if CUT.is_set() else self.said(exc))
+            return self.ended(exc)
         except KeyboardInterrupt:
             self.halt()
             return self.stopped(INTERRUPTED)
+
+    def ended(self, exc) -> Outcome:
+        """The stop for an error of the sandbox; when the run was being cut, the error is only how the cut showed."""
+        if not self.cutting():
+            return self.stopped(self.said(exc))
+        self.halt()
+        return self.stopped(INTERRUPTED)
 
     def drive(self, snap) -> Outcome:
         try:
@@ -662,7 +690,7 @@ class _Run:
 
     def driven(self, snap) -> Outcome:
         while not isinstance(snap, monty.MontyComplete):
-            if CUT.is_set():  # asked to stop: here, between two steps, where nothing is half read
+            if self.cutting():  # asked to stop: here, between two steps, where nothing is half read
                 self.halt()
                 return self.stopped(INTERRUPTED)
             if self.ms() > self.limits["seconds"] * 1000:
@@ -695,7 +723,7 @@ class _Run:
             except _Stop as stop:
                 return self.stopped(str(stop))
             snap = snap.resume({"return_value": value})
-        if CUT.is_set():  # the reflex may have gone on to its end past the cut: it is not "done"
+        if self.cutting():  # the reflex may have gone on to its end past the cut: it is not "done"
             return self.stopped(INTERRUPTED)
         result = _fields(snap.output)
         if result is None and self.printed.strip():
@@ -713,7 +741,11 @@ class _Run:
             return {"return_value": env.get(str(args[0]), args[1] if len(args) > 1 else None)}
         if name == "system.sleep":
             asked, left = float(args[0]), self.limits["seconds"] - self.ms() / 1000
-            time.sleep(max(0.0, min(asked, left)))  # a sleep spends the run's time like anything else
+            until = time.monotonic() + max(0.0, min(asked, left))  # a sleep spends the run's time like anything else
+            while time.monotonic() < until and not self.cutting():
+                time.sleep(min(0.2, max(0.0, until - time.monotonic())))
+            if self.cutting():
+                raise _Stop(INTERRUPTED)
             if asked > left:
                 raise _Stop(f"budget: more than {self.limits['seconds']} s")
             return {"return_value": None}
@@ -725,7 +757,13 @@ class _Run:
         return None
 
     def heard(self, stream, text):
-        self.printed = (self.printed + text)[-20_000:]
+        try:
+            self.printed = (self.printed + text)[-20_000:]
+        except KeyboardInterrupt:  # raised here it would be dropped by the sandbox: it is kept for the next step
+            self.cut = True
+
+    def cutting(self) -> bool:
+        return self.cut or CUT.is_set()
 
     def mine(self, line: int) -> int:
         """The author's line for a line of the code that ran; 0 for a line of the engine's."""
@@ -809,14 +847,18 @@ class _Run:
         try:
             out, err, code = self.host.run(argv, seconds, input)
             return str(out or ""), str(err or ""), int(code)
+        except KeyboardInterrupt:  # cut while it ran: it stays in the journal as a command that may be half done
+            self.cut = True
+            return "", "interrupted", 130
         except Exception as exc:
             return "", f"{type(exc).__name__}: {exc}", 126
 
-    def failed(self, verb, argv, out, err, code, ok) -> str:
+    def failed(self, verb, argv, out, err, code, ok, timeout=None) -> str:
         if ok is None or code in ok:
             return ""
         said = (err or out or "").strip()
-        return f"rx.{verb} {shlex.join(argv)}: exit {code}" + (f": {said[:300]}" if said else "")
+        more = " (timeout=seconds gives a command more time)" if code == 124 and timeout is None else ""
+        return f"rx.{verb} {shlex.join(argv)}: exit {code}" + (f": {said[:300]}" if said else "") + more
 
     @staticmethod
     def codes(ok):
@@ -843,14 +885,14 @@ class _Run:
         seconds = self.seconds(timeout)
         deadline = time.monotonic() + (self.limits["seconds"] - self.ms() / 1000)  # for the whole list
 
-        as_read = getattr(self.host, "as_read", None)  # a host may run a read in a narrower form (curl kept to HTTP)
+        as_read = getattr(self.host, "as_read", readers.as_read)  # a read runs in a narrower form (curl on HTTP)
 
         def one(argv):
             started = time.monotonic()
             left = deadline - started
             if left <= 0:
                 return argv, "", NOT_STARTED, 124, started
-            out, err, code = self.ran(as_read(argv) if as_read else argv, min(seconds, max(1.0, left)), input)
+            out, err, code = self.ran(as_read(argv), min(seconds, max(1.0, left)), input)
             return argv, out, err, code, started
         workers = min(int(getattr(self.host, "workers", 8)), len(commands))  # a host may take one command at a time
         if workers > 1:
@@ -868,7 +910,7 @@ class _Run:
             raise _Stop(f"budget: more than {self.limits['seconds']} s")
         outputs, failure = [], ""
         for argv, out, err, code, started in results:
-            problem = self.failed("sh", argv, out, err, code, ok)
+            problem = self.failed("sh", argv, out, err, code, ok, timeout)
             self.note("sh", shlex.join(argv), started, code=code, out=_short(out),
                       **({"outside": True} if self.host.reads_outside(argv) else {}),
                       **({"error": problem} if problem else {}))
@@ -887,7 +929,7 @@ class _Run:
             self.note("do", shlex.join(argv), began, planned=True)
             return ""
         out, err, code = self.ran(argv, self.seconds(timeout), input)
-        problem = self.failed("do", argv, out, err, code, ok)
+        problem = self.failed("do", argv, out, err, code, ok, timeout)
         self.note("do", shlex.join(argv), began, code=code, out=_short(out), **({"error": problem} if problem else {}))
         if problem:
             raise _Raise(RuntimeError(problem))
@@ -935,6 +977,9 @@ class _Run:
             return {}
         if any(not isinstance(i, (str, int, float, type(None))) for i in items):
             raise _Raise(TypeError("rx.ask: each thing in about is a text (a name, a line, a path)"))
+        if any(len(_key(i)) > CONTEXT for i in items):
+            raise _Raise(ValueError(f"rx.ask: a thing in about is a short text (a name, a line), {CONTEXT} characters "
+                                    "at most: what the model must read goes in context"))
         if many and len({_key(i) for i in items}) != len(items):
             raise _Raise(ValueError("rx.ask: the same thing is twice in about"))
         if len(items) > ASKED:
@@ -950,6 +995,8 @@ class _Run:
             try:
                 answers = self.decided(question, choices, [(_key(i), context_of(i)) for i in items])
                 by = getattr(self.decider, "name", "small model")
+            except _Stop:
+                raise
             except Exception as exc:  # no small model answered: every item is a doubt
                 answers, by = None, f"nobody ({type(exc).__name__}: {str(exc)[:80]})"
         sure, unsure = {}, []
@@ -996,8 +1043,10 @@ class _Run:
                 box["error"] = exc
         worker = threading.Thread(target=work, daemon=True)
         worker.start()
-        while worker.is_alive() and time.monotonic() < until and not CUT.is_set():
+        while worker.is_alive() and time.monotonic() < until and not self.cutting():
             worker.join(0.1)
+        if self.cutting():
+            raise _Stop(INTERRUPTED)
         if "error" in box:
             raise box["error"]
         if "answers" not in box:
@@ -1012,6 +1061,10 @@ class _Run:
         taken = sorted({"about", "error", "question"} & set(context))
         if taken:
             raise _Raise(ValueError(f"rx.up: {taken[0]} is a name of the question itself; give that value another name"))
+        size = len(question) + len(json.dumps(context, default=str))
+        if size > CARRIED:
+            raise _Raise(ValueError(f"rx.up: {size} characters is more than a question carries ({CARRIED}): send up "
+                                    "what the answer needs, not the whole material"))
         self.note("up", question, time.monotonic())
         raise _Pause({"verb": "up", "options": choices},
                      {"question": question, **({"options": choices} if choices else {}), **context})

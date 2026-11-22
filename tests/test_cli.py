@@ -86,7 +86,7 @@ def test_the_whole_cycle_dry_then_live(world, capsys):
     code, out, _ = call(capsys, "answer", run_id, '{"a note.txt": "text", "p.png": "image"}')
     assert code == 0
     assert out.splitlines()[0] == "dry run, nothing was changed. It would:"
-    assert "  mv -n '~/inbox/a note.txt' ~/inbox/text/" in out.splitlines()
+    assert "  mv -n ~/'inbox/a note.txt' ~/inbox/text/" in out.splitlines()
     assert "then end with: 2 files sorted." in out
     assert sorted(os.listdir(world / "home" / "inbox")) == ["a note.txt", "p.png"]
 
@@ -470,3 +470,31 @@ def test_a_relative_place_from_a_folder_that_is_gone_is_no_crash(world, tmp_path
     monkeypatch.setenv("REFLEX_HOME", ".state")
     assert cli.main(["list"]) == 0
     capsys.readouterr()
+
+
+# ---- what a fifth review found -----------------------------------------------------------------------------------
+
+def test_an_input_is_read_as_the_reflex_means_it(world, capsys):
+    (world / "reflexes" / "typed.py").write_text(
+        "def reflex(rx, version, tag: str, deep=False, days=7, ratio=0.5, name='x', anything=None):\n"
+        "    return [version, tag, deep, days, ratio, name, anything]\n")
+    code, out, _ = call(capsys, "run", "typed", "version=1.10", "tag=007", "deep=False", "days=20", "ratio=1.10",
+                        "name=12", "anything=[1, 2]")
+    assert code == 0 and out.splitlines()[0] == 'done: ["1.10", "007", false, 20, 1.1, "12", [1, 2]]'
+    code, out, _ = call(capsys, "run", "typed", "version=2", "tag=v", "deep=yes", "anything=None")
+    assert out.splitlines()[0] == 'done: [2, "v", true, 7, 0.5, "x", null]'
+    code, _, err = call(capsys, "run", "typed", "version=1e3", "tag=v", "deep=maybe")
+    assert code == 2 and "deep takes true or false" in err
+
+
+def test_the_budgets_can_be_raised_by_the_caller_and_say_so(world, monkeypatch, capsys):
+    (world / "reflexes" / "many.py").write_text("def reflex(rx, n=5):\n    for i in range(n):\n"
+                                                "        rx.sh(['echo', str(i)])\n    return n\n")
+    monkeypatch.setenv("REFLEX_CALLS", "3")
+    code, out, _ = call(capsys, "run", "many")
+    assert code == 1 and "budget: more than 3 calls to rx" in out and "REFLEX_SECONDS and REFLEX_CALLS" in out
+    monkeypatch.setenv("REFLEX_CALLS", "10")
+    assert call(capsys, "run", "many")[0] == 0
+    monkeypatch.setenv("REFLEX_SECONDS", "soon")
+    code, _, err = call(capsys, "run", "many")
+    assert code == 2 and "REFLEX_SECONDS is a whole number" in err

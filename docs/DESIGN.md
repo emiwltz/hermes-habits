@@ -36,7 +36,7 @@ Hermes first.
 | Safety | reading shell text, and a guard of 3,574 lines | a sandbox with no file, network or process; every effect is a call the host answers | The sandbox refuses `open`, `os.system`, `subprocess`; an endless loop is cut |
 | Handing back | the run ends, the model finishes by hand | the run freezes on one question and carries on with the answer | A frozen run is about 5 to 10 KB and resumes in another process in 16 ms |
 | Writing a reflex | 12 to 41 model calls for "make it a habit" | four tool calls: read the guide, write the file, dry run, run | The use bench, 5 of 5 |
-| Size | 18,506 lines, 4,963 tests | about 2,200 lines, about 480 tests | |
+| Size | 18,506 lines, 4,963 tests | about 2,500 lines, about 530 tests | |
 
 | Dropped for now | Why |
 | --- | --- |
@@ -93,8 +93,10 @@ keeps its number, and a rewrite that does not parse is dropped):
 
 One thing cannot be put right: a generator expression is not lazy in the sandbox. Read whole (`sum`, `list`,
 `sorted`, `join`) that changes nothing. Read by something that may stop early (a `for` with a `break`) it would
-run every item, so one that makes a change (`rx.do`, `rx.write`, a call that is handed `rx`) is refused before the
-run, with what to write instead. One that only reads runs, and reads more than Python would.
+run every item, so one in which `rx.do` or `rx.write` is written is refused before the run, with what to write
+instead. A change hidden in a helper the generator calls is not seen, and the sandbox makes them all; one that
+only reads runs, and reads more than Python would. In the 230 generator expressions of the reflexes that models
+wrote for the benches, 12 call `rx`, all to read, and none is read in part.
 
 A rewrite is a claim that the new text means what the old one meant, and the first version of this one claimed too
 much. A review that ran 155 sources through CPython and the engine side by side showed it: every `key=` argument
@@ -141,7 +143,9 @@ guesses another protocol. A URL with no scheme is now a plain host, a port and a
 The fourth found one, of a kind no table can close: `curl -L` follows a redirect into `ftp://`, and what a server
 answers is not ours to read in advance. So the table no longer carries that alone: a command that passed as a read
 is run in a narrower form, and for curl that form says `--proto =http,https --proto-redir =http,https`. Four
-rounds found 8, then 2, then 1 hole in this table, the last three all in curl.
+rounds found 8, then 2, then 1 hole in this table, the last three all in curl. The fifth found one more by
+reading a manual: `kubectl`, which takes its global flags after any subcommand, and `--profile-output` writes a
+file. Its flags are now listed like the others'.
 
 What stays: a program's own caches. `git diff` may refresh the stat data of `.git/index`, `kubectl` writes its
 discovery cache. Nothing the user made changes, but "changes nothing" is true of their files, not of every byte.
@@ -152,7 +156,8 @@ Seatbelt), and the table is only needed for the network. That is for later, and 
 ## Hosts
 
 The engine knows nothing of its host but a few members: run a command, read and write a file, say whether a command
-only reads, how many commands it takes at once, its folder, its home and the environment it gives.
+only reads and in what form a read is run, how many commands it takes at once, its folder, its home, the
+environment it gives, and how to stop what it is running.
 `reflexes/host.py` is the local one: it stops a command past 8 MB of output and reads regular files only, so
 nothing a reflex reads can fill the memory or wait forever. A run that asked carries on in the folder it started
 in, wherever its answer is given. A command runs in its caller's own group of processes: a caller that gives up
@@ -166,6 +171,21 @@ through Hermes and gave its verdict in 2.5 s, with no model. Hermes runs the com
 its host takes one command at a time.
 
 For an agent with a shell and nothing else, the command line is the host: `reflex run`, `test`, `answer`, `guide`.
+
+## What five reviews were for
+
+Each round set models to break the package and other models to check every claim by running it. The first four
+hunted corners: 35, 24, 18 and 17 reports. What a second model could reproduce, or found already closed by a fix
+made in between, is in the tests. The fifth changed the question. It ran the sixteen confirmed faults of the
+fourth again (fourteen closed, two small ones left and since narrowed),
+and it had a model read the guide, nothing else, then write and use twelve ordinary reflexes end to end: a disk
+report, a sorter that asks, a git report, a watcher with a memory, a link checker, a version bump that waits for
+a yes, a cleaner, a log summary, a backup, a config reader, a renamer, a health check. All twelve worked. What it
+found beside them was on the command line: `version=1.10` arrived as the number 1.1, and `recursive=False` as a
+text that is true. An input is now read as the reflex means it.
+
+The reviews stop there, not because nothing is left to find but because what is left is no longer what an
+ordinary reflex meets. What they did not cover is said below.
 
 ## What is settled, and what is not
 
@@ -184,7 +204,10 @@ Open:
   before 3.12); in `re`, `$` does not match before a final newline and `\n` in a replacement text stays two
   characters; `strptime` forgets an hour given without minutes; a generator expression that only reads runs whole.
   They are the sandbox's to fix, and to report. Each patch above is a debt to drop when the sandbox catches up.
-- **Only Claude models wrote and used reflexes so far.** A cheap model of another family is to measure.
+- **Only Claude models wrote, used and reviewed reflexes so far.** A cheap model of another family is to measure,
+  and so is a Mac: everything ran on Linux.
+- **The budgets are guesses.** Two minutes and 200 calls suit a routine gesture and stop a backup of a gigabyte;
+  `REFLEX_SECONDS` and `REFLEX_CALLS` raise them, and a host sets its own.
 - **The name.** `reflex` and `reflexes` are taken on PyPI; the package is `agent-reflexes` for now, the command
   `reflex`.
 

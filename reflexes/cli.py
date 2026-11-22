@@ -119,7 +119,11 @@ def _main(args: list) -> int:
     if host is None:
         return _fail(GONE)
     decider = decide.from_env()
-    outcome = _run(lambda: engine.run(source, inputs, host, dry=command == "test", decider=decider))
+    try:
+        limits = _limits()
+    except ValueError as exc:
+        return _fail(str(exc))
+    outcome = _run(lambda: engine.run(source, inputs, host, dry=command == "test", decider=decider, limits=limits))
     return _report(outcome, as_json)
 
 
@@ -148,28 +152,47 @@ def _default(value) -> str:
         return repr(value)
 
 
+YES, NO = ("true", "yes", "on", "1"), ("false", "no", "off", "0")
+
+
 def _inputs(pairs: list, source: str) -> dict:
-    """name=value pairs. A value is read as JSON when it is JSON (a number, true, a list), else as the text it is;
-    an input whose default is a text always stays a text."""
+    """name=value pairs, each read as the reflex means its input: a text (a text default, or `: str`) stays the
+    text typed; a yes-or-no input takes true, false, yes, no; anything else is read as JSON when that loses
+    nothing, else it is the text typed (1.10 is not the number 1.1)."""
     try:
-        texts = {i["name"] for i in engine.describe(source)["inputs"]
-                 if isinstance(i.get("default"), str) and not i.get("written")}
+        kinds = {i["name"]: i.get("kind") for i in engine.describe(source)["inputs"]}
     except engine.Refused:
-        texts = set()  # the run itself will say what is wrong with the reflex
+        kinds = {}  # the run itself will say what is wrong with the reflex
     inputs = {}
     for pair in pairs:
         name, equals, value = pair.partition("=")
         if not equals or not name.isidentifier():
             raise ValueError(f"inputs are written name=value, not {pair!r}")
-        inputs[name] = value if name in texts else _value(value)
+        kind = kinds.get(name)
+        if kind == "str":
+            inputs[name] = value
+        elif kind == "bool":
+            if value.strip().lower() not in YES + NO:
+                raise ValueError(f"{name} takes true or false, not {value!r}")
+            inputs[name] = value.strip().lower() in YES
+        else:
+            inputs[name] = _value(value, exact=kind is None)
     return inputs
 
 
-def _value(text: str):
+def _value(text: str, exact: bool = False):
+    """A value typed on the command line. exact: a number is kept as the text typed unless it would be written
+    back the same (nobody said this input is a number, and 1.10 may be a version)."""
+    python = {"True": True, "False": False, "None": None}
+    if text.strip() in python:
+        return python[text.strip()]
     try:
-        return json.loads(text)
+        value = json.loads(text)
     except (ValueError, RecursionError):
         return text
+    if exact and isinstance(value, (int, float)) and not isinstance(value, bool) and json.dumps(value) != text.strip():
+        return text
+    return value
 
 
 def _answer_value(text: str):
@@ -205,6 +228,19 @@ def _answer(run_id: str, text: str, as_json: bool) -> int:
     if outcome.status == "asks" and outcome.state == state and store.put_back(run_id, state):
         return _report(outcome, as_json, run_id)  # the answer did not fit: the same question, under the same id
     return _report(outcome, as_json)
+
+
+def _limits() -> dict:
+    """The budgets a caller asked for: REFLEX_SECONDS for a run that needs more than two minutes (a backup, a
+    build), REFLEX_CALLS for one that needs more than 200 calls to rx."""
+    limits = {}
+    for name, variable in (("seconds", "REFLEX_SECONDS"), ("effects", "REFLEX_CALLS")):
+        asked = os.environ.get(variable, "").strip()
+        if asked:
+            if not asked.isdigit() or int(asked) < 1:
+                raise ValueError(f"{variable} is a whole number, not {asked!r}")
+            limits[name] = int(asked)
+    return limits
 
 
 def _here():
@@ -267,7 +303,8 @@ def _tilde(text: str) -> str:
     home = os.path.expanduser("~").rstrip("/")
     if len(home) < 2:
         return text
-    return re.sub(r"(?<![\w./~-])" + re.escape(home) + r"(?=/|[\s'\":,)\]]|$)", "~", text)
+    text = text.replace("'" + home + "/", "~/'")  # a quoted word keeps its ~ outside the quotes, where a shell reads
+    return re.sub(r"(?<![\w./~'\"-])" + re.escape(home) + r"(?=/|[\s:,)\]]|$)", "~", text)  # it: a line can be run
 
 
 def _line(text) -> str:
@@ -326,6 +363,9 @@ def render(outcome, run_id: str | None = None) -> str:
             lines += [f"  {what}" for what in changed] + [f"  may have partly run: {what}" for what in partly]
     else:
         lines.append(f"stopped: {outcome.reason}")
+        if outcome.reason.startswith("budget: more than"):
+            lines.append("(do several things with one command where you can, as in mv -t folder a b c; "
+                         "REFLEX_SECONDS and REFLEX_CALLS raise the limits)")
         if changed or partly:
             lines.append("already changed before it stopped:")
             lines += [f"  {what}" for what in changed] + [f"  may have partly run: {what}" for what in partly]

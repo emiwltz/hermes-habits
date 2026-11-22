@@ -14,11 +14,12 @@ def reflex(body: str, signature: str = "rx") -> str:
 # ---- what a reflex says of itself -----------------------------------------------------------------------------
 
 def test_describe_reads_the_description_and_the_inputs():
-    about = describe('def reflex(rx, page, depth=2, *, quiet=False):\n    """Check a page.\n\n    More."""\n')
+    about = describe('def reflex(rx, page, depth=2, *, quiet=False, tag: str):\n    """Check a page.\n\n    More."""\n')
     assert about["doc"].splitlines()[0] == "Check a page."
     assert about["inputs"] == [{"name": "page", "required": True},
-                               {"name": "depth", "required": False, "default": 2},
-                               {"name": "quiet", "required": False, "default": False}]
+                               {"name": "depth", "required": False, "default": 2, "kind": "int"},
+                               {"name": "quiet", "required": False, "default": False, "kind": "bool"},
+                               {"name": "tag", "required": True, "kind": "str"}]
     assert about["rx"] is True
 
 
@@ -130,8 +131,9 @@ def test_sh_runs_a_list_of_commands_side_by_side_and_keeps_their_order():
     host = FakeHost({"curl": lambda argv: argv[-1][-1] * 3})
     outcome = run(reflex("return rx.sh([['curl', '-s', 'https://a'], ['curl', '-s', 'https://b']])"), {}, host)
     assert outcome.result == ["aaa", "bbb"]
-    assert sorted(host.ran) == [["curl", "-s", "https://a"], ["curl", "-s", "https://b"]]
-    assert [e["verb"] for e in outcome.effects] == ["sh", "sh"]
+    narrow = ["--proto", "=http,https", "--proto-redir", "=http,https"]  # curl is run on HTTP and HTTPS only
+    assert sorted(host.ran) == [["curl", *narrow, "-s", "https://a"], ["curl", *narrow, "-s", "https://b"]]
+    assert [(e["verb"], e["what"]) for e in outcome.effects] == [("sh", "curl -s https://a"), ("sh", "curl -s https://b")]
 
 
 def test_sh_can_feed_a_command():
@@ -430,7 +432,7 @@ return [max(counts, key=counts.get), sorted(map(str.strip, words), key=str.lower
 
 @pytest.mark.parametrize("body, said", [
     ("get = {'a': 1}.get\nreturn get('a')", "handed over without being called"),
-    ("first = lambda found: next(found)\nreturn first(x for x in [1, 2])", "are lists: wrap it in iter"),
+    ("take = [next][0]\nreturn take(x for x in [1, 2])", "are lists: wrap it in iter"),
     ("import textwrap", "use str methods"),
     ("return str(datetime.datetime.strptime('14:30', '%H:%M'))", "wants a whole date"),
     ("return sorted(['a'], key=lambda n: rx.sh(['stat', n]))", "get the values first"),
@@ -885,7 +887,8 @@ def test_an_interrupted_run_ends_with_what_it_had_done(host):
     host.stop = lambda: stopped.append(True)
     outcome = run(reflex("rx.do(['first'])\nrx.do(['second'])\nrx.do(['third'])"), {}, host)
     assert outcome.status == "stopped" and outcome.reason.startswith("interrupted")
-    assert [e["what"] for e in outcome.effects] == ["first"] and stopped == [True]
+    assert [(e["what"], "error" in e) for e in outcome.effects] == [("first", False), ("second", True)]
+    assert stopped == [True]  # the command that was cut is in the journal, as one that may be half done
 
 
 # ---- what a fourth review found, each kept as a test ----------------------------------------------------------
@@ -912,7 +915,6 @@ def reflex(rx):
 @pytest.mark.parametrize("body", [
     "for done in (rx.do(['touch', n]) for n in ['a', 'b', 'c']):\n    break",
     "made = (rx.write(n, 'x') for n in ['a', 'b'])\nreturn next(iter(made))",
-    "return next(iter(install(rx, n) for n in ['a', 'b']))",
     "return any(ok for ok in (rx.do(['touch', n]) for n in ['a', 'b']))",
 ])
 def test_a_change_inside_a_generator_that_may_stop_early_is_refused_before_the_run(host, body):
@@ -1012,3 +1014,77 @@ def test_a_read_runs_in_the_form_the_host_gives_it(host):
     host.as_read = lambda argv: [argv[0], "--narrow"] + argv[1:]
     outcome = run(reflex("return rx.sh(['curl', '-sL', 'https://a'])"), {}, host)
     assert host.ran == [["curl", "--narrow", "-sL", "https://a"]] and outcome.effects[0]["what"] == "curl -sL https://a"
+
+
+# ---- what a fifth review found, each kept as a test -----------------------------------------------------------
+
+def test_an_iterator_handed_to_a_function_of_the_reflex_is_one(host):
+    outcome = run("""
+def first(found, default=None):
+    return next(found, default)
+
+def head_tail(found):
+    head = next(found)
+    return head, list(found)
+
+def reflex(rx):
+    lines = [" ", " a ", "b"]
+    pick = lambda found: next(found)
+    both = (x for x in [1, 2, 3]), 3
+    return [first(line.strip() for line in lines if line.strip()), first(map(len, lines)), head_tail(n * 2 for n in range(3)),
+            pick(zip("ab", "cd")), next(both[0]), list(both[0]), first(iter([]), "none")]
+""", {}, host)
+    assert outcome.result == ["a", 1, (0, [2, 4]), ("a", "c"), 1, [2, 3], "none"], outcome.reason
+
+
+def test_a_reading_generator_is_never_refused_and_a_hidden_change_is_not_seen(host):
+    outcome = run("""
+def size(rx, name):
+    return len(rx.sh(["cat", name]))
+
+def reflex(rx):
+    total = []
+    total.extend(size(rx, n) for n in ["a", "b"])
+    for n in (size(rx, n) for n in ["c"]):
+        total.append(n)
+    return len(total)
+""", {}, host)
+    assert outcome.result == 3, outcome.reason
+
+
+def test_the_owner_of_a_method_may_be_the_result_of_a_plain_call(host):
+    outcome = run(reflex("w = 'a b a c'\nreturn max(sorted(set(w.split())), key=w.split().count)"), {}, host)
+    assert outcome.result == "a", outcome.reason
+
+
+def test_a_sleep_longer_than_ten_seconds_is_not_cut_short_in_silence(host):
+    outcome = run(reflex("import time\ntime.sleep(14)\nreturn 'woke'"), {}, host, limits={"seconds": 2})
+    assert outcome.status == "stopped" and "budget" in outcome.reason and outcome.ms < 4000  # asked for 14, not 10
+
+
+def test_a_command_that_is_late_says_how_to_get_more_time(host):
+    host.commands = {"slow": ("", "timed out after 30 s", 124)}
+    assert "timeout=seconds gives a command more time" in run(reflex("rx.do(['slow'])"), {}, host).reason
+    assert "timeout=" not in run(reflex("rx.do(['slow'], timeout=60)"), {}, host).reason
+
+
+def test_an_interruption_while_the_reflex_prints_or_waits_is_not_lost(host):
+    from reflexes import engine
+
+    def cut_then(argv):
+        engine.CUT.set()
+        return ""
+    host.commands = {"first": cut_then}
+    try:
+        asked = run(reflex("rx.do(['first'])\nreturn rx.ask('go on?')"), {}, host,
+                    decider=lambda q, o, items: [("yes", 1.0)] * len(items))
+    finally:
+        engine.CUT.clear()
+    assert asked.status == "stopped" and asked.reason.startswith("interrupted")  # not a question to answer
+
+
+def test_a_question_carries_a_bounded_material(host):
+    big = run(reflex("return rx.up('what?', material='x' * 300_000)"), {}, host)
+    assert big.status == "stopped" and "more than a question carries" in big.reason
+    long_item = run(reflex("return rx.ask('ok?', about=['x' * 5000, 'b'])"), {}, host)
+    assert long_item.status == "stopped" and "a short text" in long_item.reason

@@ -26,6 +26,9 @@ them side by side and returns one output per command.
 `rx.sh` takes only what plainly reads (ls, cat, find, grep, stat, df, ps, git status/log/diff, curl GET or HEAD...).
 Anything else is a change and goes through `rx.do`.
 
+Budgets. A command has 30 seconds (`timeout=120` gives it more), a run two minutes and 200 calls to `rx`. So for
+many files, give one command several of them (`rx.do(["mv", "-t", dest, *paths])`) rather than one call each.
+
 Dry run. A reflex can be run dry: reads and questions happen, `rx.do` and `rx.write` are only planned (`rx.do`
 then returns ""). So do not read back what you have just changed: in a dry run it is not there.
 

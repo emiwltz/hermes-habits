@@ -28,7 +28,7 @@ ANY = frozenset("""
     ls cat head wc stat cut tr nl rev fold fmt expand basename dirname realpath readlink pwd whoami uname id du df
     echo printf true false test [ ps pgrep pidof uptime free which nproc column jq grep egrep fgrep strings
     md5 md5sum shasum sha1sum sha256sum diff cmp comm lscpu lsblk lsusb sw_vers vm_stat ioreg mdls mdfind
-    system_profiler dig nslookup host printenv netstat
+    system_profiler dig nslookup host printenv netstat zcat bzcat xzcat zgrep zegrep zfgrep
 """.split())
 OUTSIDE = frozenset({"curl", "dig", "nslookup", "host", "ping", "kubectl"})  # reads that ask another machine
 
@@ -128,13 +128,22 @@ SS = Options("HOnraloempTis460tudwxSZz", "fA",
 OPTIONS = {"tail": TAIL, "sort": SORT, "uniq": UNIQ, "date": DATE, "hostname": HOSTNAME, "sysctl": SYSCTL,
            "ping": PING, "file": FILE, "tree": TREE, "journalctl": JOURNALCTL, "lsof": LSOF, "ss": SS}
 
+# kubectl's global flags are taken after any subcommand, and some write a file (--profile-output, --log-file,
+# --cache-dir): what a read may take is listed.
+KUBECTL = Options("Ap", "nolLcf",
+                  long=["--all-namespaces", "--show-labels", "--no-headers", "--previous", "--timestamps",
+                        "--all-containers", "--client", "--short", "--show-kind", "--recursive"],
+                  long_valued=["--namespace", "--output", "--selector", "--field-selector", "--context", "--tail",
+                               "--since", "--since-time", "--container", "--sort-by", "--kubeconfig", "--cluster",
+                               "--user", "--request-timeout", "--limit-bytes", "--raw", "--filename", "--chunk-size"])
+
 # Programs that read only through these subcommands, which must be the first word (an option before it could hide
 # another one), and then take what is listed: an Options, or None for any words.
 SUBCOMMANDS = {
     "systemctl": dict.fromkeys(["is-active", "is-enabled", "is-failed", "status", "show", "cat", "list-units",
                                 "list-timers", "list-unit-files", "list-sockets", "list-dependencies"], SYSTEMCTL),
     "docker": dict.fromkeys(["ps", "images", "version", "info", "inspect", "logs", "port", "top", "history", "diff"]),
-    "kubectl": dict.fromkeys(["get", "describe", "logs", "version", "top", "api-resources", "explain"]),
+    "kubectl": dict.fromkeys(["get", "describe", "logs", "version", "top", "api-resources", "explain"], KUBECTL),
     "launchctl": dict.fromkeys(["list", "print"]),
     "diskutil": dict.fromkeys(["list", "info"]),
     "defaults": dict.fromkeys(["read", "read-type", "domains", "find"]),
@@ -320,8 +329,8 @@ def _git(args: list) -> str:
     if sub in ("stash", "worktree"):
         return "" if names[:1] in (["list"], ["show"]) and tail[:1] == names[:1] else \
             f"git {sub} reads only as `git {sub} list`" + (" or `git stash show`" if sub == "stash" else "")
-    if sub == "reflog":
-        return "" if not names or tail[:1] == ["show"] else f"git reflog {names[0]} is not a read"
+    if sub == "reflog":  # its own subcommand, if any, comes first: anything else is the name of a reference
+        return f"git reflog {tail[0]} is not a read" if tail[:1] in (["expire"], ["delete"], ["drop"]) else ""
     return f"git {sub} is not listed as a read"
 
 
@@ -379,6 +388,30 @@ def _ip(args: list) -> str:
     return "ip reads only as `ip addr`, `ip link`, `ip route`, `ip neigh` or `ip rule`, alone or with show"
 
 
+def _gzip(args: list) -> str:
+    """gzip and gunzip read only when they write to the output (-c), list (-l) or test (-t): else they replace
+    the file they are given."""
+    letters = "".join(w[1:] for w in args if len(w) > 1 and w[0] == "-" and w[1] != "-")
+    words = {w for w in args if w.startswith("--")}
+    fine = {"--stdout", "--to-stdout", "--decompress", "--uncompress", "--list", "--test", "--verbose", "--quiet",
+            "--keep", "--force"}
+    if set(letters) - set("cdltvqkf123456789") or words - fine:
+        return "gzip takes only -c, -d, -l, -t and the like here"
+    if not (set(letters) & set("clt") or words & {"--stdout", "--to-stdout", "--list", "--test"}):
+        return "gzip replaces the file it is given: only gzip -c, -l or -t is a read (or zcat)"
+    return ""
+
+
+def _tar(args: list) -> str:
+    """tar reads only when it lists a local archive: `tar -tf archive`, with z, j, J or v, and names after."""
+    how = args[0].lstrip("-") if args else ""
+    if not (how and "t" in how and how.endswith("f") and set(how) <= set("tvzjJf") and args[0].count("-") <= 1):
+        return "tar reads only as `tar -tf archive` (with z, j, J or v): anything else may write or run a program"
+    if len(args) < 2 or ":" in args[1] or any(w.startswith("-") for w in args[1:]):
+        return "tar -tf takes a local archive, then names: no option after it, no host:archive"
+    return ""
+
+
 def _sleep(args: list) -> str:
     try:
         return "" if len(args) == 1 and 0 <= float(args[0]) <= 10 else "sleep takes one number of seconds, 10 at most"
@@ -393,5 +426,6 @@ def _exactly(name: str, *forms):
     return rule
 
 
-RULES = {"git": _git, "curl": _curl, "find": _find, "rg": _rg, "sleep": _sleep, "ip": _ip,
+RULES = {"git": _git, "curl": _curl, "find": _find, "rg": _rg, "sleep": _sleep, "ip": _ip, "gzip": _gzip,
+         "gunzip": _gzip, "tar": _tar,
          "crontab": _exactly("crontab", ["-l"]), "pmset": _exactly("pmset", ["-g"], ["-g", "batt"], ["-g", "ps"])}
