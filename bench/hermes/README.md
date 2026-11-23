@@ -46,19 +46,36 @@ With `--model mock` (the default) a scripted fake model plays the agent: with re
 without it does the task by hand. It proves the whole chain and costs nothing; its numbers say nothing about a real
 model, except one: how long the prompt and the tool list are in each arm.
 
-With a real model, the login comes from a Hermes home that has one (`--from-home`): its `config.yaml`, `.env` and
-`auth.json` are copied into each world's own Hermes home, and nothing else. The real sessions, memory and skills are
-not touched.
+With a real model, the login comes from a Hermes home made for the bench (`--from-home`): its `auth.json` and
+`.env` are copied into each world's own Hermes home, and nothing else.
 
 ```bash
-# a home that only holds a login (HERMES_HOME=~/hermes-login hermes auth add nous), and the model named here
-python bench/hermes/run.py run /tmp/hb --from-home ~/hermes-login --provider nous --model deepseek/deepseek-v4-flash --reps 3
-# a machine where Hermes is already set up: its own model, as it is
-python bench/hermes/run.py run /tmp/hb --from-home ~/.hermes --model as-is
+# a home that only holds a login, and the model named here
+HERMES_HOME=~/bench-login hermes auth add nous --no-browser
+python bench/hermes/run.py run /tmp/hb --from-home ~/bench-login --provider nous --model deepseek/deepseek-v4-flash --reps 3
 ```
 
-A login made in a browser lasts an hour: the bench has Hermes renew it in the home it was made in before each world
-takes its copy.
+A login made in a browser is renewed every half hour, and each renewal uses up the one before. So the worlds of a
+run and the home their login comes from share one store (`<from-home>/shared`), which is how Hermes keeps several
+profiles on one login. The first pilot did not, and signed itself out thirty minutes in: every world renewed its own
+copy. For the same reason `--from-home` refuses the Hermes home in real use: the bench would renew that login too.
+
+## On a machine where Hermes is in real use
+
+[ON_A_REAL_MACHINE.md](ON_A_REAL_MACHINE.md) is the whole procedure. In short: everything lives in one folder, a
+separate Hermes of the same version is installed there, and the real one is only read.
+
+```bash
+# the real model settings, and a prompt as crowded as the real one (its skills and SOUL.md, copied into each world)
+python bench/hermes/run.py run ~/reflex-lab/out --hermes ~/reflex-lab/hermes-venv/bin/hermes \
+    --from-home ~/reflex-lab/login --like ~/.hermes --model as-is --noise
+```
+
+What keeps a session away from the real Hermes: it runs with `HOME` and `HERMES_HOME` inside its world, so its
+gateway, its locks, its sessions, its memory and its skills are the world's own; the real plugins, MCP servers,
+memory, cron jobs and messaging are never loaded; Hermes's install-on-demand is off, so no home grows by 600 MB;
+and the only process the bench ever stops is the gateway it started itself, by its number, after checking its name.
+A run stops by itself as soon as a session reaches no model (a login that ran out, no credit, no network).
 
 ## What stays where
 
@@ -70,5 +87,5 @@ On a real machine that may be private. Keep that folder out of the repository; `
 - The `plugin` arm calls the `reflex` command, so a reflex's commands run with the command's own local host. A host
   that runs them through Hermes's terminal tool (its backends, its approvals) is the next step.
 - One request per session, through `hermes -z`: no conversation of several turns, no gateway, no cron.
-- A fresh Hermes home has Hermes's bundled skills but not the user's own, nor their memory: the noise of a real
-  profile is for the runs on a real machine.
+- A world never has the real profile's plugins, MCP servers or memory. With `--like … --noise` it has its skills
+  and its SOUL.md, which is most of what crowds the prompt.

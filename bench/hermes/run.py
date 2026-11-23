@@ -3,7 +3,8 @@
 
     python bench/hermes/run.py run <out> [--model mock] [--provider custom] [--base-url URL]
                                          [--arms none,note,skill,plugin] [--scenarios health,triage,...]
-                                         [--reps 1] [--hermes /path/to/hermes] [--from-home ~/.hermes]
+                                         [--reps 1] [--hermes /path/to/hermes] [--from-home LOGIN]
+                                         [--like ~/.hermes] [--noise]
     python bench/hermes/run.py report <out>
 
 One run is one world: a throwaway home folder with its files, a Hermes home of its own, and one way of giving the
@@ -20,6 +21,13 @@ usage report.
 
 With --model mock a scripted fake model plays the agent: no key, no cost, and the whole chain is proved.
 Everything a run leaves stays under <out>, which may hold private text on a real machine: `report` prints only counts.
+
+On a machine where Hermes is in real use, nothing of that Hermes is written to and none of it is reached: each
+session runs with a home folder and a Hermes home of its own, so it starts its own gateway and cannot find the real
+one. --from-home names a Hermes home that holds a login made for the bench (never the real home: the bench renews
+the login it is given). --like names the real home, which is only read: with --model as-is its model settings are
+taken, and with --noise its skills and its SOUL.md are copied into each world, so that the agent's prompt is as
+crowded as the real one. Its plugins, memory and sessions never are. See ON_A_REAL_MACHINE.md.
 """
 
 from __future__ import annotations
@@ -34,7 +42,6 @@ import stat
 import subprocess
 import sys
 import time
-from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 
@@ -47,7 +54,8 @@ from scenarios import SCENARIOS, script  # noqa: E402
 ARMS = ("none", "note", "skill", "plugin")
 KEYS = ("NOUS_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "TYPESAFE_API_KEY",
         "REFLEX_DECIDER_URL", "REFLEX_DECIDER_KEY", "REFLEX_DECIDER_MODEL")  # handed on to the agent when set
-CARRIED = ("config.yaml", ".env", "auth.json")  # what --from-home takes from a real Hermes home: its model and login
+CARRIED = ("auth.json", ".env")  # what --from-home gives each world: a login, never a configuration
+HEAVY = ("tools", "installs", "cache", "runtime")  # what Hermes may install for itself in a home: never kept
 
 
 def reflex_command() -> str:
@@ -89,32 +97,47 @@ def build(world: Path, name: str, arm: str, options) -> None:
     if arm == "note":
         listing = subprocess.run([str(quiet), "list"], capture_output=True, text=True).stdout.rstrip()
         (home / "AGENTS.md").write_text(use.INDEX.format(listing="\n".join("  " + l for l in listing.splitlines())) + "\n")
-    config = _config(hermes / "config.yaml")
-    plugins = config.setdefault("plugins", {})
-    plugins["enabled"] = sorted(set(plugins.get("enabled") or []) | set(enabled))
-    if options.model != "as-is":
+    config = {"plugins": {"enabled": sorted(enabled)}, "agent": {"max_turns": 40},
+              "security": {"allow_lazy_installs": False}}
+    if options.model == "as-is":
+        real = _config(Path(options.like).expanduser() / "config.yaml") if options.like else {}
+        if not real.get("model"):
+            sys.exit("--model as-is needs --like, the Hermes home whose model is meant")
+        config["model"] = real["model"]
+        for key in ("reasoning_effort", "reasoning_overrides"):  # how hard the real one thinks is part of its model
+            if key in (real.get("agent") or {}):
+                config["agent"][key] = real["agent"][key]
+    else:
         config["model"] = {"provider": options.provider, "default": options.model,
                            **({"base_url": options.base_url} if options.base_url else {})}
+    if options.like and options.noise:  # the crowd of a real profile, copied: its skills and its SOUL.md
+        like = Path(options.like).expanduser()
+        if (like / "SOUL.md").exists():
+            shutil.copy(like / "SOUL.md", hermes / "SOUL.md")
+        if (like / "skills").is_dir():
+            shutil.copytree(like / "skills", hermes / "skills", dirs_exist_ok=True, symlinks=False,
+                            ignore=lambda folder, names: [n for n in names if "habit" in n.lower() or n == ".git"])
     (hermes / "config.yaml").write_text(json.dumps(config, indent=1))  # JSON is YAML
 
 
-def fresh(options, within: int = 20 * 60) -> None:
-    """A login made in a browser lasts an hour. When the one of --from-home is about to run out, Hermes renews it
-    there, in the home it was made in, before a world takes its copy: no world then has to renew its own, which
-    would leave the others with a login that no longer counts."""
+def shared(world: Path, options) -> Path:
+    """Where Hermes keeps the login that several homes share. A login made in a browser is renewed every half hour,
+    and each renewal uses up the one before: worlds that each renewed their own copy signed each other out (the
+    first pilot lost its login that way, thirty minutes in). So the worlds of a run and the home their login comes
+    from share one store, which is how Hermes keeps several profiles on one login. It is never the real one's."""
+    return Path(options.from_home).expanduser() / "shared" if options.from_home else world / "hermes" / "shared"
+
+
+def fresh(options) -> None:
+    """Before a world takes its copy of the login, Hermes brings it up to date in the home it comes from: it takes
+    what another world renewed, or renews it itself when that is due."""
     home = Path(options.from_home).expanduser()
     state = (_json(home / "auth.json").get("providers") or {}).get("nous") or {}
     python = Path(options.hermes).resolve().parent / "python"
-    if not state.get("refresh_token") or not python.exists():
-        return
-    try:
-        left = datetime.fromisoformat(state["expires_at"]).timestamp() - time.time()
-    except (KeyError, ValueError, TypeError):
-        left = 0
-    if left < within:
-        subprocess.run([str(python), "-c", "from hermes_cli.auth_nous import resolve_nous_runtime_credentials as go; "
-                        "go(force_refresh=True)"], env={**os.environ, "HERMES_HOME": str(home)}, capture_output=True,
-                       timeout=90)
+    if state.get("refresh_token") and python.exists():
+        subprocess.run([str(python), "-c", "from hermes_cli.auth_nous import resolve_nous_runtime_credentials as go; go()"],
+                       env={**os.environ, "HERMES_HOME": str(home), "HERMES_SHARED_AUTH_DIR": str(home / "shared")},
+                       capture_output=True, timeout=90)
 
 
 def _config(path: Path) -> dict:
@@ -122,6 +145,9 @@ def _config(path: Path) -> dict:
         return {}
     try:
         import yaml
+    except ImportError:
+        sys.exit("reading a Hermes config needs PyYAML here: pip install pyyaml")
+    try:
         return yaml.safe_load(path.read_text()) or {}
     except Exception as exc:
         sys.exit(f"cannot read {path}: {exc}")
@@ -142,6 +168,8 @@ def session(world: Path, name: str, arm: str, at: int, request: str, options) ->
                   or k in KEYS},
            "PATH": f"{world / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}", "HOME": str(world / "home"),
            "HERMES_HOME": str(world / "hermes"), "REFLEX_BENCH_LOG": str(world / "events.jsonl"),
+           "HERMES_SHARED_AUTH_DIR": str(shared(world, options)),
+           "HERMES_DISABLE_LAZY_INSTALLS": "1",  # or each new home gets a Python of its own: 600 MB, downloaded
            "HERMES_YOLO_MODE": "1", "NO_COLOR": "1"}
     model = None
     if options.model == "mock":
@@ -200,6 +228,9 @@ def stop(world: Path) -> None:
         pid = int(json.loads(_text(world / "hermes" / "gateway.pid")).get("pid", 0))
     except (ValueError, AttributeError):
         return
+    named = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
+    if pid <= 1 or "gateway" not in named:  # the number of a process that ended may now be another's
+        return
     for sign in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.kill(pid, sign)
@@ -240,7 +271,12 @@ def one(out: Path, name: str, arm: str, rep: int, options) -> dict:
     if world.exists():
         shutil.rmtree(world)
     build(world, name, arm, options)
-    sessions = [session(world, name, arm, at, request, options) for at, request in enumerate(scenario["requests"])]
+    try:
+        sessions = [session(world, name, arm, at, request, options) for at, request in enumerate(scenario["requests"])]
+    finally:
+        stop(world)  # whatever happened, nothing of this world goes on running
+        for heavy in HEAVY:
+            shutil.rmtree(world / "hermes" / heavy, ignore_errors=True)
     try:
         wrong = scenario["achieved"](world, [s["answer"] for s in sessions])
     except Exception as exc:  # a check that cannot even run is a failure of the world, said as such
@@ -257,8 +293,17 @@ def one(out: Path, name: str, arm: str, rep: int, options) -> dict:
 def run(options) -> None:
     out = Path(options.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    hermes = subprocess.run([options.hermes, "--version"], capture_output=True, text=True).stdout.splitlines()
+    aside = out / "hermes-aside"  # even to say its version, Hermes is given a home that is not the real one
+    hermes = subprocess.run([options.hermes, "--version"], capture_output=True, text=True,
+                            env={**os.environ, "HERMES_HOME": str(aside)}).stdout.splitlines()
+    shutil.rmtree(aside, ignore_errors=True)
     options.versions = {"hermes": hermes[0] if hermes else "?", "reflexes": metadata.version("agent-reflexes")}
+    real = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser().resolve()
+    given = Path(options.from_home).expanduser().resolve() if options.from_home else None
+    if given and (given == real or real in given.parents):
+        sys.exit(f"--from-home {options.from_home} is the Hermes home in use. The bench renews the login it is given, "
+                 "and the real Hermes would be signed out: make a home that only holds a login "
+                 "(HERMES_HOME=~/bench-login hermes auth add nous) and show the real one with --like, which is only read.")
     names = [n for n in options.scenarios.split(",") if n]
     arms = [a for a in options.arms.split(",") if a]
     unknown = [n for n in names if n not in SCENARIOS] + [a for a in arms if a not in ARMS]
@@ -276,6 +321,8 @@ def run(options) -> None:
                           f"{last['requests']:2} requests, {sum(last['tools'].values()):2} tool calls, "
                           f"{last['seconds']:5.1f} s  reflex: {' | '.join(last['reflex_calls'])[:70] or '-'}"
                           + ("" if record["achieved"] else f"\n     {'; '.join(record['wrong'])[:200]}"), flush=True)
+                    if not last["requests"]:  # a login that ran out, no credit, no network: going on proves nothing
+                        sys.exit(f"stopped: no request reached the model. Hermes said: {last['answer'][:300]!r}")
 
 
 def report(options) -> None:
@@ -318,7 +365,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="The Hermes bench for reflexes.")
     parser.add_argument("command", choices=["run", "report"])
     parser.add_argument("out", help="where the worlds and the records go (keep it out of the repository)")
-    parser.add_argument("--model", default="mock", help="mock, a model id, or as-is to keep the model of --from-home")
+    parser.add_argument("--model", default="mock", help="mock, a model id, or as-is for the model of --like")
     parser.add_argument("--provider", default="custom")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--arms", default=",".join(ARMS))
@@ -326,7 +373,9 @@ def main() -> None:
     parser.add_argument("--reps", type=int, default=1)
     parser.add_argument("--seconds", type=int, default=600, help="what one session may take")
     parser.add_argument("--hermes", default=os.environ.get("HERMES_BIN") or shutil.which("hermes") or "hermes")
-    parser.add_argument("--from-home", default="", help="a real Hermes home to take the model and the login from")
+    parser.add_argument("--from-home", default="", help="a Hermes home that holds a login for the bench")
+    parser.add_argument("--like", default="", help="the real Hermes home to resemble; it is only read")
+    parser.add_argument("--noise", action="store_true", help="with --like: copy its skills and SOUL.md into each world")
     options = parser.parse_args()
     (run if options.command == "run" else report)(options)
 
