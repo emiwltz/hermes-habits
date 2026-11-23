@@ -185,9 +185,10 @@ def _list() -> int:
 
 
 def _note(rest: list) -> int:
-    """The note for an agent's prompt. With --chars it never grows past that: the reflexes run most often stay,
-    then the ones written last (a new one has not been run yet), and the note says how many are left out, so that
-    a long list is cut and not lost."""
+    """The note for an agent's prompt. With --chars it never grows past that: the reflexes run or written most
+    recently stay (one made today has not been run yet, one unused for a year can go), and the note says how many
+    are left out, so that a long list is cut and not lost. What is left out is as good as gone for the agent: in
+    the bench a reflex cut from the note was taken 0 times of 24, and no agent went to see the rest."""
     most = None
     if rest[:1] == ["--chars"] and len(rest) == 2 and rest[1].isdigit():
         most = int(rest[1])
@@ -208,31 +209,32 @@ def _note(rest: list) -> int:
 
     kept = list(lines)
     if most is not None and len(note(kept)) > most:
-        often = _often()
+        run = _last_run()
 
-        def written(name) -> float:
+        def lately(name) -> float:
             try:
-                return found[name].stat().st_mtime
+                return max(run.get(name, 0.0), found[name].stat().st_mtime)
             except (OSError, KeyError):
-                return 0.0
-        kept = sorted(lines, key=lambda name: (-often.get(name, 0), -written(name), name))
+                return run.get(name, 0.0)
+        kept = sorted(lines, key=lambda name: (-lately(name), name))
         while kept and len(note(kept, len(lines) - len(kept))) > most:
             kept.pop()
     print(note(kept, len(lines) - len(kept)))
     return 0
 
 
-def _often() -> dict:
-    """How many times each reflex was run, by the journal."""
-    counts = {}
+def _last_run() -> dict:
+    """When each reflex was last run, by the journal."""
+    last = {}
     try:
         for line in (store.home() / "journal.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
-            argv = json.loads(line).get("argv") or []
-            if argv[:1] == ["run"] and len(argv) > 1:
-                counts[argv[1]] = counts.get(argv[1], 0) + 1
+            entry = json.loads(line)
+            argv = entry.get("argv") or []
+            if argv[:1] == ["run"] and len(argv) > 1 and isinstance(entry.get("t"), (int, float)):
+                last[argv[1]] = max(last.get(argv[1], 0.0), entry["t"])
     except (OSError, ValueError, AttributeError):
         pass
-    return counts
+    return last
 
 
 def _default(value) -> str:

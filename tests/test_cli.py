@@ -542,9 +542,13 @@ def test_note_is_what_an_agent_is_told_about_its_reflexes(world, capsys):
     assert "reflex run <name> [input=value]" in out and "`reflex answer <id> '<answer>'`" in out
 
 
-def test_a_note_too_long_is_cut_not_lost_and_keeps_what_is_run_most(world, capsys):
+def test_a_note_too_long_is_cut_not_lost_and_keeps_what_was_run_last(world, capsys):
+    import os
+    import time
+    for path in (world / "reflexes" / "tidy.py", world / "reflexes" / "disk" / "reflex.py"):
+        os.utime(path, (time.time() - 30 * 86400,) * 2)  # both written a month ago
     whole = len(call(capsys, "note")[1])
-    call(capsys, "run", "disk")  # the one that is run stays, though the other comes first by name... and is longer
+    call(capsys, "run", "disk")  # the one that was just run stays
     out = call(capsys, "note", "--chars", str(whole - 5))[1]
     assert len(out) <= whole - 5 and "  disk(" in out and "  tidy(" not in out
     assert "  and 1 more: `reflex list` shows them all" in out.splitlines()
