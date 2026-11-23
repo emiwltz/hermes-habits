@@ -165,6 +165,10 @@ report it. Anything else that fails, or `cannot confine`: stop and report the li
 time this fence runs anywhere, so a failure here is a finding, not an accident. Do not go on with `--unconfined`
 unless the owner says so.
 
+One case to know: if this session's own commands already run in a sandbox (Claude Code can do that), macOS refuses
+to put a second one inside it (`sandbox_apply: Operation not permitted`). Tell the owner. They can let the bench's
+commands run outside that sandbox, so that the fence can be put on; that is the better way.
+
 Then the whole chain, fenced:
 
 ```bash
