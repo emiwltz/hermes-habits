@@ -40,9 +40,13 @@ def _oldlogs(home: Path):
     (folder / "b.log.gz").write_text(OLD)  # gzip refuses to write over it: the reflex stops at the second file
 
 
+WORDS = {"2": ("2", "two", "deux"), "3": ("3", "three", "trois")}  # a number is said in figures or in letters
+
+
 def _has(answer: str, *words) -> list:
-    return [f"the answer does not say {word}" for word in words if not re.search(rf"(?<![\w.]){re.escape(word)}(?![\w])",
-                                                                                 answer, re.I)]
+    def said(word):
+        return any(re.search(rf"(?<![\w.]){re.escape(form)}(?![\w])", answer, re.I) for form in WORDS.get(word, (word,)))
+    return [f"the answer does not say {word}" for word in words if not said(word)]
 
 
 def _health(world, answers):
