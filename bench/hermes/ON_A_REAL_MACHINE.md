@@ -31,24 +31,25 @@ with files, a Hermes home of its own), one request typed as a user would, and a 
 ## What is known (cloud, Linux x86-64, Hermes 2026.9.24)
 
 - The kernel: 533 tests pass. Nothing has ever run on macOS or on ARM.
-- 164 real sessions (DeepSeek V4 Flash and Claude Haiku 5.5 through Nous Portal, $0.32 in all) compared ways of
-  giving reflexes to the agent:
+- About 370 real sessions (DeepSeek V4 Flash and Claude Haiku 5.5 through Nous Portal, under a dollar in all)
+  compared ways of giving reflexes to the agent:
 
   | How the agent learns it has reflexes | Took the one that fits |
   | --- | --- |
-  | `note`: a note in `AGENTS.md`, always in the prompt | 17 of 24 |
+  | `note`: a note in `AGENTS.md`, always in the prompt | 45 of 60 |
   | `skill`: a Hermes skill, one line in the skills index | 0 of 24 |
   | `plugin`: one Hermes tool, behind Hermes's tool search | 0 of 24 |
-  | `section`: a plugin writes the same note into the prompt at each session start | 24 of 24 |
+  | `section`: a plugin writes the same note into the prompt at each session start | 60 of 60 |
 
   A cheap model takes a reflex when its name and what it does are in front of it. It never goes looking for one.
-  The note in a file goes stale: a reflex made in one session was never found by the next (0 of 4). The section is
-  written from the reflexes there are, and the next session took it 4 times of 4.
-- By hand, no agent could file notes the owner's way (0 of 12): it cannot guess a convention. With the reflexes in
-  its prompt, 8 of 8.
-- When a reflex stopped halfway because a file was in the way, Haiku left the file alone 8 times of 8. Flash forced
-  its way through 7 times of 8, with or without a reflex. That is the model, and worth watching here.
-- Every cell is two runs for each model: enough to see 0 against 24, not to tell 80 % from 90 %.
+  The note in a file goes stale: a reflex made in one session was never found by the next (0 of 10). The section
+  is written from the reflexes there are, and the next session took it 10 times of 10.
+- By hand, no agent could file notes the owner's way (0 of 18): it cannot guess a convention. With the reflexes in
+  its prompt, 20 of 20.
+- When a reflex stopped halfway because a file was in the way, Haiku left the file alone (9 times of 10). Flash
+  forced its way through 10 times of 10, more than by hand (3 of 7). How the reflex says it stopped is the lever
+  (`bench/hermes/README.md` has the experiment); the wording is not changed yet, so expect it here too.
+- Five runs a cell for each model: enough to see 0 against 60, not to tell 80 % from 90 %.
 - **A world is a convention, not a wall.** In about 170 sessions, one agent that could not find where reflexes are
   saved wrote a file into the repository the bench ran from, and several searched folders outside their world.
   Since then every session runs fenced by the operating system (`confine.py`): it writes only in its world, cannot

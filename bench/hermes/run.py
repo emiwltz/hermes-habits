@@ -145,6 +145,17 @@ def fresh(options) -> None:
                        capture_output=True, timeout=90)
 
 
+def within_reach(options) -> list:
+    """The folders of the PATH the agent is given. Under the fence, one that lies in the hidden home is left out:
+    a command found there could not even be read (in the first fenced run every `rm` was a guard of the bench's
+    own shell, kept in its home, and every deletion by hand failed)."""
+    folders = [f for f in os.environ.get("PATH", "").split(os.pathsep) if f]
+    if options.unconfined:
+        return folders
+    home = confine.real(Path.home())
+    return [f for f in folders if not confine.inside(confine.real(f), [home]) or confine.inside(confine.real(f), options.reads)]
+
+
 def needed(options, aside: Path) -> list:
     """What a confined session must still be able to read if it lies in the home folder: the two Pythons (Hermes's
     and the one of `reflex`), their environments, the two checkouts, and the certificates the network asks for."""
@@ -187,7 +198,7 @@ def session(world: Path, name: str, arm: str, at: int, request: str, options) ->
                                                             "http_proxy", "no_proxy", "SSL_CERT_FILE",
                                                             "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
                   or k in options.keys.split(",")},
-           "PATH": f"{world / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}", "HOME": str(world / "home"),
+           "PATH": os.pathsep.join([str(world / "bin"), *within_reach(options)]), "HOME": str(world / "home"),
            "HERMES_HOME": str(world / "hermes"), "REFLEX_BENCH_LOG": str(world / "events.jsonl"),
            "HERMES_SHARED_AUTH_DIR": str(shared(world, options)),
            "HERMES_DISABLE_LAZY_INSTALLS": "1",  # or each new home gets a Python of its own: 600 MB, downloaded
