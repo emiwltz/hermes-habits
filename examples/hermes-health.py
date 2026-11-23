@@ -1,5 +1,6 @@
-def reflex(rx, home="~/.hermes"):
+def reflex(rx, home=""):
     """Is Hermes OK? Six read-only signals, one verdict, no model."""
+    home = home or os.getenv("HERMES_HOME") or "~/.hermes"  # this Hermes's own home, wherever it is kept
     # Three reads that must work (a Hermes with no logs or no home cannot be judged: the run stops and says why)...
     logs, errors, disk = rx.sh([
         ["hermes", "logs", "agent", "--since", "30m", "-n", "5000"],
