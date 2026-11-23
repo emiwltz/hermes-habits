@@ -70,6 +70,7 @@ class Model(BaseHTTPRequestHandler):
                 "messages": len(messages), "tools": sorted(t["function"]["name"] for t in tools),
                 "system_chars": len(system), "tools_chars": len(json.dumps(tools)),
                 "reflex_in_system": _around(system), "reflex_in_tools": _around(json.dumps(tools)),
+                "listed": re.findall(r"(?m)^  ([a-z0-9][a-z0-9_-]*)\(.*\) · ", system),  # the reflexes the prompt names
                 "step": step}) + "\n")
         if "calls" in step:
             message = {"role": "assistant", "content": None, "tool_calls": [

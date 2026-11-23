@@ -73,7 +73,7 @@ def main() -> None:
         results = []
     checks += [
         ("a new user is given the first reflexes", given_ == ["disk-space", "hermes-health"], str(given_)),
-        ("the agent's prompt names them", "hermes-health(" in json.dumps(prompt.get("reflex_in_system", "")), ""),
+        ("the agent's prompt names them", prompt.get("listed") == given_ != [], str(prompt.get("listed"))),
         ("its terminal finds the `reflex` Hermes installed",
          bool(results) and str(world / "hermes") in results[0] and "disk-space()" in results[0], (results or [""])[0][:300]),
         ("a reflex runs there", len(results) > 1 and "done:" in results[1], (results[1:] or [session["answer"]])[0][:300]),
