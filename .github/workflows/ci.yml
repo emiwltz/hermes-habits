@@ -8,9 +8,11 @@ on:
 
 jobs:
   tests:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest]
         python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -19,3 +21,5 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
       - run: pytest -q
+      - name: the bench's fence, tried on this system
+        run: python bench/hermes/confine.py --check "$GITHUB_WORKSPACE"
