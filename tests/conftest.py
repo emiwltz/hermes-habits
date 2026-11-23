@@ -3,6 +3,12 @@ import pytest
 from reflexes import readers
 
 
+@pytest.fixture(autouse=True)
+def _a_place_of_its_own(tmp_path_factory, monkeypatch):
+    """No test writes in the real ~/.reflexes: the journal of every call it makes goes to a folder of its own."""
+    monkeypatch.setenv("REFLEX_HOME", str(tmp_path_factory.mktemp("reflexes")))
+
+
 class FakeHost:
     """A host that runs nothing: commands answer from a table, files live in a dict."""
 

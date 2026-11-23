@@ -2,9 +2,9 @@
 """The Hermes bench: give reflexes to a real Hermes agent, and note what it does with them.
 
     python bench/hermes/run.py run <out> [--model mock] [--provider custom] [--base-url URL]
-                                         [--arms none,note,skill,plugin] [--scenarios health,triage,...]
+                                         [--arms none,note,skill,plugin,section] [--scenarios health,...]
                                          [--reps 1] [--hermes /path/to/hermes] [--from-home LOGIN]
-                                         [--like ~/.hermes] [--noise]
+                                         [--like ~/.hermes] [--noise] [--writer MODEL] [--keys NAME,NAME]
     python bench/hermes/run.py report <out>
 
 One run is one world: a throwaway home folder with its files, a Hermes home of its own, and one way of giving the
@@ -14,6 +14,8 @@ reflexes to the agent (an "arm"):
     note     the reflexes, the `reflex` command on the PATH, and a note in AGENTS.md
     skill    the same command, and a Hermes skill that says when to reach for it
     plugin   the reflexes as one Hermes tool
+    section  the same command, and a plugin that writes the note into the prompt, from the reflexes there are,
+             at the start of each session
 
 The agent gets the user's request and nothing else (`hermes -z`). Afterwards the world is read: what is on disk, the
 calls to `reflex` (its own journal), every tool call and model request (the observer plugin), and Hermes's own
@@ -51,9 +53,7 @@ sys.path.insert(0, str(HERE.parent))
 import use  # noqa: E402
 from scenarios import SCENARIOS, script  # noqa: E402
 
-ARMS = ("none", "note", "skill", "plugin")
-KEYS = ("NOUS_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "TYPESAFE_API_KEY",
-        "REFLEX_DECIDER_URL", "REFLEX_DECIDER_KEY", "REFLEX_DECIDER_MODEL")  # handed on to the agent when set
+ARMS = ("none", "note", "skill", "plugin", "section")
 CARRIED = ("auth.json", ".env")  # what --from-home gives each world: a login, never a configuration
 HEAVY = ("tools", "installs", "cache", "runtime")  # what Hermes may install for itself in a home: never kept
 
@@ -92,6 +92,10 @@ def build(world: Path, name: str, arm: str, options) -> None:
     if arm == "plugin":
         shutil.copytree(HERE / "plugin" / "reflexes", hermes / "plugins" / "reflexes")
         enabled.append("reflexes")
+    if arm == "section":
+        shutil.copytree(HERE / "section" / "reflexes_section", hermes / "plugins" / "reflexes_section")
+        (hermes / "plugins" / "reflexes_section" / "NOTE.txt").write_text(use.INDEX + "\n")  # the words of `note`
+        enabled.append("reflexes_section")
     if arm == "skill":
         shutil.copytree(HERE / "skill" / "reflexes", hermes / "skills" / "automation" / "reflexes")
     if arm == "note":
@@ -165,7 +169,7 @@ def session(world: Path, name: str, arm: str, at: int, request: str, options) ->
                                                             "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy",
                                                             "http_proxy", "no_proxy", "SSL_CERT_FILE",
                                                             "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
-                  or k in KEYS},
+                  or k in options.keys.split(",")},
            "PATH": f"{world / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}", "HOME": str(world / "home"),
            "HERMES_HOME": str(world / "hermes"), "REFLEX_BENCH_LOG": str(world / "events.jsonl"),
            "HERMES_SHARED_AUTH_DIR": str(shared(world, options)),
@@ -186,6 +190,11 @@ def session(world: Path, name: str, arm: str, at: int, request: str, options) ->
                 break
             except OSError:
                 time.sleep(0.05)
+    if options.writer and options.model != "mock" and len(SCENARIOS[name]["requests"]) > 1:
+        # the big one writes, the small one runs: the first session (which makes the reflex) is the writer's
+        config = json.loads((world / "hermes" / "config.yaml").read_text())
+        config["model"]["default"] = options.writer if at == 0 else options.model
+        (world / "hermes" / "config.yaml").write_text(json.dumps(config, indent=1))
     usage_file = world / f"usage-{at}.json"
     began = time.time()
     try:
@@ -287,7 +296,7 @@ def one(out: Path, name: str, arm: str, rep: int, options) -> dict:
     return {"scenario": name, "arm": arm, "model": options.model, "provider": options.provider, "rep": rep,
             "achieved": not wrong, "wrong": wrong, "fits": fits, "took_the_reflex": took, "ran_one_that_does_not_fit": stray,
             "sessions": sessions, "world": str(world), "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "versions": options.versions}
+            "versions": options.versions, **({"writer": options.writer} if options.writer else {})}
 
 
 def run(options) -> None:
@@ -321,8 +330,10 @@ def run(options) -> None:
                           f"{last['requests']:2} requests, {sum(last['tools'].values()):2} tool calls, "
                           f"{last['seconds']:5.1f} s  reflex: {' | '.join(last['reflex_calls'])[:70] or '-'}"
                           + ("" if record["achieved"] else f"\n     {'; '.join(record['wrong'])[:200]}"), flush=True)
-                    if not last["requests"]:  # a login that ran out, no credit, no network: going on proves nothing
-                        sys.exit(f"stopped: no request reached the model. Hermes said: {last['answer'][:300]!r}")
+                    if not last["requests"]:  # a login that ran out, no credit, no network, or a session that
+                        # another Hermes than the world's own served (its requests are not seen here): never go on
+                        sys.exit("stopped: no request reached the model through this world's own Hermes. "
+                                 f"Hermes said: {last['answer'][:300]!r}")
 
 
 def report(options) -> None:
@@ -376,6 +387,10 @@ def main() -> None:
     parser.add_argument("--from-home", default="", help="a Hermes home that holds a login for the bench")
     parser.add_argument("--like", default="", help="the real Hermes home to resemble; it is only read")
     parser.add_argument("--noise", action="store_true", help="with --like: copy its skills and SOUL.md into each world")
+    parser.add_argument("--writer", default="", help="another model for the session that makes a reflex, in a scenario "
+                        "of several sessions: the big one writes, the small one runs")
+    parser.add_argument("--keys", default="", help="environment variables handed on to the agent, by name (none: a key "
+                        "in your shell is never passed on unasked)")
     options = parser.parse_args()
     (run if options.command == "run" else report)(options)
 
