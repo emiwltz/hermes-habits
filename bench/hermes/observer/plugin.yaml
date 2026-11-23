@@ -1,0 +1,8 @@
+name: reflex_bench_observer
+version: 0.1.0
+description: Notes what a session does (tool calls, model requests, tokens, durations) as JSON lines. Changes nothing.
+provides_hooks:
+  - post_tool_call
+  - post_api_request
+  - on_session_start
+  - on_session_end

@@ -7,6 +7,7 @@ so a project's folder can add reflexes but never replace one by taking its name.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
@@ -15,6 +16,7 @@ from pathlib import Path
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,59}$")
 KEPT = 24 * 3600  # seconds a run that asked waits for its answer
+JOURNAL = 1_000_000  # bytes the journal of calls may reach before its older half is dropped
 
 
 def home() -> Path:
@@ -79,6 +81,23 @@ def find(target: str) -> Path | None:
             return None
         target = target[:-3] if target.endswith(".py") and os.sep not in target else target
     return everything().get(target)
+
+
+def journal(entry: dict) -> None:
+    """One line per call of the command, in the user's own folder: which reflex, how it ended, how long it took.
+    Not what it read or returned. It is what trust can be built on later (this one ran forty times and never
+    stopped), and it never gets in the way: a journal that cannot be written is no reason to fail."""
+    try:
+        folder = home()
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "journal.jsonl"
+        if path.exists() and path.stat().st_size > JOURNAL:  # the older half goes
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            path.write_text("\n".join(lines[len(lines) // 2:]) + "\n", encoding="utf-8")
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as file:
+            file.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except (OSError, ValueError):
+        pass
 
 
 def _runs() -> Path:

@@ -14,6 +14,7 @@ import re
 import shlex
 import signal
 import sys
+import time
 from pathlib import Path
 
 from . import decide, engine, store
@@ -38,20 +39,26 @@ def main(argv=None) -> int:
             signal.signal(sign, _interrupted)
     except (ValueError, OSError, AttributeError):  # not the main thread, or no such signal here
         pass
+    args, began = list(sys.argv[1:] if argv is None else argv), time.time()
+    LAST.clear()
     try:
-        return _main(list(sys.argv[1:] if argv is None else argv))
+        code = _main(args)
     except KeyboardInterrupt:  # outside a run: nothing was going on
         print("interrupted", file=sys.stderr)
-        return 130
+        code = 130
     except BrokenPipeError:  # the reader closed early (| head): nothing more to say
         try:
             sys.stdout.close()
         except OSError:
             pass
-        return 0
+        code = 0
+    store.journal({"t": round(began, 3), "argv": [word if len(word) <= 200 else word[:200] + "…" for word in args],
+                   "exit": code, "ms": int((time.time() - began) * 1000), **LAST})
+    return code
 
 
 RUNNING = []  # not empty while a run is going on
+LAST = {}  # what the last run came to, for the journal: its end, and how much it read and changed
 
 
 def _interrupted(sign, frame):
@@ -263,6 +270,10 @@ def _fail(message: str) -> int:
 
 def _report(outcome, as_json: bool, run_id: str | None = None) -> int:
     lost = ""
+    acts = [e for e in outcome.effects if e["verb"] in ("do", "write")]
+    LAST.update(status=outcome.status, dry=outcome.dry, reads=sum(e["verb"] in ("sh", "read") for e in outcome.effects),
+                changes=sum(not e.get("error") for e in acts), failed=sum(bool(e.get("error")) for e in acts),
+                questions=sum(e["verb"] in ("ask", "up") for e in outcome.effects))
     if outcome.status == "asks" and run_id is None:
         try:
             run_id = store.keep(outcome.state)

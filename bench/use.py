@@ -96,7 +96,7 @@ def make(root: Path) -> dict:
         (home / ".reflexes").mkdir(parents=True)
         for reflex, source in REFLEXES.items():
             (home / ".reflexes" / f"{reflex}.py").write_text(source)
-        _fixtures(home)
+        fixtures(home)
         wrapper = world / "reflex"
         wrapper.write_text(f"""#!/bin/sh
 # The reflex command of this world: same home for every call, and a log of the calls.
@@ -114,7 +114,7 @@ HOME="{home}" REFLEX_HOME="{home}/.reflexes" REFLEX_PATH="{home}/.reflexes" REFL
     return prompts
 
 
-def _fixtures(home: Path):
+def fixtures(home: Path):
     proj = home / "proj"
     (proj / "sub").mkdir(parents=True)
     (proj / "a.py").write_text("x = 1  # TODO one\nprint(x)\n")
@@ -151,43 +151,48 @@ def tmp_files(home: Path) -> list:
     return sorted(str(p.relative_to(home / "work")) for p in (home / "work").rglob("*") if p.is_file())
 
 
+def judge(name: str, world: Path) -> list:
+    """What is wrong in one world after its agent worked: which reflex calls were made, and what is on disk."""
+    wrong, home, made = [], world / "home", calls(world)
+    runs = [c for c in made if c.startswith("run ")]
+    if name == "health":
+        if not any(c.startswith("run project-health") for c in made):
+            wrong.append("project-health was not run")
+    elif name == "triage":
+        if not any(c.startswith("run triage-notes") for c in made):
+            wrong.append("triage-notes was not run")
+        if not any(c.startswith("answer ") for c in made):
+            wrong.append("its question was not answered through the reflex")
+        for note, (kind, _) in NOTES.items():
+            if not (home / "notes" / kind / note).exists():
+                wrong.append(f"{note} is not in notes/{kind}")
+    elif name == "preview":
+        if not any(c.startswith("test clean-tmp") for c in made):
+            wrong.append("no dry run of clean-tmp")
+        if tmp_files(home) != sorted(AGES):
+            wrong.append(f"files were deleted: {tmp_files(home)}")
+    elif name == "input":
+        if not any(c.startswith("run clean-tmp") and "days=20" in c for c in made):
+            wrong.append(f"clean-tmp was not run with days=20: {runs}")
+        if tmp_files(home) != ["keep.txt", "new.tmp", "old1.tmp", "sub/old3.tmp"]:
+            wrong.append(f"after: {tmp_files(home)}")
+    elif name == "none":
+        if runs:
+            wrong.append(f"a reflex was run for a request none fits: {runs}")
+    elif name == "write":
+        path = home / ".reflexes" / "log-errors.py"
+        if not path.exists():
+            wrong.append("no ~/.reflexes/log-errors.py")
+        if not any(c.startswith(("run log-errors", "test log-errors")) for c in made):
+            wrong.append("the new reflex was never run")
+    return wrong
+
+
 def check(root: Path) -> dict:
     report = {}
     for name in SCENARIOS:
-        world, wrong = root / name, []
-        home, made = world / "home", calls(world)
-        runs = [c for c in made if c.startswith("run ")]
-        if name == "health":
-            if not any(c.startswith("run project-health") for c in made):
-                wrong.append("project-health was not run")
-        elif name == "triage":
-            if not any(c.startswith("run triage-notes") for c in made):
-                wrong.append("triage-notes was not run")
-            if not any(c.startswith("answer ") for c in made):
-                wrong.append("its question was not answered through the reflex")
-            for note, (kind, _) in NOTES.items():
-                if not (home / "notes" / kind / note).exists():
-                    wrong.append(f"{note} is not in notes/{kind}")
-        elif name == "preview":
-            if not any(c.startswith("test clean-tmp") for c in made):
-                wrong.append("no dry run of clean-tmp")
-            if tmp_files(home) != sorted(AGES):
-                wrong.append(f"files were deleted: {tmp_files(home)}")
-        elif name == "input":
-            if not any(c.startswith("run clean-tmp") and "days=20" in c for c in made):
-                wrong.append(f"clean-tmp was not run with days=20: {runs}")
-            if tmp_files(home) != ["keep.txt", "new.tmp", "old1.tmp", "sub/old3.tmp"]:
-                wrong.append(f"after: {tmp_files(home)}")
-        elif name == "none":
-            if runs:
-                wrong.append(f"a reflex was run for a request none fits: {runs}")
-        elif name == "write":
-            path = home / ".reflexes" / "log-errors.py"
-            if not path.exists():
-                wrong.append("no ~/.reflexes/log-errors.py")
-            if not any(c.startswith(("run log-errors", "test log-errors")) for c in made):
-                wrong.append("the new reflex was never run")
-        report[name] = {"ok": not wrong, "wrong": wrong, "calls": made}
+        wrong = judge(name, root / name)
+        report[name] = {"ok": not wrong, "wrong": wrong, "calls": calls(root / name)}
     return report
 
 

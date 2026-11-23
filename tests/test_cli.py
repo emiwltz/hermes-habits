@@ -498,3 +498,16 @@ def test_the_budgets_can_be_raised_by_the_caller_and_say_so(world, monkeypatch, 
     monkeypatch.setenv("REFLEX_SECONDS", "soon")
     code, _, err = call(capsys, "run", "many")
     assert code == 2 and "REFLEX_SECONDS is a whole number" in err
+
+
+def test_every_call_leaves_one_line_in_the_users_journal(world, tmp_path, capsys):
+    call(capsys, "list")
+    call(capsys, "test", "tidy")
+    call(capsys, "run", "disk")
+    call(capsys, "run", "nope")
+    lines = [json.loads(line) for line in (tmp_path / "state" / "journal.jsonl").read_text().splitlines()]
+    assert [(e["argv"], e["exit"], e.get("status"), e.get("dry")) for e in lines] == [
+        (["list"], 0, None, None), (["test", "tidy"], 3, "asks", True), (["run", "disk"], 0, "done", False),
+        (["run", "nope"], 2, None, None)]
+    assert lines[2]["reads"] == 1 and lines[2]["changes"] == 0 and "result" not in lines[2]
+    assert oct((tmp_path / "state" / "journal.jsonl").stat().st_mode & 0o777) == "0o600"
