@@ -20,7 +20,7 @@ hermes logs agent --since 30m -n 5000 | hermes --version | crontab -l | pmset -g
 python3 --version | node -v | java -version | /usr/bin/ls -la | /bin/cat x
 journalctl -n20 -u x | journalctl --lines=20 | journalctl --boot=-1 -p err | date --iso-8601=seconds | date --iso-8601
 git branch --color=always -a | git config user.email | git config --global user.name | tree -aL 2 x
-lsof -nP -iTCP -sTCP:LISTEN | lsof -i | ss -tlnp | ss -tulpn state listening | netstat -an | printenv HOME
+lsof -nP -iTCP -sTCP:LISTEN | lsof -i | ss -tlnp | ss -tulpn state listening | netstat -an
 ping -c1 example.com | ip addr | ip -br a | ip route show | ip -4 addr show dev eth0 | ip route get 1.1.1.1
 curl -s --max-redirs 3 https://a | curl -s localhost:8080/health | curl -sN --no-progress-meter https://a
 curl -s wttr.in/Paris?format=3 | curl -s https://user:pw@example.com/x | curl -s -w %{http_code} 127.0.0.1:8000
@@ -31,7 +31,7 @@ kubectl get pods --namespace prod -l app=web | kubectl describe pod web -n prod
 NOT_READS = [
     # programs that are not readers at all
     ("rm -rf x", "rm is not known"), ("mv a b", "mv is not known"), ("sh -c ls", "sh is not known"),
-    ("xargs rm", "xargs is not known"), ("env", "env is not known"), ("sed -n 1p f", "sed is not known"),
+    ("xargs rm", "xargs is not known"), ("env", "env is not known"), ("printenv", "printenv is not known"), ("sed -n 1p f", "sed is not known"),
     ("tee out", "tee is not known"), ("ssh host uptime", "ssh is not known"), ("unknown --version", "is not known"),
     # a reader named from somewhere else is another program
     ("./ls -la", "a program of its own"), ("/tmp/evil/cat x", "a program of its own"),

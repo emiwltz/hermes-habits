@@ -28,7 +28,7 @@ ANY = frozenset("""
     ls cat head wc stat cut tr nl rev fold fmt expand basename dirname realpath readlink pwd whoami uname id du df
     echo printf true false test [ ps pgrep pidof uptime free which nproc column jq grep egrep fgrep strings
     md5 md5sum shasum sha1sum sha256sum diff cmp comm lscpu lsblk lsusb sw_vers vm_stat ioreg mdls mdfind
-    system_profiler dig nslookup host printenv netstat zcat bzcat xzcat zgrep zegrep zfgrep
+    system_profiler dig nslookup host netstat zcat bzcat xzcat zgrep zegrep zfgrep
 """.split())
 OUTSIDE = frozenset({"curl", "dig", "nslookup", "host", "ping", "kubectl"})  # reads that ask another machine
 

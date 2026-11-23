@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -97,7 +98,7 @@ printf '%s\\t%s\\n' "$(date +%s)" "$*" >> "{world}/calls.log"
 HOME="{home}" REFLEX_HOME="{home}/.reflexes" REFLEX_PATH="{home}/.reflexes" REFLEX_COMMAND="{world}/reflex" exec "{VENV}/reflex" "$@"
 """)
         wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
-        listing = os.popen(f'"{wrapper}" list').read().rstrip()
+        listing = subprocess.run([str(wrapper), "list"], capture_output=True, text=True).stdout.rstrip()
         (world / "calls.log").unlink()
         index = INDEX.format(listing="\n".join("  " + line for line in listing.splitlines()))
         prompts[name] = (f"For this task your home folder is {home} : wherever the request below says ~, it means "
