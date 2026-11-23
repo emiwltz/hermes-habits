@@ -91,7 +91,7 @@ Measured on a real Hermes Agent (2026.9.24) with cheap models, in throwaway worl
   Haiku and on DeepSeek V4.1 Flash thinking hard, 22 of 27 on V4 Flash.
 - **The next session finds what the last one made** (10 of 10), also when a bigger model wrote it (6 of 6).
 - **It saves most where the routine is long.** Ten commands by hand against one call: half the cost on both cheap
-  models, three times fewer tokens read. On routines of one or two commands, Flash saves 40 %, Haiku nothing.
+  models. On routines of one or two commands, Flash saves 40 %, Haiku nothing.
 - **It carries what cannot be guessed.** By hand no agent filed notes the owner's way (0 of 18); with the reflex in
   its prompt, 20 of 20.
 - **It does not push a cheap model into damage.** After a command that does not go through, a reflex ends with one
@@ -155,7 +155,7 @@ the same format), the closed questions are answered in a fraction of a second an
 
 From Python: `from reflexes import run, resume, Local`.
 
-Everything here was built and measured on Linux (x86-64, Python 3.10 to 3.14). The table of reads was written with
+Everything here was built and measured on Linux (x86-64, Python 3.10 to 3.13). The table of reads was written with
 macOS in mind and reviewed against its manuals, but nothing has run on a Mac or on ARM yet (the CI is set to).
 
 ## What keeps it safe, and what does not
