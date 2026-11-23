@@ -141,10 +141,70 @@ The records are not in the repository.
 Five runs a cell tell 0 from 60, not 80 % from 90 %. The seconds of the pilot are not comparable with the later
 runs (Hermes was installing 600 MB into every world of the pilot).
 
+## What the second round said: the plugin as it ships
+
+524 more sessions ($0.98), all on the plugin at the root of this repository (the `section` arm), fenced, with the
+command as it now is. A third model joins the two cheap ones: `deepseek/deepseek-v4.1-flash-1017` set to think as
+hard as it can, the model of the machine this plugin is first meant for.
+
+**Installing it.** `hermes plugins install <this repository> --enable` is the whole of it. Hermes reads the
+`pyproject.toml`, installs the package into its own environment after asking, and its `reflex` command is then on
+the path of the agent's terminal. Hermes scans a plugin before installing it and blocks one with a finding it rates
+high: it found two here, both fixed (`printenv` among the harmless reads, a shell pipe in a bench).
+
+**Many reflexes.** `crowd.py` adds 10, 30 or 60 plausible reflexes to the three or four of a scenario, near misses
+first.
+
+| Reflexes in all | The one that fits is in the note | Taken | A wrong one taken |
+| --- | --- | --- | --- |
+| 13 | yes | 24 of 24 | 0 |
+| 33 | yes | 23 of 24 | 0 |
+| 63, it was run before | yes | 24 of 24 | 0 |
+| 63, never run | no: cut for lack of room | 0 of 24 | 0 |
+
+Sixty-three reflexes do not confuse a cheap model: it never took a near miss, and ran none when none fitted. What
+runs out is room: Hermes gives a plugin 4,000 characters of prompt, which is about 35 reflexes. Past that the note
+is cut, and what is cut is gone: "and 28 more: `reflex list` shows them all" was followed 0 times of 24. So what the
+note keeps matters: the reflexes run or written most recently. Choosing by what the request is about is the next
+step, and it is where habits begin.
+
+**Long routines.** `backup` (a dated archive, checked, with its sha256, the old ones pruned, a line in a log) and
+`report` (a weekly report with six counts) are about ten commands by hand. With no reflex the user has to spell
+the routine out, sixty words each time; with one, "Back up my notes." Fresh profile, three runs a cell:
+
+| | Requests | Tool calls | Input tokens | Seconds | Cost | Done |
+| --- | --- | --- | --- | --- | --- | --- |
+| Flash, by hand | 5.5 | 9.8 | 69 k | 57 | 0.29 ¢ | 5 of 6 |
+| Flash, the reflex | 2.3 | 1.3 | 28 k | 20 | 0.14 ¢ | 6 of 6 |
+| Haiku, by hand | 3.8 | 2.8 | 60 k | 26 | 0.16 ¢ | 6 of 6 |
+| Haiku, the reflex | 2.8 | 1.8 | 42 k | 19 | 0.08 ¢ | 6 of 6 |
+
+Half the cost for both models, where the short routines saved Haiku nothing.
+
+**The small model.** With a decision model set up (TypeSafe Jev), the triage reflex no longer asks the agent: it
+ends `done` by itself in half a second, every note filed right (10 of 10). Flash then needs 2 requests instead of 3.
+
+**A loaded profile.** `loaded.py` makes up a Hermes home after a year of use: 104 skills instead of 44, a SOUL.md
+and a memory in French, the model thinking hard. The agent's prompt grows by 80 %. Ten scenarios, three runs each:
+
+| Model | Took the reflex that fits | Done, with the plugin | Done, by hand |
+| --- | --- | --- | --- |
+| DeepSeek V4.1 Flash, thinking hard | 27 of 27 | 29 of 30 | 21 of 24 |
+| Claude Haiku 5.5 | 27 of 27 | 30 of 30 | 21 of 24 |
+| DeepSeek V4 Flash | 22 of 27 | 30 of 30 | 18 of 24 |
+
+The two better models are not distracted. Flash is, a little, and only on the short routines (7 of 12), which it
+then does by hand; on the long ones and after a stop it took the reflex every time (15 of 15). The long routines
+still cost 37 to 51 % less with the reflex. On the short ones the model that thinks hard takes the reflex and
+looks around anyway, as its SOUL.md tells it to: 4.2 requests either way.
+
+Three runs a cell: these numbers say which way things go, not how far.
+
 ## What this bench does not do yet
 
-- The `plugin` arm calls the `reflex` command, so a reflex's commands run with the command's own local host. A host
-  that runs them through Hermes's terminal tool (its backends, its approvals) is the next step.
+- A reflex's commands run with the command's own local host, not through Hermes's terminal tool: its backends
+  (docker, ssh) and its approvals do not apply to them.
 - One request per session, through `hermes -z`: no conversation of several turns, no gateway, no cron.
-- A world never has the real profile's plugins, MCP servers or memory. With `--like … --noise` it has its skills
-  and its SOUL.md, which is most of what crowds the prompt.
+- A world never has a real profile's plugins or MCP servers. With `--like … --noise` it has its skills, its
+  SOUL.md and its memory, which is most of what crowds the prompt.
+- Nothing has run on macOS or on ARM. The CI workflow is ready to (tests and the fence), and has not been started.
