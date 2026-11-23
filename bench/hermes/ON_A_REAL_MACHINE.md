@@ -49,6 +49,11 @@ with files, a Hermes home of its own), one request typed as a user would, and a 
 - When a reflex stopped halfway because a file was in the way, Haiku left the file alone 8 times of 8. Flash forced
   its way through 7 times of 8, with or without a reflex. That is the model, and worth watching here.
 - Every cell is two runs for each model: enough to see 0 against 24, not to tell 80 % from 90 %.
+- **A world is a convention, not a wall.** In about 170 sessions, one agent that could not find where reflexes are
+  saved wrote a file into the repository the bench ran from, and several searched folders outside their world.
+  Since then every session runs fenced by the operating system (`confine.py`): it writes only in its world, cannot
+  read the home folder around it, and cannot signal a process that is not its own. On Linux this was tried with an
+  agent scripted to escape, and held. **On macOS it has never run**: step 2 tries it before anything else.
 
 ## What only this machine can tell
 
@@ -69,20 +74,23 @@ They are not negotiable. If one cannot be kept, stop and tell the owner.
    `bench/hermes/run.py`, which gives every session a `HOME` and a `HERMES_HOME` inside its world: the session
    starts its own gateway and cannot find the real one. The two other uses (asking its version, signing in) are
    written below, with both variables inside the lab.
-4. **No gateway, no service, no signal.** Never start, stop, restart, enable or disable a gateway or a service.
+4. **The fence stays on.** `run.py` confines every session by default. `--unconfined` lets an agent with a cheap
+   model run with the owner's own rights, on their real files: never without the owner's word, given after they
+   have read this line.
+5. **No gateway, no service, no signal.** Never start, stop, restart, enable or disable a gateway or a service.
    Never `pkill`, `killall`, or `kill`. The bench stops the gateways it started, by their number, after checking
    their name. Other processes are not ours: on the Mac `cua-driver` and three `node` processes of another project;
    on the Pi the live gateway (Telegram, cron jobs, a dashboard on port 9119).
-5. **No production key.** Do not read the values in `~/.hermes/.env`. The bench passes no key of the shell on to
+6. **No production key.** Do not read the values in `~/.hermes/.env`. The bench passes no key of the shell on to
    the agent. The model is reached through a sign-in made for the bench (step 3). On the Pi, the Anthropic key is
    rate-limited and in use: nothing here goes through it.
-6. **Nothing global.** No `sudo`, no `brew`, no `apt`, no `pip` outside the lab's environments, no change to shell
+7. **Nothing global.** No `sudo`, no `brew`, no `apt`, no `pip` outside the lab's environments, no change to shell
    profiles, `PATH`, crontab, launchd or systemd.
-7. **One run at a time.** Never two `run.py` at once. On the Pi: nothing between 02:45 and 04:45 (the backup), and
+8. **One run at a time.** Never two `run.py` at once. On the Pi: nothing between 02:45 and 04:45 (the backup), and
    stop if less than 1 GB of memory is available or less than 5 GB of disk is free.
-8. **What stays here.** `LAB/out` holds what the agents answered and, with `--noise`, copies of the owner's skills
+9. **What stays here.** `LAB/out` holds what the agents answered and, with `--noise`, copies of the owner's skills
    and `SOUL.md`. Nothing of it goes into the chat or anywhere else, except what step 6 names.
-9. **When in doubt, stop.** In particular: a command that would write outside `LAB`; an isolation check of step 2
+10. **When in doubt, stop.** In particular: a command that would write outside `LAB`; an isolation check of step 2
    that fails; a run that stops by itself; a cost above $3 in all.
 
 ## Step 0. Look (read only)
@@ -142,7 +150,22 @@ on a dependency, stop and report the error.
 This lab Hermes is a twin, not the real one: same code, its own packages (resolved today, not the real one's
 locked set), and none of the real plugins, MCP servers, memory, cron jobs or messaging. That is on purpose.
 
-## Step 2. The canary: the whole chain with a fake model (no key, no cost, three minutes)
+## Step 2. The fence, then the canary: the whole chain with a fake model (no key, no cost, five minutes)
+
+First the fence alone. It makes a small folder in the lab, tries eight things there, and removes it:
+
+```bash
+"$LAB/rx-venv/bin/python" "$LAB/repo/bench/hermes/confine.py" --check "$LAB"
+```
+
+Eight lines must say `ok`: it writes where it may, reads what it is given, starts a Python; it does not write
+elsewhere, does not read what is hidden, does not list the home, does not signal a process outside. On a Linux
+kernel older than 6.12 the last one fails and the check says so: files are fenced, signals are not; go on and
+report it. Anything else that fails, or `cannot confine`: stop and report the lines. On the Mac this is the first
+time this fence runs anywhere, so a failure here is a finding, not an accident. Do not go on with `--unconfined`
+unless the owner says so.
+
+Then the whole chain, fenced:
 
 ```bash
 RUN() { "$LAB/rx-venv/bin/python" "$LAB/repo/bench/hermes/run.py" "$@"; }
@@ -150,7 +173,9 @@ RUN run "$LAB/out/canary" --hermes "$LAB/hermes-venv/bin/hermes" --scenarios hea
 RUN report "$LAB/out/canary"
 ```
 
-Fifteen lines must say `ok` (three scenarios, five ways). Then the isolation checks. **All must hold before any
+Fifteen lines must say `ok` (three scenarios, five ways). If the fence check passed and these fail, the fence is
+in Hermes's way on this system: look at `errors-0.txt` and `hermes/logs/errors.log` in the first world, report the
+path that was refused, and stop. Then the isolation checks. **All must hold before any
 real model is called.**
 
 ```bash

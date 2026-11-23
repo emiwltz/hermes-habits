@@ -50,6 +50,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
+import confine  # noqa: E402
 import use  # noqa: E402
 from scenarios import SCENARIOS, script  # noqa: E402
 
@@ -144,6 +145,22 @@ def fresh(options) -> None:
                        capture_output=True, timeout=90)
 
 
+def needed(options, aside: Path) -> list:
+    """What a confined session must still be able to read if it lies in the home folder: the two Pythons (Hermes's
+    and the one of `reflex`), their environments, the two checkouts, and the certificates the network asks for."""
+    places = [sys.prefix, sys.base_prefix, HERE.parent.parent, Path(reflex_command()).parent.parent,
+              Path(options.hermes).parent.parent,
+              *(os.environ.get(name, "") for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+                                                      "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR"))]
+    python = Path(options.hermes).resolve().parent / "python"
+    if python.exists():
+        told = subprocess.run([str(python), "-c", "import os, sys, hermes_cli; print(sys.base_prefix); "
+                               "print(os.path.dirname(os.path.dirname(os.path.abspath(hermes_cli.__file__))))"],
+                              capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(aside)})
+        places += told.stdout.split("\n")[:2]
+    return sorted({confine.real(p) for p in places if p and confine.real(p).exists() and confine.real(p) != Path("/")})
+
+
 def _config(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -196,10 +213,14 @@ def session(world: Path, name: str, arm: str, at: int, request: str, options) ->
         config["model"]["default"] = options.writer if at == 0 else options.model
         (world / "hermes" / "config.yaml").write_text(json.dumps(config, indent=1))
     usage_file = world / f"usage-{at}.json"
+    command = [options.hermes, "-z", request, "--usage-file", str(usage_file)]
+    if not options.unconfined:  # the agent writes in its world and in the login's store, and cannot read the real home
+        shared(world, options).mkdir(parents=True, exist_ok=True)
+        command = confine.confined(command, [world, shared(world, options)], [Path.home()], options.reads)
     began = time.time()
     try:
-        done = subprocess.run([options.hermes, "-z", request, "--usage-file", str(usage_file)], cwd=world / "home",
-                              env=env, capture_output=True, text=True, timeout=options.seconds)
+        done = subprocess.run(command, cwd=world / "home", env=env, capture_output=True, text=True,
+                              timeout=options.seconds)
         code, answer, errors = done.returncode, done.stdout.strip(), done.stderr.strip()
     except subprocess.TimeoutExpired as late:
         code, answer, errors = 124, (late.stdout or b"").decode("utf-8", "replace").strip(), "timed out"
@@ -305,8 +326,15 @@ def run(options) -> None:
     aside = out / "hermes-aside"  # even to say its version, Hermes is given a home that is not the real one
     hermes = subprocess.run([options.hermes, "--version"], capture_output=True, text=True,
                             env={**os.environ, "HERMES_HOME": str(aside)}).stdout.splitlines()
-    shutil.rmtree(aside, ignore_errors=True)
     options.versions = {"hermes": hermes[0] if hermes else "?", "reflexes": metadata.version("agent-reflexes")}
+    options.reads = needed(options, aside)
+    if not options.unconfined:
+        try:
+            confine.confined(["true"], [out], [Path.home()], options.reads)
+        except confine.Unavailable as exc:
+            sys.exit(f"cannot confine the agent on this machine: {exc}. With --unconfined it runs with your own "
+                     "rights and may write anywhere you can: on a machine in real use, ask its owner first.")
+    shutil.rmtree(aside, ignore_errors=True)
     real = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser().resolve()
     given = Path(options.from_home).expanduser().resolve() if options.from_home else None
     if given and (given == real or real in given.parents):
@@ -389,6 +417,8 @@ def main() -> None:
     parser.add_argument("--noise", action="store_true", help="with --like: copy its skills and SOUL.md into each world")
     parser.add_argument("--writer", default="", help="another model for the session that makes a reflex, in a scenario "
                         "of several sessions: the big one writes, the small one runs")
+    parser.add_argument("--unconfined", action="store_true", help="let the agent run with your own rights: without "
+                        "this, it can write only in its world and cannot read your home folder (confine.py)")
     parser.add_argument("--keys", default="", help="environment variables handed on to the agent, by name (none: a key "
                         "in your shell is never passed on unasked)")
     options = parser.parse_args()

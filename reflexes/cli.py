@@ -86,9 +86,10 @@ def _main(args: list) -> int:
     if command == "list":
         return _list()
     if command == "guide":
+        # where a reflex goes is said first: an agent that reads only the head of the guide wrote one elsewhere
+        print("A reflex is a file <name>.py in " + " or ".join(str(f) for f in store.folders())
+              + f". Try it with `{_me()} test <name>` (a dry run), then `{_me()} run <name>`.\n")
         print((Path(__file__).parent / "GUIDE.md").read_text(encoding="utf-8").rstrip())
-        print("\nA reflex is a file <name>.py in " + " or ".join(str(f) for f in store.folders())
-              + f". Try it with `{_me()} test <name>` (a dry run), then `{_me()} run <name>`.")
         return 0
     if command == "answer":
         as_json = rest[-1:] == ["--json"]

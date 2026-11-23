@@ -72,7 +72,9 @@ python bench/hermes/run.py run ~/reflex-lab/out --hermes ~/reflex-lab/hermes-ven
     --from-home ~/reflex-lab/login --like ~/.hermes --model as-is --noise
 ```
 
-What keeps a session away from the real Hermes: it runs with `HOME` and `HERMES_HOME` inside its world, so its
+What keeps a session away from the real Hermes: the operating system fences it (`confine.py`: Landlock on Linux,
+sandbox-exec on macOS), so it writes only in its world, cannot read the home folder around it and cannot signal a
+process that is not its own; it runs with `HOME` and `HERMES_HOME` inside its world, so its
 gateway, its locks, its sessions, its memory and its skills are the world's own; the real plugins, MCP servers,
 memory, cron jobs and messaging are never loaded; Hermes's install-on-demand is off, so no home grows by 600 MB;
 and the only process the bench ever stops is the gateway it started itself, by its number, after checking its name.
@@ -109,6 +111,10 @@ On a real machine that may be private. Keep that folder out of the repository; `
 - **A reflex carries what cannot be guessed.** By hand no agent filed the notes the owner's way (0 of 12). With
   the reflexes in its prompt, 8 of 8, and in one case without even running the reflex: its one-line description
   was enough.
+- **A world is a convention, not a wall.** One Flash session, looking for the place where reflexes are saved, read
+  the head of the guide only (`reflex guide | head -40`), missed the line that said it, went through the package's
+  source and wrote its reflex into the repository's `examples/`. Two changes came of it: the guide now says where a
+  reflex goes in its first line, and every session is fenced by the operating system.
 - **After a reflex stops, the model is on its own.** In `stopped` Haiku left the file that was in the way alone
   8 times of 8, with or without a reflex. Flash forced its way through 7 times of 8. The reflex said what had
   stopped it and what it had already done; it did not say that forcing was not asked for.
