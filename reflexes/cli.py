@@ -27,9 +27,29 @@ reflex run <name|file.py> [k=v ...]   run it
 reflex test <name|file.py> [k=v ...]  dry run: reads and questions happen, changes are only listed
 reflex answer <id> <answer>           carry on a run that asked (- takes the answer from the input)
 reflex guide                          how to write a reflex
+reflex note [--chars N]               what to put in an agent's prompt so that it knows its reflexes
 Add --json to run, test and answer for the whole result as JSON."""
+# What an agent is told about its reflexes, at the start of a session. Given this in its prompt, a cheap model took
+# the reflex that fitted 60 times of 60; told through a skill or a tool it had to look for, 0 times of 48.
+NOTE = """You have reflexes: small programs for tasks done before. One call does the whole task, with no thinking in between.
+  {me} run <name> [input=value]    run one. It ends "done" (use its result as it is), "asks" (it needs one answer
+  {pad}                             from you: `{me} answer <id> '<answer>'`, and it carries on) or "stopped" (it
+  {pad}                             says why and what it already changed; do the rest yourself)
+  {me} test <name> [input=value]   dry run: shows what it would change, changes nothing
+  {me} guide                       how to write one
+Yours:
+{listing}
+When a request matches a reflex, run it instead of doing the steps by hand."""
+NONE_YET = ("You can have reflexes: small programs that do a routine task in one call, with no thinking in between. "
+            "None yet: `{me} guide` says how to write one.")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 SHOWN = 20_000  # characters of a result or of a question shown to the caller; --json gives them whole
+# Said after a command that did not go through. Without it a cheap model forced its way past what had stopped the
+# reflex (gzip -f over an archive that was in the way: 9 times of 10); with it, 0 of 20, and it still finished the
+# task, also where finishing means more work (a refused git push: pull first). Kinder or longer wordings did worse:
+# they kept it from finishing at all. bench/hermes/README.md has the numbers.
+PAST_A_STOP = ("Finish the task by hand. One rule: never overwrite, delete or force anything to get past what stopped it. "
+               "If that is the only way, leave that part and tell the user.")
 GONE = "the folder you are in no longer exists: a reflex needs a folder to run in (cd somewhere first)"
 
 
@@ -85,6 +105,8 @@ def _main(args: list) -> int:
     command, rest = args[0], args[1:]
     if command == "list":
         return _list()
+    if command == "note":
+        return _note(rest)
     if command == "guide":
         # where a reflex goes is said first: an agent that reads only the head of the guide wrote one elsewhere
         print("A reflex is a file <name>.py in " + " or ".join(str(f) for f in store.folders())
@@ -135,22 +157,74 @@ def _main(args: list) -> int:
     return _report(outcome, as_json)
 
 
-def _list() -> int:
+def _lines() -> tuple:
+    """(one line for each reflex, what else there is to say about the folders)."""
     found, notes = store.survey()
-    if not found:
-        print("no reflex yet (looked in: " + ", ".join(str(f) for f in store.folders()) + ")")
+    lines = {}
     for name, path in found.items():
         try:
             about = engine.describe(path.read_text(encoding="utf-8", errors="replace"))
             inputs = ", ".join(i["name"] if i["required"] else
                                f"{i['name']}={i['default'] if i.get('written') else _default(i['default'])}"
                                for i in about["inputs"])
-            print(f"{name}({inputs}) · {_line(about['doc'].splitlines()[0]) if about['doc'] else 'no description'}")
+            lines[name] = f"{name}({inputs}) · {_line(about['doc'].splitlines()[0]) if about['doc'] else 'no description'}"
         except (engine.Refused, OSError) as exc:
-            print(f"{name} · cannot run: {exc}")
+            lines[name] = f"{name} · cannot run: {exc}"
+    return lines, notes
+
+
+def _list() -> int:
+    lines, notes = _lines()
+    if not lines:
+        print("no reflex yet (looked in: " + ", ".join(str(f) for f in store.folders()) + ")")
+    for line in lines.values():
+        print(line)
     for note in notes:
         print(f"note: {note}")
     return 0
+
+
+def _note(rest: list) -> int:
+    """The note for an agent's prompt. With --chars it never grows past that: the reflexes run most often stay,
+    and the note says how many are left out, so that a long list is cut and not lost."""
+    most = None
+    if rest[:1] == ["--chars"] and len(rest) == 2 and rest[1].isdigit():
+        most = int(rest[1])
+    elif rest:
+        return _fail(f"{_me()} note [--chars N]")
+    me = _me()
+    lines = {name: line for name, line in _lines()[0].items() if " · cannot run: " not in line}
+    if not lines:
+        print(NONE_YET.format(me=me))
+        return 0
+
+    def note(names, left=0):
+        listing = [f"  {lines[name]}" for name in sorted(names)]
+        if left:
+            listing.append(f"  and {left} more: `{me} list` shows them all")
+        return NOTE.format(me=me, pad=" " * len(me), listing="\n".join(listing))
+
+    kept = list(lines)
+    if most is not None and len(note(kept)) > most:
+        often = _often()
+        kept = sorted(lines, key=lambda name: (-often.get(name, 0), name))
+        while kept and len(note(kept, len(lines) - len(kept))) > most:
+            kept.pop()
+    print(note(kept, len(lines) - len(kept)))
+    return 0
+
+
+def _often() -> dict:
+    """How many times each reflex was run, by the journal."""
+    counts = {}
+    try:
+        for line in (store.home() / "journal.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
+            argv = json.loads(line).get("argv") or []
+            if argv[:1] == ["run"] and len(argv) > 1:
+                counts[argv[1]] = counts.get(argv[1], 0) + 1
+    except (OSError, ValueError, AttributeError):
+        pass
+    return counts
 
 
 def _default(value) -> str:
@@ -383,6 +457,9 @@ def render(outcome, run_id: str | None = None) -> str:
             lines += [f"  {what}" for what in changed] + [f"  may have partly run: {what}" for what in partly]
         elif outcome.effects:
             lines.append("nothing was changed before it stopped.")
+        last = outcome.effects[-1] if outcome.effects else {}
+        if not outcome.dry and last.get("error") and last["error"] in outcome.reason:
+            lines.append(PAST_A_STOP)  # a command did not go through: what the caller does next is where harm is done
     return "\n".join(lines)
 
 

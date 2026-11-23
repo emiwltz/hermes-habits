@@ -20,18 +20,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tasks import AGES, git  # noqa: E402
+from reflexes import cli  # noqa: E402
 
 VENV = Path(__file__).resolve().parent.parent / ".venv" / "bin"
 
-INDEX = """You have reflexes: small programs for tasks done before. One call does the whole task, with no thinking in between.
-  reflex run <name> [input=value]    run one. It ends "done" (use its result as it is), "asks" (it needs one answer
-                                     from you: `reflex answer <id> '<answer>'`, and it carries on) or "stopped" (it
-                                     says why and what it already changed; do the rest yourself)
-  reflex test <name> [input=value]   dry run: shows what it would change, changes nothing
-  reflex guide                       how to write one
-Yours:
-{listing}
-When a request matches a reflex, run it instead of doing the steps by hand."""
+INDEX = cli.NOTE.format(me="reflex", pad="      ", listing="{listing}")  # the note the command itself prints
 
 REFLEXES = {
     "project-health": '''def reflex(rx, project="~/proj"):

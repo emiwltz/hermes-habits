@@ -15,7 +15,7 @@ reflexes to the agent.
 | `note` | the reflexes, the `reflex` command, and a note in `AGENTS.md` |
 | `skill` | the same command, and a Hermes skill that says when to reach for it |
 | `plugin` | the reflexes as one Hermes tool (`plugin/reflexes`) |
-| `section` | the same command, and a plugin that writes the note into the prompt, from the reflexes there are, at the start of each session (`section/reflexes_section`) |
+| `section` | the same command, and a plugin that writes the note into the prompt, from the reflexes there are, at the start of each session: the plugin at the root of this repository |
 
 The agent gets what a user would type and nothing else (`hermes -z`). Afterwards the world is read:
 

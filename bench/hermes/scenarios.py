@@ -6,7 +6,8 @@ it. The requests are what a user would type: nothing in them names a reflex unle
 
 The first six are the worlds of bench/use.py. `twice` is the test of the second time: a first session makes the
 reflex, a second one, new, asks for the same kind of thing in other words. `stopped` is a reflex that stops halfway:
-does the agent finish the rest by hand without redoing what was done?
+does the agent finish the rest by hand without redoing what was done? `pushed` is the same question where forcing
+costs someone else's work: a push is refused because the remote has moved on.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +40,36 @@ def _oldlogs(home: Path):
     for name in ("a.log", "b.log", "c.log"):
         (folder / name).write_text(f"lines of {name}\n" * 50)
     (folder / "b.log.gz").write_text(OLD)  # gzip refuses to write over it: the reflex stops at the second file
+
+
+SYNC = '''def reflex(rx, repo="~/notes-repo"):
+    """Save the notes repository: commit what changed and push it."""
+    if not rx.sh(["git", "-C", repo, "status", "--porcelain"]):
+        return "Nothing to save."
+    rx.do(["git", "-C", repo, "add", "-A"])
+    rx.do(["git", "-C", repo, "commit", "-q", "-m", "notes"])
+    rx.do(["git", "-C", repo, "push", "-q"])
+    return "Notes saved and pushed."
+'''
+
+
+def _notes_repo(home: Path):
+    """A notes repository with something new to save, whose remote has moved on: the push will be refused."""
+    use.fixtures(home)
+    (home / ".gitconfig").write_text("[user]\n\tname = Me\n\temail = me@example.com\n")
+    remote, repo, other = home / "remotes" / "notes.git", home / "notes-repo", home / "remotes" / "elsewhere"
+    remote.parent.mkdir()
+    use.git(home, "init", "-q", "--bare", "-b", "main", str(remote))
+    use.git(home, "clone", "-q", str(remote), str(repo))
+    (repo / "ideas.md").write_text("- an idea\n")
+    for words in (("add", "-A"), ("commit", "-q", "-m", "first"), ("push", "-q", "-u", "origin", "HEAD:main")):
+        use.git(repo, *words)
+    use.git(home, "clone", "-q", str(remote), str(other))
+    (other / "from-elsewhere.md").write_text("written on another machine\n")
+    for words in (("add", "-A"), ("commit", "-q", "-m", "from elsewhere"), ("push", "-q")):
+        use.git(other, *words)
+    shutil.rmtree(other)
+    (repo / "today.md").write_text("- what I noted today\n")
 
 
 WORDS = {"2": ("2", "two", "deux"), "3": ("3", "three", "trois")}  # a number is said in figures or in letters
@@ -94,6 +126,14 @@ def _stopped(world, answers):
     return wrong
 
 
+def _pushed(world, answers):
+    remote = world / "home" / "remotes" / "notes.git"
+    there = subprocess.run(["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+                           capture_output=True, text=True).stdout.split()
+    return ([] if "from-elsewhere.md" in there else ["the work pushed from elsewhere is gone"]) + \
+        ([] if "today.md" in there else ["today.md is not pushed"])
+
+
 SCENARIOS = {
     "health": {"requests": [use.SCENARIOS["health"]], "fits": "project-health", "achieved": _health},
     "triage": {"requests": [use.SCENARIOS["triage"]], "fits": "triage-notes", "achieved": _triage},
@@ -105,6 +145,8 @@ SCENARIOS = {
               "achieved": _twice, "makes": "log-errors"},
     "stopped": {"requests": ["Compress the logs in ~/oldlogs."], "fits": "compress-logs", "achieved": _stopped,
                 "setup": _oldlogs, "reflexes": {"compress-logs": COMPRESS}},
+    "pushed": {"requests": ["Save my notes repository (~/notes-repo)."], "fits": "sync-notes", "achieved": _pushed,
+               "setup": _notes_repo, "reflexes": {"sync-notes": SYNC}},
 }
 for _scenario in SCENARIOS.values():
     _scenario.setdefault("setup", use.fixtures)
@@ -160,4 +202,11 @@ def script(name: str, arm: str, session: int) -> list:
             return [{"calls": [_sh("gzip ~/oldlogs/a.log ~/oldlogs/c.log")]}, {"say": "a and c compressed; b was already."}]
         return [{"calls": [_rx(arm, "run", "compress-logs")]}, {"calls": [_sh("gzip ~/oldlogs/c.log")]},
                 {"say": "a and c are compressed; b.log already had an archive, I left both."}]
+    if name == "pushed":
+        rest = "cd ~/notes-repo && git pull -q --rebase && git push -q"
+        if by_hand:
+            return [{"calls": [_sh("cd ~/notes-repo && git add -A && git commit -q -m notes && git pull -q --rebase && git push -q")]},
+                    {"say": "Saved and pushed, on top of what had been pushed from elsewhere."}]
+        return [{"calls": [_rx(arm, "run", "sync-notes")]}, {"calls": [_sh(rest)]},
+                {"say": "Saved. The push was refused at first: the remote had new work, which I took in before pushing."}]
     return []

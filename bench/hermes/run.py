@@ -14,8 +14,8 @@ reflexes to the agent (an "arm"):
     note     the reflexes, the `reflex` command on the PATH, and a note in AGENTS.md
     skill    the same command, and a Hermes skill that says when to reach for it
     plugin   the reflexes as one Hermes tool
-    section  the same command, and a plugin that writes the note into the prompt, from the reflexes there are,
-             at the start of each session
+    section  the same command, and the plugin of this repository: it writes the note into the prompt, from the
+             reflexes there are, at the start of each session
 
 The agent gets the user's request and nothing else (`hermes -z`). Afterwards the world is read: what is on disk, the
 calls to `reflex` (its own journal), every tool call and model request (the observer plugin), and Hermes's own
@@ -93,10 +93,11 @@ def build(world: Path, name: str, arm: str, options) -> None:
     if arm == "plugin":
         shutil.copytree(HERE / "plugin" / "reflexes", hermes / "plugins" / "reflexes")
         enabled.append("reflexes")
-    if arm == "section":
-        shutil.copytree(HERE / "section" / "reflexes_section", hermes / "plugins" / "reflexes_section")
-        (hermes / "plugins" / "reflexes_section" / "NOTE.txt").write_text(use.INDEX + "\n")  # the words of `note`
-        enabled.append("reflexes_section")
+    if arm == "section":  # the plugin itself, as it is at the root of the repository
+        (hermes / "plugins" / "habits").mkdir()
+        for part in ("plugin.yaml", "__init__.py"):
+            shutil.copy(HERE.parent.parent / part, hermes / "plugins" / "habits" / part)
+        enabled.append("habits")
     if arm == "skill":
         shutil.copytree(HERE / "skill" / "reflexes", hermes / "skills" / "automation" / "reflexes")
     if arm == "note":

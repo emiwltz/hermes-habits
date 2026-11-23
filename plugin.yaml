@@ -1,0 +1,12 @@
+name: habits
+version: 0.2.0
+description: >-
+  Reflexes for Hermes: small programs that do a routine task in one call, below
+  the model. At the start of each session this plugin tells the agent which ones
+  it has; the `reflex` command, in its terminal, does the rest.
+author: Émilien Waltz
+license: MIT
+homepage: https://github.com/emiwltz/hermes-habits
+manifest_version: 2
+requires_hermes: ">=0.23.0"
+platforms: [linux, macos]

@@ -123,6 +123,25 @@ def test_a_stop_says_what_was_already_changed(world, capsys):
     assert lines[3].startswith("  may have partly run: mv ~/nope ~/made/  (exit 1: mv: ")
 
 
+def test_after_a_command_that_did_not_go_through_the_caller_is_told_not_to_force_it(world, capsys):
+    """Left to itself a cheap model forced its way past what had stopped the reflex: the rule is said each time."""
+    (world / "reflexes" / "half.py").write_text('def reflex(rx):\n    rx.do(["mkdir", "-p", "~/made"])\n'
+                                                '    rx.do(["mv", "~/nope", "~/made/"])\n')
+    out = call(capsys, "run", "half")[1]
+    assert out.splitlines()[-1] == cli.PAST_A_STOP and "never overwrite, delete or force" in cli.PAST_A_STOP
+
+
+def test_that_rule_is_not_said_where_there_is_nothing_to_force(world, capsys):
+    (world / "reflexes" / "fault.py").write_text('def reflex(rx):\n    rx.do(["mkdir", "-p", "~/made"])\n    return 1 / 0\n')
+    (world / "reflexes" / "look.py").write_text('def reflex(rx):\n    return rx.sh(["ls", "~/nowhere"])\n')
+    fault = call(capsys, "run", "fault")[1]
+    assert fault.startswith("stopped: ZeroDivisionError") and cli.PAST_A_STOP not in fault  # a fault of the reflex
+    dry = call(capsys, "test", "look")[1]
+    assert dry.startswith("stopped: RuntimeError: rx.sh ls ~/nowhere") and cli.PAST_A_STOP not in dry  # a dry run
+    assert cli.PAST_A_STOP in call(capsys, "run", "look")[1]  # a read that did not go through, in a real run
+
+
+
 def test_a_file_runs_by_its_path(world, capsys):
     path = world / "one.py"
     path.write_text('def reflex(rx, who):\n    return "hello " + who\n')
@@ -511,3 +530,29 @@ def test_every_call_leaves_one_line_in_the_users_journal(world, tmp_path, capsys
         (["run", "nope"], 2, None, None)]
     assert lines[2]["reads"] == 1 and lines[2]["changes"] == 0 and "result" not in lines[2]
     assert oct((tmp_path / "state" / "journal.jsonl").stat().st_mode & 0o777) == "0o600"
+
+
+def test_note_is_what_an_agent_is_told_about_its_reflexes(world, capsys):
+    code, out, _ = call(capsys, "note")
+    lines = out.splitlines()
+    assert code == 0 and lines[0].startswith("You have reflexes: small programs for tasks done before.")
+    assert lines[lines.index("Yours:") + 1:-1] == ["  disk() · Free space of the home disk.",
+                                                   '  tidy(folder="~/inbox") · Sort a folder by kind.']  # not `broken`
+    assert lines[-1] == "When a request matches a reflex, run it instead of doing the steps by hand."
+    assert "reflex run <name> [input=value]" in out and "`reflex answer <id> '<answer>'`" in out
+
+
+def test_a_note_too_long_is_cut_not_lost_and_keeps_what_is_run_most(world, capsys):
+    whole = len(call(capsys, "note")[1])
+    call(capsys, "run", "disk")  # the one that is run stays, though the other comes first by name... and is longer
+    out = call(capsys, "note", "--chars", str(whole - 5))[1]
+    assert len(out) <= whole - 5 and "  disk(" in out and "  tidy(" not in out
+    assert "  and 1 more: `reflex list` shows them all" in out.splitlines()
+    assert call(capsys, "note", "--chars", str(whole))[1] == call(capsys, "note")[1]
+    assert call(capsys, "note", "--chars")[0] == 2
+
+
+def test_with_no_reflex_yet_the_note_says_how_to_have_one(world, capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("REFLEX_PATH", str(tmp_path / "nothing"))
+    out = call(capsys, "note")[1]
+    assert out.startswith("You can have reflexes") and out.endswith("None yet: `reflex guide` says how to write one.")

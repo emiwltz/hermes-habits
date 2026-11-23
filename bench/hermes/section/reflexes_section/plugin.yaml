@@ -1,3 +1,0 @@
-name: reflexes_section
-version: 0.1.0
-description: Tells the agent which reflexes it has, in its prompt, at the start of each session.
