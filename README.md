@@ -172,6 +172,6 @@ The reflex is the first of three levels. Next come **habits**: a reflex wired to
 around a reply, on a clock), with a trust that is earned; and, since a prompt has room for some thirty reflexes,
 which ones to show for the request at hand. Then the **dream**: what the agent does again and again, compiled into
 reflexes and proven on its own history before it is proposed. The reasons for what is built so far are in
-[docs/DESIGN.md](docs/DESIGN.md).
+[docs/DESIGN.md](docs/DESIGN.md); the work from here to a finished plugin is in [docs/PLAN.md](docs/PLAN.md).
 
 MIT.
