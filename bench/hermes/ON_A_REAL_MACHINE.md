@@ -31,7 +31,7 @@ with files, a Hermes home of its own), one request typed as a user would, and a 
 ## What is known (cloud, Linux x86-64, Hermes 2026.9.24)
 
 - The kernel: 533 tests pass. Nothing has ever run on macOS or on ARM.
-- About 370 real sessions (DeepSeek V4 Flash and Claude Haiku 5.5 through Nous Portal, under a dollar in all)
+- About 440 real sessions (DeepSeek V4 Flash and Claude Haiku 5.5 through Nous Portal, $0.88 in all)
   compared ways of giving reflexes to the agent:
 
   | How the agent learns it has reflexes | Took the one that fits |

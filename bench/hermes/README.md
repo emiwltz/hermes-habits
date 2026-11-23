@@ -87,8 +87,8 @@ On a real machine that may be private. Keep that folder out of the repository; `
 
 ## What the first runs said
 
-About 370 real sessions on Linux, Hermes 2026.9.24, two cheap models through Nous Portal (DeepSeek V4 Flash, Claude
-Haiku 5.5), five runs for each model in a cell of the three main arms and two in the others, under a dollar in all.
+About 440 real sessions on Linux, Hermes 2026.9.24, two cheap models through Nous Portal (DeepSeek V4 Flash, Claude
+Haiku 5.5), five runs for each model in a cell of the three main arms and two in the others, $0.88 in all.
 The records are not in the repository.
 
 | Arm | Took the reflex that fits | Task done |
