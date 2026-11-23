@@ -34,6 +34,7 @@ import stat
 import subprocess
 import sys
 import time
+from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 
@@ -73,6 +74,7 @@ def build(world: Path, name: str, arm: str, options) -> None:
         wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
     (hermes / "plugins").mkdir(parents=True)
     if options.from_home:
+        fresh(options)
         for kept in CARRIED:
             source = Path(options.from_home).expanduser() / kept
             if source.exists():
@@ -94,6 +96,25 @@ def build(world: Path, name: str, arm: str, options) -> None:
         config["model"] = {"provider": options.provider, "default": options.model,
                            **({"base_url": options.base_url} if options.base_url else {})}
     (hermes / "config.yaml").write_text(json.dumps(config, indent=1))  # JSON is YAML
+
+
+def fresh(options, within: int = 20 * 60) -> None:
+    """A login made in a browser lasts an hour. When the one of --from-home is about to run out, Hermes renews it
+    there, in the home it was made in, before a world takes its copy: no world then has to renew its own, which
+    would leave the others with a login that no longer counts."""
+    home = Path(options.from_home).expanduser()
+    state = (_json(home / "auth.json").get("providers") or {}).get("nous") or {}
+    python = Path(options.hermes).resolve().parent / "python"
+    if not state.get("refresh_token") or not python.exists():
+        return
+    try:
+        left = datetime.fromisoformat(state["expires_at"]).timestamp() - time.time()
+    except (KeyError, ValueError, TypeError):
+        left = 0
+    if left < within:
+        subprocess.run([str(python), "-c", "from hermes_cli.auth_nous import resolve_nous_runtime_credentials as go; "
+                        "go(force_refresh=True)"], env={**os.environ, "HERMES_HOME": str(home)}, capture_output=True,
+                       timeout=90)
 
 
 def _config(path: Path) -> dict:

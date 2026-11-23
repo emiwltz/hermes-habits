@@ -46,15 +46,19 @@ With `--model mock` (the default) a scripted fake model plays the agent: with re
 without it does the task by hand. It proves the whole chain and costs nothing; its numbers say nothing about a real
 model, except one: how long the prompt and the tool list are in each arm.
 
-With a real model:
+With a real model, the login comes from a Hermes home that has one (`--from-home`): its `config.yaml`, `.env` and
+`auth.json` are copied into each world's own Hermes home, and nothing else. The real sessions, memory and skills are
+not touched.
 
 ```bash
-python bench/hermes/run.py run /tmp/hb --provider nous --model deepseek/deepseek-v4-pro --reps 3
+# a home that only holds a login (HERMES_HOME=~/hermes-login hermes auth add nous), and the model named here
+python bench/hermes/run.py run /tmp/hb --from-home ~/hermes-login --provider nous --model deepseek/deepseek-v4-flash --reps 3
+# a machine where Hermes is already set up: its own model, as it is
+python bench/hermes/run.py run /tmp/hb --from-home ~/.hermes --model as-is
 ```
 
-On a machine where Hermes is already set up, `--from-home ~/.hermes --model as-is` takes the model and the login from
-the real Hermes home (its `config.yaml`, `.env` and `auth.json`, copied into each world's own Hermes home) and
-nothing else: the real sessions, memory and skills are not touched.
+A login made in a browser lasts an hour: the bench has Hermes renew it in the home it was made in before each world
+takes its copy.
 
 ## What stays where
 
