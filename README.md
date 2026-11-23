@@ -42,15 +42,24 @@ and comes back up only when something is unusual. A reflex is that lower level f
 
 ## What the model sees
 
-To use reflexes, three lines in its prompt and one line per reflex:
+To use reflexes, a note in its prompt: nine lines, and one line per reflex. `reflex note` prints it.
 
 ```text
-reflex run <name> [input=value]    run one. It ends "done", "asks" (answer with `reflex answer <id> '<answer>'`)
-                                   or "stopped" (it says why and what it already changed)
-reflex test <name> [input=value]   dry run: shows what it would change, changes nothing
-reflex guide                       how to write one
-tidy(folder="~/Downloads") · Sort a downloads folder by file type.
+You have reflexes: small programs for tasks done before. One call does the whole task, with no thinking in between.
+  reflex run <name> [input=value]    run one. It ends "done" (use its result as it is), "asks" (it needs one answer
+                                     from you: `reflex answer <id> '<answer>'`, and it carries on) or "stopped" (it
+                                     says why and what it already changed; do the rest yourself)
+  reflex test <name> [input=value]   dry run: shows what it would change, changes nothing
+  reflex guide                       how to write one
+Yours:
+  tidy(folder="~/Downloads") · Sort a downloads folder by file type.
+When a request matches a reflex, run it instead of doing the steps by hand.
 ```
+
+The note has to be in front of the model, and it has to be alive. Told about its reflexes through a skill or a
+tool it had to look for, a cheap model took the one that fitted 0 times of 48; with this note in its prompt, 60
+times of 60. And a note written once never held the reflex made the day before. So a host asks `reflex note` at
+the start of each session; `--chars N` keeps it to a size, with the reflexes run or written most recently.
 
 To write one, the guide that `reflex guide` prints ([reflexes/GUIDE.md](reflexes/GUIDE.md), about 800 tokens).
 A reflex is a file `<name>.py` in `./.reflexes` or `~/.reflexes`.
@@ -63,10 +72,38 @@ A reflex is a file `<name>.py` in `./.reflexes` or `~/.reflexes`.
 | `rx.ask(question, options, about=items)` | a closed question for the small model; its doubts go up | asked |
 | `rx.up(question, options)` | one precise question for the big model; the run freezes | asked |
 
+## In Hermes
+
+```bash
+hermes plugins install emiwltz/hermes-habits --enable
+```
+
+That is the whole installation. Hermes installs the package into its own environment (it asks first), and the
+plugin is thirty lines ([`__init__.py`](__init__.py)): at the start of each session it puts `reflex note` in the
+agent's prompt. The agent runs reflexes with the `reflex` command in its terminal, like any command. No tool, no
+skill.
+
+Measured on a real Hermes Agent (2026.9.24) with cheap models, in throwaway worlds
+([bench/hermes](bench/hermes/README.md), 973 sessions, $1.85):
+
+- **It is taken.** The reflex that fits: 60 times of 60 on DeepSeek V4 Flash and Claude Haiku 5.5. In a profile
+  made up to look like a year of use (104 skills, a SOUL.md and a memory, the prompt 80 % longer): 27 of 27 on
+  Haiku and on DeepSeek V4.1 Flash thinking hard, 22 of 27 on V4 Flash.
+- **The next session finds what the last one made** (10 of 10), also when a bigger model wrote it (6 of 6).
+- **It saves most where the routine is long.** Ten commands by hand against one call: half the cost on both cheap
+  models, three times fewer tokens read. On routines of one or two commands, Flash saves 40 %, Haiku nothing.
+- **It carries what cannot be guessed.** By hand no agent filed notes the owner's way (0 of 18); with the reflex in
+  its prompt, 20 of 20.
+- **It does not push a cheap model into damage.** After a command that does not go through, a reflex ends with one
+  rule (finish by hand, never overwrite, delete or force past what stopped it). Without it Flash forced its way 19
+  times of 20; with it, 0 of 45, and 40 of the 45 still finished the task.
+- **Its limit is room, not confusion.** With 63 reflexes a cheap model never took a wrong one. But Hermes gives a
+  plugin 4,000 characters, about 35 reflexes, and one cut from the note is never taken (0 of 24).
+
 ## Measured
 
-Two benches, in [bench/](bench/), run on 21 and 22 November 2026 with fresh model instances that had never seen the
-project.
+Three benches, in [bench/](bench/). The first two were run on 21 and 22 November 2026 with fresh model instances
+that had never seen the project; the third, on a real Hermes Agent, is summed up above.
 
 **Writing a reflex, first try, from the guide alone** (eight small real tasks; the reflex is then run for real in a
 throwaway home, dry and live, and what is on disk is checked):
@@ -101,7 +138,7 @@ Eight runs per situation, in two rounds: five before the reviews (Haiku twice, S
 the command line as it is now (Haiku twice, Sonnet once).
 
 What these numbers are not: a comparison with another format on the same tasks (an earlier, smaller trial of the 0.1
-YAML format gave 1 working reflex in 6 against 6 in 6), or a measure on a cheap non-Claude model. Both are to do.
+YAML format gave 1 working reflex in 6 against 6 in 6). That is to do.
 
 ## Try it
 
@@ -118,8 +155,8 @@ the same format), the closed questions are answered in a fraction of a second an
 
 From Python: `from reflexes import run, resume, Local`.
 
-Everything here was built and measured on Linux (x86-64, Python 3.10 to 3.13). The table of reads was written with
-macOS in mind and reviewed against its manuals, but nothing has run on a Mac yet.
+Everything here was built and measured on Linux (x86-64, Python 3.10 to 3.14). The table of reads was written with
+macOS in mind and reviewed against its manuals, but nothing has run on a Mac or on ARM yet (the CI is set to).
 
 ## What keeps it safe, and what does not
 
@@ -143,8 +180,9 @@ reflex does what its caller could do, no more and no less. Who may approve what 
 ## Where this is going
 
 This repository began as Habits, a plugin for Hermes Agent ([0.1 is on `main`](../../tree/main)). This branch
-rebuilds its core for any agent: the reflex first. Next: Hermes as the first host, then habits (a reflex wired to a
-moment: around a tool call, around a reply, on a clock), then the dream (compile what the agent does again and again
-into reflexes, and prove them on its own history). The reasons are in [docs/DESIGN.md](docs/DESIGN.md).
+rebuilds its core for any agent: the reflex first, and Hermes as its first host. Next: habits (a reflex wired to a
+moment: around a tool call, around a reply, on a clock; and, since a prompt has room for some thirty reflexes, which
+ones to show for the request at hand), then the dream (compile what the agent does again and again into reflexes,
+and prove them on its own history). The reasons are in [docs/DESIGN.md](docs/DESIGN.md).
 
 MIT.
