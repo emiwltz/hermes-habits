@@ -15,9 +15,14 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import hashlib
+import io
+import os
 import shutil
 import subprocess
 import sys
+import tarfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -70,6 +75,128 @@ def _notes_repo(home: Path):
         use.git(other, *words)
     shutil.rmtree(other)
     (repo / "today.md").write_text("- what I noted today\n")
+
+
+# ---- two routines that are long by hand: ten commands and a convention to follow --------------------------------------
+
+BACKUP = '''def reflex(rx, keep=3):
+    """Back up ~/notes the usual way: a dated archive in ~/backups, checked, with its sha256, the old ones pruned, a line in the log."""
+    day = rx.sh(["date", "+%F"])
+    name = f"notes-{day}.tar.gz"
+    archive = f"~/backups/{name}"
+    rx.do(["tar", "-czf", archive, "-C", "~", "notes"])
+    files = [line for line in rx.sh(["tar", "-tzf", archive]).splitlines() if not line.endswith("/")]
+    digest = rx.sh(["sha256sum", archive]).split()[0]
+    rx.write(f"{archive}.sha256", f"{digest}  {name}\\n")
+    archives = sorted(n for n in rx.sh(["ls", "~/backups"]).splitlines() if n.startswith("notes-") and n.endswith(".tar.gz"))
+    old = archives[:-keep]
+    for gone in old:
+        rx.do(["rm", "-f", f"~/backups/{gone}", f"~/backups/{gone}.sha256"])
+    size = rx.sh(["du", "-h", archive]).split()[0]
+    rx.write("~/backups/log.txt", f"{day} {name} {len(files)} files {size}\\n", append=True)
+    return f"{name}: {len(files)} files, {size}. {len(old)} old archives removed, {len(archives) - len(old)} kept."
+'''
+BACKUP_BY_HAND = ("Back up ~/notes the usual way: a tar.gz named notes-<today as YYYY-MM-DD>.tar.gz in ~/backups, check "
+                  "that the archive lists, write its sha256 next to it (same name plus .sha256), keep only the three "
+                  "newest archives with their .sha256 files, and add a line to ~/backups/log.txt (date, archive name, "
+                  "number of files, size).")
+BEFORE = ("2026-10-01", "2026-10-15", "2026-11-01", "2026-11-10")
+
+
+def _backups(home: Path):
+    use.fixtures(home)
+    folder = home / "backups"
+    folder.mkdir()
+    for day in BEFORE:
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w:gz") as archive:
+            note = tarfile.TarInfo("notes/old.txt")
+            note.size = len(day)
+            archive.addfile(note, io.BytesIO(day.encode()))
+        (folder / f"notes-{day}.tar.gz").write_bytes(data.getvalue())
+        (folder / f"notes-{day}.tar.gz.sha256").write_text(
+            f"{hashlib.sha256(data.getvalue()).hexdigest()}  notes-{day}.tar.gz\n")
+    (folder / "log.txt").write_text("".join(f"{day} notes-{day}.tar.gz 1 files 4.0K\n" for day in BEFORE))
+
+
+def _backed_up(world, answers):
+    folder, today = world / "home" / "backups", f"notes-{time.strftime('%Y-%m-%d')}.tar.gz"
+    archive, wrong = folder / today, []
+    try:
+        with tarfile.open(archive) as held:
+            if sum(1 for m in held.getmembers() if m.isfile() and "notes/" in m.name) < len(use.NOTES):
+                wrong.append("today's archive does not hold the notes")
+    except (OSError, tarfile.TarError):
+        return [f"no archive {today} that opens"]
+    said = (folder / f"{today}.sha256").read_text().split() if (folder / f"{today}.sha256").exists() else []
+    if said[:1] != [hashlib.sha256(archive.read_bytes()).hexdigest()]:
+        wrong.append("its .sha256 is missing or wrong")
+    kept = sorted(p.name for p in folder.glob("notes-*.tar.gz"))
+    if kept != [f"notes-{BEFORE[-2]}.tar.gz", f"notes-{BEFORE[-1]}.tar.gz", today]:
+        wrong.append(f"the archives kept are {kept}")
+    if sorted(p.name[:-7] for p in folder.glob("notes-*.sha256")) != kept:
+        wrong.append("a .sha256 is left without its archive, or missing")
+    lines = (folder / "log.txt").read_text().splitlines() if (folder / "log.txt").exists() else []
+    if len(lines) != len(BEFORE) + 1 or today not in lines[-1]:
+        wrong.append("the log has no line for today's archive (or lost its old lines)")
+    return wrong
+
+
+REPORT = '''def reflex(rx, folder="~/work"):
+    """Write this week's report of ~/work into ~/reports: files by extension, total size, three biggest, changed this week, TODO lines of ~/proj."""
+    day = rx.sh(["date", "+%F"])
+    names = sorted(rx.sh(["find", folder, "-type", "f"]).splitlines())
+    root = len(names[0]) - len(names[0].split("/work/", 1)[1]) if names else 0
+    sizes = {}
+    for line in rx.sh(["wc", "-c", *names]).splitlines():
+        count, _, path = line.strip().partition(" ")
+        if path != "total":
+            sizes[path] = int(count)
+    kinds = {}
+    for name in names:
+        last = name.rsplit("/", 1)[-1]
+        kind = "." + last.rsplit(".", 1)[1] if "." in last else "(none)"
+        kinds[kind] = kinds.get(kind, 0) + 1
+    biggest = sorted(names, key=lambda name: -sizes.get(name, 0))[:3]
+    recent = sorted(rx.sh(["find", folder, "-type", "f", "-mtime", "-7"]).splitlines())
+    todos = sum(int(line.rsplit(":", 1)[1]) for line in rx.sh(["grep", "-rc", "TODO", "--include=*.py", "~/proj"]).splitlines())
+    total = sum(sizes.values())
+    text = [f"# Week of {day}", "", f"{len(names)} files, {total} bytes in all.", "", "## By extension"]
+    text += [f"- {kind}: {count}" for kind, count in sorted(kinds.items())]
+    text += ["", "## Three biggest"] + [f"- {name[root:]} ({sizes[name]} bytes)" for name in biggest]
+    text += ["", f"## Changed in the last 7 days ({len(recent)})"] + [f"- {name[root:]}" for name in recent]
+    text += ["", f"## TODO lines in ~/proj: {todos}", ""]
+    rx.do(["mkdir", "-p", "~/reports"])
+    rx.write(f"~/reports/week-{day}.md", "\\n".join(text))
+    return f"week-{day}.md written: {len(names)} files, {total} bytes, {len(recent)} changed this week, {todos} TODO lines."
+'''
+REPORT_BY_HAND = ("Write the usual weekly report of ~/work into ~/reports/week-<today as YYYY-MM-DD>.md: how many files "
+                  "in all and by extension, the total size in bytes, the three biggest files, the files changed in the "
+                  "last 7 days, and how many TODO lines the Python files of ~/proj hold.")
+MORE = {"docs/a.md": (200, 2), "docs/b.md": (300, 20), "data/x.csv": (5000, 3), "data/y.csv": (9000, 40), "big.bin": (50000, 1)}
+
+
+def _week(home: Path):
+    use.fixtures(home)
+    for name, (size, days) in MORE.items():
+        path = home / "work" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        os.utime(path, (time.time() - days * 86400,) * 2)
+
+
+def _reported(world, answers):
+    path = world / "home" / "reports" / f"week-{time.strftime('%Y-%m-%d')}.md"
+    if not path.exists():
+        return [f"no ~/reports/{path.name}"]
+    text = path.read_text(errors="replace")
+    plain = re.sub(r"(?<=\d)[,\u202f\u00a0 ](?=\d{3}\b)", "", text)  # 64,543 and 64 543 are 64543
+    total = sum(size for size, _ in MORE.values()) + sum(len(name) for name in use.AGES)
+    wrong = [f"the report does not name {name}" for name in ("big.bin", "y.csv", "x.csv") if name not in text]
+    wrong += [] if re.search(rf"(?<!\d){total}(?!\d)", plain) else [f"the report does not give the total size ({total} bytes)"]
+    wrong += [] if re.search(rf"(?<!\d){len(MORE) + len(use.AGES)}(?!\d)", plain) else ["the report does not count the files"]
+    wrong += [] if re.search(r"TODO\D{0,60}3(?!\d)|(?<!\d)3\D{0,60}TODO", text) else ["the report does not count the TODO lines"]
+    return wrong
 
 
 WORDS = {"2": ("2", "two", "deux"), "3": ("3", "three", "trois")}  # a number is said in figures or in letters
@@ -147,6 +274,11 @@ SCENARIOS = {
                 "setup": _oldlogs, "reflexes": {"compress-logs": COMPRESS}},
     "pushed": {"requests": ["Save my notes repository (~/notes-repo)."], "fits": "sync-notes", "achieved": _pushed,
                "setup": _notes_repo, "reflexes": {"sync-notes": SYNC}},
+    # by hand the user has to spell the routine out each time: that is what `by_hand` is, for the arm with no reflex
+    "backup": {"requests": ["Back up my notes."], "by_hand": [BACKUP_BY_HAND], "fits": "backup-notes",
+               "achieved": _backed_up, "setup": _backups, "reflexes": {"backup-notes": BACKUP}},
+    "report": {"requests": ["Write this week's report."], "by_hand": [REPORT_BY_HAND], "fits": "weekly-report",
+               "achieved": _reported, "setup": _week, "reflexes": {"weekly-report": REPORT}},
 }
 for _scenario in SCENARIOS.values():
     _scenario.setdefault("setup", use.fixtures)
@@ -202,6 +334,8 @@ def script(name: str, arm: str, session: int) -> list:
             return [{"calls": [_sh("gzip ~/oldlogs/a.log ~/oldlogs/c.log")]}, {"say": "a and c compressed; b was already."}]
         return [{"calls": [_rx(arm, "run", "compress-logs")]}, {"calls": [_sh("gzip ~/oldlogs/c.log")]},
                 {"say": "a and c are compressed; b.log already had an archive, I left both."}]
+    if name in ("backup", "report"):  # by hand the fake model is not played: the reflex is what is being proved
+        return [] if by_hand else [{"calls": [_rx(arm, "run", SCENARIOS[name]["fits"])]}, {"say": "Done, the usual way."}]
     if name == "pushed":
         rest = "cd ~/notes-repo && git pull -q --rebase && git push -q"
         if by_hand:

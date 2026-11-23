@@ -186,7 +186,8 @@ def _list() -> int:
 
 def _note(rest: list) -> int:
     """The note for an agent's prompt. With --chars it never grows past that: the reflexes run most often stay,
-    and the note says how many are left out, so that a long list is cut and not lost."""
+    then the ones written last (a new one has not been run yet), and the note says how many are left out, so that
+    a long list is cut and not lost."""
     most = None
     if rest[:1] == ["--chars"] and len(rest) == 2 and rest[1].isdigit():
         most = int(rest[1])
@@ -194,6 +195,7 @@ def _note(rest: list) -> int:
         return _fail(f"{_me()} note [--chars N]")
     me = _me()
     lines = {name: line for name, line in _lines()[0].items() if " · cannot run: " not in line}
+    found = store.survey()[0]
     if not lines:
         print(NONE_YET.format(me=me))
         return 0
@@ -207,7 +209,13 @@ def _note(rest: list) -> int:
     kept = list(lines)
     if most is not None and len(note(kept)) > most:
         often = _often()
-        kept = sorted(lines, key=lambda name: (-often.get(name, 0), name))
+
+        def written(name) -> float:
+            try:
+                return found[name].stat().st_mtime
+            except (OSError, KeyError):
+                return 0.0
+        kept = sorted(lines, key=lambda name: (-often.get(name, 0), -written(name), name))
         while kept and len(note(kept, len(lines) - len(kept))) > most:
             kept.pop()
     print(note(kept, len(lines) - len(kept)))

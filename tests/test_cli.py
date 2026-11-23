@@ -556,3 +556,13 @@ def test_with_no_reflex_yet_the_note_says_how_to_have_one(world, capsys, monkeyp
     monkeypatch.setenv("REFLEX_PATH", str(tmp_path / "nothing"))
     out = call(capsys, "note")[1]
     assert out.startswith("You can have reflexes") and out.endswith("None yet: `reflex guide` says how to write one.")
+
+
+def test_a_note_cut_short_keeps_a_reflex_just_written_over_an_old_one_never_run(world, capsys):
+    import os
+    import time
+    old = time.time() - 400 * 86400
+    os.utime(world / "reflexes" / "tidy.py", (old, old))  # tidy is old, disk was written now
+    whole = len(call(capsys, "note")[1])
+    out = call(capsys, "note", "--chars", str(whole - 1))[1]
+    assert "  disk(" in out and "  tidy(" not in out and "and 1 more" in out

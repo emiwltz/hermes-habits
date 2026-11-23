@@ -5,6 +5,7 @@
                                          [--arms none,note,skill,plugin,section] [--scenarios health,...]
                                          [--reps 1] [--hermes /path/to/hermes] [--from-home LOGIN]
                                          [--like ~/.hermes] [--noise] [--writer MODEL] [--keys NAME,NAME]
+                                         [--crowd N] [--unconfined]
     python bench/hermes/run.py report <out>
 
 One run is one world: a throwaway home folder with its files, a Hermes home of its own, and one way of giving the
@@ -51,6 +52,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import confine  # noqa: E402
+import crowd  # noqa: E402
 import use  # noqa: E402
 from scenarios import SCENARIOS, script  # noqa: E402
 
@@ -76,8 +78,17 @@ def build(world: Path, name: str, arm: str, options) -> None:
     quiet.chmod(quiet.stat().st_mode | stat.S_IEXEC)
     if arm != "none":
         (home / ".reflexes").mkdir()
-        for reflex, source in scenario["reflexes"].items():
+        for reflex, source in {**crowd.reflexes(options.crowd), **scenario["reflexes"]}.items():
             (home / ".reflexes" / f"{reflex}.py").write_text(source)
+        if options.crowd:  # a year of use: the crowd was written over the last months, the scenario's own long ago
+            for at, reflex in enumerate(crowd.reflexes(options.crowd)):
+                os.utime(home / ".reflexes" / f"{reflex}.py", (time.time() - (at + 5) * 86400,) * 2)
+            for reflex in scenario["reflexes"]:
+                os.utime(home / ".reflexes" / f"{reflex}.py", (time.time() - 400 * 86400,) * 2)
+            if options.seen and scenario["fits"] and scenario["fits"] in scenario["reflexes"]:  # and run now and then
+                (home / ".reflexes" / "journal.jsonl").write_text("".join(
+                    json.dumps({"t": time.time() - (k + 1) * 7 * 86400, "argv": ["run", scenario["fits"]], "exit": 0,
+                                "ms": 20, "status": "done"}) + "\n" for k in range(options.seen)))
         wrapper = bin_ / "reflex"  # the agent's reflex command, on its PATH (its calls are in ~/.reflexes/journal.jsonl)
         wrapper.write_text(f'#!/bin/sh\nexec "{reflex_command()}" "$@"\n')
         wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
@@ -116,10 +127,14 @@ def build(world: Path, name: str, arm: str, options) -> None:
     else:
         config["model"] = {"provider": options.provider, "default": options.model,
                            **({"base_url": options.base_url} if options.base_url else {})}
-    if options.like and options.noise:  # the crowd of a real profile, copied: its skills and its SOUL.md
+    if options.like and options.noise:  # the crowd of a real profile, copied: its skills, its SOUL.md, its memory
         like = Path(options.like).expanduser()
         if (like / "SOUL.md").exists():
             shutil.copy(like / "SOUL.md", hermes / "SOUL.md")
+        for kept in ("MEMORY.md", "USER.md"):
+            if (like / "memories" / kept).exists():
+                (hermes / "memories").mkdir(exist_ok=True)
+                shutil.copy(like / "memories" / kept, hermes / "memories" / kept)
         if (like / "skills").is_dir():
             shutil.copytree(like / "skills", hermes / "skills", dirs_exist_ok=True, symlinks=False,
                             ignore=lambda folder, names: [n for n in names if "habit" in n.lower() or n == ".git"])
@@ -313,8 +328,14 @@ def one(out: Path, name: str, arm: str, rep: int, options) -> dict:
     if world.exists():
         shutil.rmtree(world)
     build(world, name, arm, options)
+    noted, sessions = "", []
     try:
-        sessions = [session(world, name, arm, at, request, options) for at, request in enumerate(scenario["requests"])]
+        requests = scenario.get("by_hand", scenario["requests"]) if arm == "none" else scenario["requests"]
+        for at, request in enumerate(requests):
+            if arm != "none" and at == len(requests) - 1:  # what the last session will be told
+                noted = subprocess.run([str(world / "bin" / "reflex-quiet"), "note", "--chars", "3800"],
+                                       capture_output=True, text=True).stdout
+            sessions.append(session(world, name, arm, at, request, options))
     finally:
         stop(world)  # whatever happened, nothing of this world goes on running
         for heavy in HEAVY:
@@ -325,9 +346,13 @@ def one(out: Path, name: str, arm: str, rep: int, options) -> dict:
         wrong = [f"the check failed: {type(exc).__name__}: {exc}"]
     fits, last = scenario["fits"], sessions[-1]["reflex_calls"]
     took = bool(fits) and any(c.split()[:2] in (["run", fits], ["test", fits]) for c in last)
+    others = sorted({c.split()[1] for c in last if c.split()[:1] in (["run"], ["test"]) and len(c.split()) > 1}
+                    - {fits, scenario.get("makes")})  # reflexes it ran that were not the one for this
     stray = not fits and any(c.split()[:1] == ["run"] for c in last) and "makes" not in scenario
     return {"scenario": name, "arm": arm, "model": options.model, "provider": options.provider, "rep": rep,
             "achieved": not wrong, "wrong": wrong, "fits": fits, "took_the_reflex": took, "ran_one_that_does_not_fit": stray,
+            "others_run": others, "crowd": options.crowd, "seen": options.seen, "note_chars": len(noted),
+            "shown": bool(fits) and f"  {fits}(" in noted,  # was the reflex that fits in the note, or cut from it
             "sessions": sessions, "world": str(world), "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "versions": options.versions, **({"writer": options.writer} if options.writer else {})}
 
@@ -427,6 +452,10 @@ def main() -> None:
     parser.add_argument("--from-home", default="", help="a Hermes home that holds a login for the bench")
     parser.add_argument("--like", default="", help="the real Hermes home to resemble; it is only read")
     parser.add_argument("--noise", action="store_true", help="with --like: copy its skills and SOUL.md into each world")
+    parser.add_argument("--crowd", type=int, default=0, help="this many more reflexes in each world (crowd.py): what "
+                        "happens when there are dozens")
+    parser.add_argument("--seen", type=int, default=0, help="with --crowd: the reflex that fits was run this many times "
+                        "before (so it is among those the note keeps); 0: never, and written long ago")
     parser.add_argument("--writer", default="", help="another model for the session that makes a reflex, in a scenario "
                         "of several sessions: the big one writes, the small one runs")
     parser.add_argument("--unconfined", action="store_true", help="let the agent run with your own rights: without "
