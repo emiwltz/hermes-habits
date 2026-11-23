@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 ROOM = 3800  # Hermes drops a plugin's section past 4,000 characters: the note is cut to fit, never lost
+STARTERS = ("hermes-health", "disk-space")  # what a new user finds in ~/.reflexes: something to run, and to read
 logger = logging.getLogger(__name__)
 
 
@@ -38,5 +39,19 @@ def note(session=None) -> str:
     return said.stdout.strip() if said.returncode == 0 else ""
 
 
+def start() -> None:
+    """The first time, the folder of reflexes is made with two in it. Only then: a folder emptied stays empty."""
+    home = Path(os.environ.get("REFLEX_HOME") or "~/.reflexes").expanduser()
+    if home.exists():
+        return
+    try:
+        home.mkdir(parents=True)
+        for name in STARTERS:
+            shutil.copy(Path(__file__).parent / "examples" / f"{name}.py", home / f"{name}.py")
+    except OSError as exc:
+        logger.warning("habits: the first reflexes could not be put in %s: %s", home, exc)
+
+
 def register(ctx):
+    start()
     ctx.register_system_prompt_section("habits.reflexes", note, position="after_memory", max_chars=4000)

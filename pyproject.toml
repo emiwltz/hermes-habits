@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-reflexes"
-version = "0.2.0.dev0"
+version = "0.2.0"
 description = "Reflexes: small Python functions an agent runs without thinking"
 readme = "README.md"
 license = { text = "MIT" }
@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 dependencies = ["pydantic-monty>=1.6,<2"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pyyaml>=6"]  # pyyaml: the Hermes bench reads a real Hermes config
+dev = ["pytest>=8"]
 
 [project.scripts]
 reflex = "reflexes.cli:main"

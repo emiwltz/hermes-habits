@@ -1,7 +1,7 @@
 """Run candidate reflexes against the bench's tasks.
 
-    python bench/run.py <task> <file.py> [<file.py> ...]     one task, some candidates
-    python bench/run.py --all <folder> [--json out.json]      <folder>/<guide>/<task>/<model>-<n>.py
+    python bench/write.py <task> <file.py> [<file.py> ...]     one task, some candidates
+    python bench/write.py --all <folder> [--json out.json]      <folder>/<guide>/<task>/<model>-<n>.py
 
 Each candidate runs for real in a throwaway home: its commands are confined to that home, its questions are answered
 by the task's stand-ins for the small and the big model. Prints one line per candidate, then a table.

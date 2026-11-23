@@ -47,7 +47,7 @@ SHOWN = 20_000  # characters of a result or of a question shown to the caller; -
 # Said after a command that did not go through. Without it a cheap model forced its way past what had stopped the
 # reflex (gzip -f over an archive that was in the way: 9 times of 10); with it, 0 of 20, and it still finished the
 # task, also where finishing means more work (a refused git push: pull first). Kinder or longer wordings did worse:
-# they kept it from finishing at all. bench/hermes/README.md has the numbers.
+# they kept it from finishing at all. bench/README.md has the numbers.
 PAST_A_STOP = ("Finish the task by hand. One rule: never overwrite, delete or force anything to get past what stopped it. "
                "If that is the only way, leave that part and tell the user.")
 GONE = "the folder you are in no longer exists: a reflex needs a folder to run in (cd somewhere first)"

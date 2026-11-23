@@ -1,7 +1,6 @@
 """Where reflexes live on disk, and where a run that asked waits for its answer.
 
-A reflex is a file `<name>.py`, or a folder `<name>/reflex.py` (a skill folder can hold one next to its SKILL.md).
-They are looked for in the folders of REFLEX_PATH, else in ~/.reflexes then ./.reflexes: the user's own come first,
+A reflex is a file `<name>.py`. They are looked for in the folders of REFLEX_PATH, else in ~/.reflexes then ./.reflexes: the user's own come first,
 so a project's folder can add reflexes but never replace one by taking its name.
 """
 
@@ -51,12 +50,9 @@ def survey() -> tuple:
         except OSError:
             continue
         for entry in entries:
-            if entry.is_file() and entry.suffix == ".py":
-                name, path = entry.stem, entry
-            elif entry.is_dir() and (entry / "reflex.py").is_file():
-                name, path = entry.name, entry / "reflex.py"
-            else:
+            if not (entry.is_file() and entry.suffix == ".py"):
                 continue
+            name, path = entry.stem, entry
             if not NAME.match(name):
                 notes.append(f"{path} is left out: a reflex name is lowercase letters, digits, - and _")
             elif name in found:

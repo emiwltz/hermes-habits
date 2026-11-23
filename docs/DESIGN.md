@@ -1,7 +1,4 @@
-# Design note: reflexes, second take
-
-This page is why the code looks the way it does. Version 0.1 (the hackathon plugin for Hermes Agent) stays whole at
-commit `3fe9af2`, on `main`. This branch starts again from its ideas, not from its code.
+# Design: why the code looks the way it does
 
 ## The aim
 
@@ -16,33 +13,28 @@ Three words carry it:
   with a trust that is earned.
 - The **dream** watches what the agent does, compiles what comes back, and proves it before proposing it.
 
-This branch builds the reflex first, on its own, for any agent. Habits and the dream come back on top of it, in
-Hermes first.
+The reflex is built, and Hermes is its first host. Habits and the dream are built on it, next.
 
-## What 0.1 taught us
+One rule for all of it: before a feature, a line of prompt or a line of code is added, ask whether the problem has a
+smaller answer. Most of what is below was measured, and several times the measure chose the smaller thing.
 
-| Kept | Why |
-| --- | --- |
-| A run ends done, or hands back what is left | The model can trust a result or act on a precise remainder |
-| Reading and changing are told apart, and a dry run only reads | A plan can be shown before anything changes |
-| Small closed questions go to a small typed model; a doubt is never guessed | Cheap decisions, with a way out |
-| Budgets on time and calls | A reflex always ends |
-| A reflex never does what its caller could not do | No new power, only less thinking |
+## What a reflex must be
 
-| Changed | From | To | Evidence |
-| --- | --- | --- | --- |
-| The format | a YAML graph of steps | one Python function | In a first trial a cheap model wrote a working reflex 1 time in 6 in YAML (3,700-token guide) and 6 in 6 in Python. On the bench since: 46 of 48 first try (Haiku 22 of 24) |
-| Where computing happens | shell pipelines inside steps (12 of 15 terminal steps of the shipped examples) | Python, which has no effect | No shell line to parse any more: a command is a list of words |
-| Safety | reading shell text, and a guard of 3,574 lines | a sandbox with no file, network or process; every effect is a call the host answers | The sandbox refuses `open`, `os.system`, `subprocess`; an endless loop is cut |
-| Handing back | the run ends, the model finishes by hand | the run freezes on one question and carries on with the answer | A frozen run is about 5 to 10 KB and resumes in another process in 16 ms |
-| Writing a reflex | 12 to 41 model calls for "make it a habit" | four tool calls: read the guide, write the file, dry run, run | The use bench, 5 of 5 |
-| Size | 18,506 lines, 4,963 tests | about 2,500 lines, about 530 tests | |
+- **A run ends done, or hands back what is left.** The model can trust a result, or act on a precise remainder.
+- **Reading and changing are told apart, and a dry run only reads.** A plan can be shown before anything changes.
+- **Small closed questions go to a small typed model; a doubt is never guessed.** Cheap decisions, with a way out.
+- **A reflex always ends.** Budgets on time and on calls.
+- **No new power, only less thinking.** A reflex never does what its caller could not do.
 
-| Dropped for now | Why |
-| --- | --- |
-| The start on a message, the states, the judge, the guard | They serve autonomy, which is the habit's business: it comes back later, simpler |
-| The dream as written | It saw only exact repeats of one gesture (2 % of replies on a real history) |
-| The cockpit, the pages, two languages | Not needed to prove the reflex |
+And why it is a Python function rather than a format of steps:
+
+- **Models already write it.** From the guide alone, 101 of 104 reflexes worked first try.
+- **Computing has no effect.** It happens in Python, in a sandbox; a command is a list of words, so there is no
+  shell line to read and no value that can become a command.
+- **Every effect is a call the host answers.** The sandbox has no file, network or process of its own (it refuses
+  `open`, `os.system`, `subprocess`; an endless loop is cut), so a dry run is complete.
+- **A run can wait.** It freezes on one question and carries on with the answer: about 5 to 10 KB, resumed in
+  another process in 16 ms.
 
 ## The reflex
 
@@ -172,6 +164,30 @@ its host takes one command at a time.
 
 For an agent with a shell and nothing else, the command line is the host: `reflex run`, `test`, `answer`, `guide`.
 
+## In Hermes
+
+The plugin is the two files at the root, `plugin.yaml` and `__init__.py`. It was measured before it was written,
+on a real Hermes agent with cheap models ([bench/](../bench/README.md)), and each of its choices is one of those
+measures.
+
+- **A note in the prompt, and nothing else.** Reflexes were given to the agent in five ways. As a Hermes tool or as
+  a skill, a cheap model never went looking for them (0 times of 48): a tool sits behind Hermes's tool search, a
+  skill is one line in an index. With their names and what they do in its prompt, it took the one that fitted 60
+  times of 60. So the plugin registers no tool and ships no skill: it puts `reflex note` in the prompt, and the
+  agent runs `reflex` in its terminal like any command.
+- **The note is asked each session.** Written once, it never held the reflex made the day before (0 of 10). Asked
+  of the command at each session start, it always did (10 of 10).
+- **The note has a size.** Hermes gives a plugin 4,000 characters, about 35 reflexes. Past that the note is cut,
+  and what is cut is gone: a reflex left out was taken 0 times of 24, and no agent followed "and 28 more". What
+  stays is what was run or written most recently, so that a new reflex is never born hidden.
+- **One rule after a stop.** When a command does not go through, the reflex ends with: finish the task by hand,
+  never overwrite, delete or force anything to get past what stopped it. Without that line a cheap model forced
+  its way 19 times of 20. Kinder and longer wordings were tried first, and did worse: told to leave the command
+  alone, the model left the task. With the line: 0 of 45, and 40 of the 45 still finished.
+- **One command to install.** Hermes installs the package into its own environment, and its `reflex` command is
+  then first on the path of the agent's terminal. A new user finds two reflexes in `~/.reflexes`, to run and to
+  read; from then on the folder is theirs.
+
 ## What five reviews were for
 
 Each round set models to break the package and other models to check every claim by running it. The first four
@@ -204,8 +220,15 @@ Open:
   before 3.12); in `re`, `$` does not match before a final newline and `\n` in a replacement text stays two
   characters; `strptime` forgets an hour given without minutes; a generator expression that only reads runs whole.
   They are the sandbox's to fix, and to report. Each patch above is a debt to drop when the sandbox catches up.
-- **Only Claude models wrote, used and reviewed reflexes so far.** A cheap model of another family is to measure,
-  and so is a Mac: everything ran on Linux.
+- **Room.** About 35 reflexes fit the note. Which ones to show for the request at hand is the first question of
+  habits.
+- **A reflex's commands run on the machine, with the command's own host**, not through Hermes's terminal tool: its
+  backends (docker, ssh) and its approvals do not apply to them.
+- **The small model's key.** `rx.ask` works with no key (every question goes up to the agent) and better with one
+  (the triage reflex then ends by itself, 10 of 10). How a Hermes user gives that key once, simply, is not designed.
+- **Nothing has run on a Mac or on ARM.** The CI is set to; it has not been started.
+- **Who wrote the reflexes.** Claude models wrote the 104 of the writing bench. In Hermes, the two cheap models
+  made one kind of reflex 20 times of 20: enough to say it works, not how far.
 - **The budgets are guesses.** Two minutes and 200 calls suit a routine gesture and stop a backup of a gigabyte;
   `REFLEX_SECONDS` and `REFLEX_CALLS` raise them, and a host sets its own.
 - **The name.** `reflex` and `reflexes` are taken on PyPI; the package is `agent-reflexes` for now, the command
@@ -213,6 +236,6 @@ Open:
 
 ## Next
 
-1. Hermes as the first host: call a reflex, keep a script that worked, one line per reflex in the prompt.
-2. A profiler of what the agent does and what it costs, read-only, with no model.
-3. Moments (habits): a reflex around a tool call, around a reply, on a clock. Then the dream, then a second host.
+Habits, then the dream, each from first principles and each measured the way the reflex was: a reflex wired to a
+moment and to a trust that is earned, then what the agent does again and again turned into reflexes and proven
+before it is proposed. Then a second host.

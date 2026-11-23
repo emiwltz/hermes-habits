@@ -1,5 +1,0 @@
-name: reflexes
-version: 0.1.0
-description: Reflexes as one tool. A first, thin host - it calls the reflex command, which runs on this machine.
-provides_tools:
-  - reflex

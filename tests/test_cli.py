@@ -30,9 +30,8 @@ def world(tmp_path, monkeypatch):
     reflexes.mkdir()
     (reflexes / "tidy.py").write_text(TIDY)
     (reflexes / "broken.py").write_text("x = 1\n")
-    (reflexes / "disk").mkdir()
-    (reflexes / "disk" / "reflex.py").write_text('def reflex(rx):\n    """Free space of the home disk."""\n'
-                                                  '    return rx.sh(["df", "-Pk", "~"]).splitlines()[-1]\n')
+    (reflexes / "disk.py").write_text('def reflex(rx):\n    """Free space of the home disk."""\n'
+                                      '    return rx.sh(["df", "-Pk", "~"]).splitlines()[-1]\n')
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("REFLEX_PATH", str(reflexes))
     monkeypatch.setenv("REFLEX_HOME", str(tmp_path / "state"))
@@ -545,7 +544,7 @@ def test_note_is_what_an_agent_is_told_about_its_reflexes(world, capsys):
 def test_a_note_too_long_is_cut_not_lost_and_keeps_what_was_run_last(world, capsys):
     import os
     import time
-    for path in (world / "reflexes" / "tidy.py", world / "reflexes" / "disk" / "reflex.py"):
+    for path in (world / "reflexes" / "tidy.py", world / "reflexes" / "disk.py"):
         os.utime(path, (time.time() - 30 * 86400,) * 2)  # both written a month ago
     whole = len(call(capsys, "note")[1])
     call(capsys, "run", "disk")  # the one that was just run stays

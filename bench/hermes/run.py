@@ -1,36 +1,31 @@
 #!/usr/bin/env python3
-"""The Hermes bench: give reflexes to a real Hermes agent, and note what it does with them.
+"""The Hermes bench: give a real Hermes agent the plugin of this repository, and note what it does with it.
 
-    python bench/hermes/run.py run <out> [--model mock] [--provider custom] [--base-url URL]
-                                         [--arms none,note,skill,plugin,section] [--scenarios health,...]
-                                         [--reps 1] [--hermes /path/to/hermes] [--from-home LOGIN]
-                                         [--like ~/.hermes] [--noise] [--writer MODEL] [--keys NAME,NAME]
-                                         [--crowd N] [--unconfined]
+    python bench/hermes/run.py run <out> [--model mock] [--provider custom] [--base-url URL] [--login DIR]
+                                         [--arms hand,plugin] [--scenarios health,...] [--reps 1]
+                                         [--profile DIR] [--crowd N] [--seen N] [--writer MODEL]
+                                         [--keys NAME,NAME] [--hermes /path/to/hermes] [--unconfined]
     python bench/hermes/run.py report <out>
 
-One run is one world: a throwaway home folder with its files, a Hermes home of its own, and one way of giving the
-reflexes to the agent (an "arm"):
+One run is one world: a throwaway home folder with its files, a Hermes home of its own, and one of two arms.
 
-    none     no reflex at all: the agent does the task by hand. The line everything is compared with.
-    note     the reflexes, the `reflex` command on the PATH, and a note in AGENTS.md
-    skill    the same command, and a Hermes skill that says when to reach for it
-    plugin   the reflexes as one Hermes tool
-    section  the same command, and the plugin of this repository: it writes the note into the prompt, from the
-             reflexes there are, at the start of each session
+    hand     no reflex: the agent does the task by hand. The line everything is compared with.
+    plugin   the plugin (plugin.yaml and __init__.py at the root), the scenario's reflexes in ~/.reflexes, and
+             the `reflex` command in the agent's terminal
 
 The agent gets the user's request and nothing else (`hermes -z`). Afterwards the world is read: what is on disk, the
 calls to `reflex` (its own journal), every tool call and model request (the observer plugin), and Hermes's own
 usage report.
 
-With --model mock a scripted fake model plays the agent: no key, no cost, and the whole chain is proved.
-Everything a run leaves stays under <out>, which may hold private text on a real machine: `report` prints only counts.
+--model mock    a scripted fake model plays the agent: no key, no cost, and the whole chain is proved
+--login DIR     a Hermes home that holds a sign-in made for the bench (HERMES_HOME=DIR hermes auth add nous)
+--profile DIR   a Hermes home whose skills, SOUL.md and memory are copied into each world, to crowd the agent's
+                prompt (loaded.py makes one up); with --model as-is its model settings are taken too
+--crowd N       N more reflexes in each world (crowd.py); --seen K: the one that fits was run K times before
+--writer MODEL  in a scenario of several sessions, another model for the one that makes the reflex
 
-On a machine where Hermes is in real use, nothing of that Hermes is written to and none of it is reached: each
-session runs with a home folder and a Hermes home of its own, so it starts its own gateway and cannot find the real
-one. --from-home names a Hermes home that holds a login made for the bench (never the real home: the bench renews
-the login it is given). --like names the real home, which is only read: with --model as-is its model settings are
-taken, and with --noise its skills and its SOUL.md are copied into each world, so that the agent's prompt is as
-crowded as the real one. Its plugins, memory and sessions never are. See ON_A_REAL_MACHINE.md.
+Every session is fenced by the operating system (confine.py): it writes only in its world, and cannot read the home
+folder of whoever runs the bench. Everything a run leaves stays under <out>; `report` prints counts only.
 """
 
 from __future__ import annotations
@@ -49,16 +44,17 @@ from importlib import metadata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parent))
 import confine  # noqa: E402
 import crowd  # noqa: E402
-import use  # noqa: E402
 from scenarios import SCENARIOS, script  # noqa: E402
 
-ARMS = ("none", "note", "skill", "plugin", "section")
-CARRIED = ("auth.json", ".env")  # what --from-home gives each world: a login, never a configuration
-HEAVY = ("tools", "installs", "cache", "runtime")  # what Hermes may install for itself in a home: never kept
+ARMS = ("hand", "plugin")
+ROOM = "3800"  # what the plugin asks `reflex note` to fit in
+PASSED = ("LANG", "LC_ALL", "TZ", "TERM", "USER", "LOGNAME", "SHELL", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+          "https_proxy", "http_proxy", "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+          "NODE_EXTRA_CA_CERTS")  # of the bench's own environment, what a session gets: no key unless --keys names it
 
 
 def reflex_command() -> str:
@@ -67,16 +63,19 @@ def reflex_command() -> str:
 
 
 def build(world: Path, name: str, arm: str, options) -> None:
-    """One world: the home, the reflexes in the way this arm gives them, and a Hermes home that watches."""
+    """One world: the home, the reflexes and the plugin if this arm has them, and a Hermes home that watches."""
     scenario = SCENARIOS[name]
     home, bin_, hermes = world / "home", world / "bin", world / "hermes"
     home.mkdir(parents=True)
     bin_.mkdir()
     scenario["setup"](home)
-    quiet = bin_ / "reflex-quiet"  # for the bench's own checks: not on the agent's PATH name, not in the log
+    quiet = bin_ / "reflex-quiet"  # for the bench's own checks: not the name the agent calls, not in its journal
     quiet.write_text(f'#!/bin/sh\nHOME="{home}" exec "{reflex_command()}" "$@"\n')
     quiet.chmod(quiet.stat().st_mode | stat.S_IEXEC)
-    if arm != "none":
+    (hermes / "plugins").mkdir(parents=True)
+    shutil.copytree(HERE / "observer", hermes / "plugins" / "reflex_bench_observer")
+    enabled = ["reflex_bench_observer"]
+    if arm == "plugin":
         (home / ".reflexes").mkdir()
         for reflex, source in {**crowd.reflexes(options.crowd), **scenario["reflexes"]}.items():
             (home / ".reflexes" / f"{reflex}.py").write_text(source)
@@ -85,74 +84,55 @@ def build(world: Path, name: str, arm: str, options) -> None:
                 os.utime(home / ".reflexes" / f"{reflex}.py", (time.time() - (at + 5) * 86400,) * 2)
             for reflex in scenario["reflexes"]:
                 os.utime(home / ".reflexes" / f"{reflex}.py", (time.time() - 400 * 86400,) * 2)
-            if options.seen and scenario["fits"] and scenario["fits"] in scenario["reflexes"]:  # and run now and then
+            if options.seen and scenario["fits"] in scenario["reflexes"]:  # ...and run now and then
                 (home / ".reflexes" / "journal.jsonl").write_text("".join(
                     json.dumps({"t": time.time() - (k + 1) * 7 * 86400, "argv": ["run", scenario["fits"]], "exit": 0,
                                 "ms": 20, "status": "done"}) + "\n" for k in range(options.seen)))
-        wrapper = bin_ / "reflex"  # the agent's reflex command, on its PATH (its calls are in ~/.reflexes/journal.jsonl)
+        wrapper = bin_ / "reflex"  # the agent's `reflex`, first on its PATH (its calls are in ~/.reflexes/journal.jsonl)
         wrapper.write_text(f'#!/bin/sh\nexec "{reflex_command()}" "$@"\n')
         wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
-    (hermes / "plugins").mkdir(parents=True)
-    if options.from_home:
-        fresh(options)
-        for kept in CARRIED:
-            source = Path(options.from_home).expanduser() / kept
-            if source.exists():
-                shutil.copy(source, hermes / kept)
-    shutil.copytree(HERE / "observer", hermes / "plugins" / "reflex_bench_observer")
-    enabled = ["reflex_bench_observer"]
-    if arm == "plugin":
-        shutil.copytree(HERE / "plugin" / "reflexes", hermes / "plugins" / "reflexes")
-        enabled.append("reflexes")
-    if arm == "section":  # the plugin itself, as it is at the root of the repository
         (hermes / "plugins" / "habits").mkdir()
-        for part in ("plugin.yaml", "__init__.py"):
-            shutil.copy(HERE.parent.parent / part, hermes / "plugins" / "habits" / part)
+        for part in ("plugin.yaml", "__init__.py"):  # the plugin itself, as it is at the root of the repository
+            shutil.copy(ROOT / part, hermes / "plugins" / "habits" / part)
         enabled.append("habits")
-    if arm == "skill":
-        shutil.copytree(HERE / "skill" / "reflexes", hermes / "skills" / "automation" / "reflexes")
-    if arm == "note":
-        listing = subprocess.run([str(quiet), "list"], capture_output=True, text=True).stdout.rstrip()
-        (home / "AGENTS.md").write_text(use.INDEX.format(listing="\n".join("  " + l for l in listing.splitlines())) + "\n")
+    if options.login:
+        fresh(options)
+        for kept in ("auth.json", ".env"):  # a sign-in, never a configuration
+            if (Path(options.login).expanduser() / kept).exists():
+                shutil.copy(Path(options.login).expanduser() / kept, hermes / kept)
     config = {"plugins": {"enabled": sorted(enabled)}, "agent": {"max_turns": 40},
-              "security": {"allow_lazy_installs": False}}
-    if options.model == "as-is":
-        real = _config(Path(options.like).expanduser() / "config.yaml") if options.like else {}
-        if not real.get("model"):
-            sys.exit("--model as-is needs --like, the Hermes home whose model is meant")
-        config["model"] = real["model"]
-        for key in ("reasoning_effort", "reasoning_overrides"):  # how hard the real one thinks is part of its model
-            if key in (real.get("agent") or {}):
-                config["agent"][key] = real["agent"][key]
-    else:
-        config["model"] = {"provider": options.provider, "default": options.model,
-                           **({"base_url": options.base_url} if options.base_url else {})}
-    if options.like and options.noise:  # the crowd of a real profile, copied: its skills, its SOUL.md, its memory
-        like = Path(options.like).expanduser()
-        if (like / "SOUL.md").exists():
-            shutil.copy(like / "SOUL.md", hermes / "SOUL.md")
-        for kept in ("MEMORY.md", "USER.md"):
-            if (like / "memories" / kept).exists():
-                (hermes / "memories").mkdir(exist_ok=True)
-                shutil.copy(like / "memories" / kept, hermes / "memories" / kept)
-        if (like / "skills").is_dir():
-            shutil.copytree(like / "skills", hermes / "skills", dirs_exist_ok=True, symlinks=False,
-                            ignore=lambda folder, names: [n for n in names if "habit" in n.lower() or n == ".git"])
+              "security": {"allow_lazy_installs": False},  # or Hermes installs a Python of its own in every home
+              "model": {"provider": options.provider, "default": options.model,
+                        **({"base_url": options.base_url} if options.base_url else {})}}
+    if options.profile:
+        profile = Path(options.profile).expanduser()
+        for kept in ("SOUL.md", "memories/MEMORY.md", "memories/USER.md"):
+            if (profile / kept).exists():
+                (hermes / kept).parent.mkdir(exist_ok=True)
+                shutil.copy(profile / kept, hermes / kept)
+        if (profile / "skills").is_dir():
+            shutil.copytree(profile / "skills", hermes / "skills", dirs_exist_ok=True)
+    if options.model == "as-is":  # the profile's own model, and how hard it thinks
+        told = _json(Path(options.profile).expanduser() / "config.yaml") if options.profile else {}
+        if not told.get("model"):
+            sys.exit("--model as-is needs --profile, a Hermes home whose config.yaml (written as JSON) names a model")
+        config["model"] = told["model"]
+        config["agent"].update({k: v for k, v in (told.get("agent") or {}).items() if k.startswith("reasoning")})
     (hermes / "config.yaml").write_text(json.dumps(config, indent=1))  # JSON is YAML
 
 
 def shared(world: Path, options) -> Path:
-    """Where Hermes keeps the login that several homes share. A login made in a browser is renewed every half hour,
-    and each renewal uses up the one before: worlds that each renewed their own copy signed each other out (the
-    first pilot lost its login that way, thirty minutes in). So the worlds of a run and the home their login comes
-    from share one store, which is how Hermes keeps several profiles on one login. It is never the real one's."""
-    return Path(options.from_home).expanduser() / "shared" if options.from_home else world / "hermes" / "shared"
+    """Where Hermes keeps the sign-in that several homes share. A sign-in made in a browser is renewed every half
+    hour, and each renewal uses up the one before: worlds that each renewed their own copy signed each other out.
+    So the worlds of a run and the home their sign-in comes from share one store, which is how Hermes keeps several
+    profiles on one sign-in."""
+    return Path(options.login).expanduser() / "shared" if options.login else world / "hermes" / "shared"
 
 
 def fresh(options) -> None:
-    """Before a world takes its copy of the login, Hermes brings it up to date in the home it comes from: it takes
+    """Before a world takes its copy of the sign-in, Hermes brings it up to date in the home it comes from: it takes
     what another world renewed, or renews it itself when that is due."""
-    home = Path(options.from_home).expanduser()
+    home = Path(options.login).expanduser()
     state = (_json(home / "auth.json").get("providers") or {}).get("nous") or {}
     python = Path(options.hermes).resolve().parent / "python"
     if state.get("refresh_token") and python.exists():
@@ -163,8 +143,7 @@ def fresh(options) -> None:
 
 def within_reach(options) -> list:
     """The folders of the PATH the agent is given. Under the fence, one that lies in the hidden home is left out:
-    a command found there could not even be read (in the first fenced run every `rm` was a guard of the bench's
-    own shell, kept in its home, and every deletion by hand failed)."""
+    a command found there could not even be read."""
     folders = [f for f in os.environ.get("PATH", "").split(os.pathsep) if f]
     if options.unconfined:
         return folders
@@ -173,12 +152,10 @@ def within_reach(options) -> list:
 
 
 def needed(options, aside: Path) -> list:
-    """What a confined session must still be able to read if it lies in the home folder: the two Pythons (Hermes's
+    """What a fenced session must still be able to read if it lies in the home folder: the two Pythons (Hermes's
     and the one of `reflex`), their environments, the two checkouts, and the certificates the network asks for."""
-    places = [sys.prefix, sys.base_prefix, HERE.parent.parent, Path(reflex_command()).parent.parent,
-              Path(options.hermes).parent.parent,
-              *(os.environ.get(name, "") for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-                                                      "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR"))]
+    places = [sys.prefix, sys.base_prefix, ROOT, Path(reflex_command()).parent.parent, Path(options.hermes).parent.parent,
+              *(os.environ.get(name, "") for name in PASSED if "CERT" in name or "CA_" in name)]
     python = Path(options.hermes).resolve().parent / "python"
     if python.exists():
         told = subprocess.run([str(python), "-c", "import os, sys, hermes_cli; print(sys.base_prefix); "
@@ -186,19 +163,6 @@ def needed(options, aside: Path) -> list:
                               capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(aside)})
         places += told.stdout.split("\n")[:2]
     return sorted({confine.real(p) for p in places if p and confine.real(p).exists() and confine.real(p) != Path("/")})
-
-
-def _config(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        import yaml
-    except ImportError:
-        sys.exit("reading a Hermes config needs PyYAML here: pip install pyyaml")
-    try:
-        return yaml.safe_load(path.read_text()) or {}
-    except Exception as exc:
-        sys.exit(f"cannot read {path}: {exc}")
 
 
 def _port() -> int:
@@ -209,39 +173,30 @@ def _port() -> int:
 
 def session(world: Path, name: str, arm: str, at: int, request: str, options) -> dict:
     """One session of the agent on one request, and what it left."""
-    env = {**{k: v for k, v in os.environ.items() if k in ("LANG", "LC_ALL", "TZ", "TERM", "USER", "LOGNAME", "SHELL",
-                                                            "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy",
-                                                            "http_proxy", "no_proxy", "SSL_CERT_FILE",
-                                                            "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")
-                  or k in options.keys.split(",")},
+    env = {**{k: v for k, v in os.environ.items() if k in PASSED or k in options.keys.split(",")},
            "PATH": os.pathsep.join([str(world / "bin"), *within_reach(options)]), "HOME": str(world / "home"),
            "HERMES_HOME": str(world / "hermes"), "REFLEX_BENCH_LOG": str(world / "events.jsonl"),
-           "HERMES_SHARED_AUTH_DIR": str(shared(world, options)),
-           "HERMES_DISABLE_LAZY_INSTALLS": "1",  # or each new home gets a Python of its own: 600 MB, downloaded
+           "HERMES_SHARED_AUTH_DIR": str(shared(world, options)), "HERMES_DISABLE_LAZY_INSTALLS": "1",
            "HERMES_YOLO_MODE": "1", "NO_COLOR": "1"}
-    model = None
+    config, model = json.loads((world / "hermes" / "config.yaml").read_text()), None
     if options.model == "mock":
         port = _port()
         (world / f"script-{at}.json").write_text(json.dumps(script(name, arm, at)))
         model = subprocess.Popen([sys.executable, str(HERE / "mock.py"), str(port), str(world / f"script-{at}.json"),
                                   str(world / "model.jsonl")])
-        config = json.loads((world / "hermes" / "config.yaml").read_text())
         config["model"] = {"provider": "custom", "default": "mock-1", "base_url": f"http://127.0.0.1:{port}/v1"}
-        (world / "hermes" / "config.yaml").write_text(json.dumps(config, indent=1))
         for _ in range(100):
             try:
                 socket.create_connection(("127.0.0.1", port), 0.1).close()
                 break
             except OSError:
                 time.sleep(0.05)
-    if options.writer and options.model != "mock" and len(SCENARIOS[name]["requests"]) > 1:
-        # the big one writes, the small one runs: the first session (which makes the reflex) is the writer's
-        config = json.loads((world / "hermes" / "config.yaml").read_text())
-        config["model"]["default"] = options.writer if at == 0 else options.model
-        (world / "hermes" / "config.yaml").write_text(json.dumps(config, indent=1))
+    elif options.writer and len(SCENARIOS[name]["requests"]) > 1:
+        config["model"]["default"] = options.writer if at == 0 else options.model  # the big one writes, the small runs
+    (world / "hermes" / "config.yaml").write_text(json.dumps(config, indent=1))
     usage_file = world / f"usage-{at}.json"
     command = [options.hermes, "-z", request, "--usage-file", str(usage_file)]
-    if not options.unconfined:  # the agent writes in its world and in the login's store, and cannot read the real home
+    if not options.unconfined:  # the agent writes in its world and in the sign-in's store, and cannot read the real home
         shared(world, options).mkdir(parents=True, exist_ok=True)
         command = confine.confined(command, [world, shared(world, options)], [Path.home()], options.reads)
     began = time.time()
@@ -263,24 +218,22 @@ def session(world: Path, name: str, arm: str, at: int, request: str, options) ->
     tools = [e for e in events if e["event"] == "tool"]
     requests = [e for e in events if e["event"] == "api"]
     journal = [e for e in _lines(world / "home" / ".reflexes" / "journal.jsonl") if began <= e.get("t", 0) <= ended + 1]
-    calls = [" ".join(e["argv"]) for e in journal]
     counts = {}
     for tool in tools:
         counts[tool["name"]] = counts.get(tool["name"], 0) + 1
-    usage = _json(usage_file)
+    usage, first = _json(usage_file), (requests[0].get("usage") or {}) if requests else {}
     return {"request": request, "exit": code, "seconds": round(ended - began, 1), "answer": answer[:4000],
-            "requests": len(requests), "tools": counts, "reflex_calls": calls,
+            "requests": len(requests), "tools": counts, "reflex_calls": [" ".join(e["argv"]) for e in journal],
             "reflex_ends": [e.get("status") for e in journal if e.get("status")],
             "commands": [str(t["args"].get("command", ""))[:300] for t in tools if t["name"] == "terminal"],
-            "first_input_tokens": (requests[0].get("usage") or {}).get("prompt_tokens") or
-            (requests[0].get("usage") or {}).get("input_tokens") if requests else None,
+            "first_input_tokens": first.get("prompt_tokens") or first.get("input_tokens"),
             "usage": {k: usage.get(k) for k in ("input_tokens", "output_tokens", "cache_read_tokens", "total_tokens",
                                                 "api_calls", "estimated_cost_usd", "completed", "turn_exit_reason")}}
 
 
 def stop(world: Path) -> None:
     """Hermes leaves a process behind each session (its local runtime, which idles out by itself): one per world is
-    280 MB, so it is stopped at once."""
+    280 MB, so it is stopped at once. Only a process that is a Hermes gateway is, by the number it wrote itself."""
     try:
         pid = int(json.loads(_text(world / "hermes" / "gateway.pid")).get("pid", 0))
     except (ValueError, AttributeError):
@@ -328,64 +281,64 @@ def one(out: Path, name: str, arm: str, rep: int, options) -> dict:
     if world.exists():
         shutil.rmtree(world)
     build(world, name, arm, options)
+    # by hand the user has to spell a long routine out; with its reflex a few words do
+    requests = scenario.get("by_hand", scenario["requests"]) if arm == "hand" else scenario["requests"]
     noted, sessions = "", []
     try:
-        requests = scenario.get("by_hand", scenario["requests"]) if arm == "none" else scenario["requests"]
         for at, request in enumerate(requests):
-            if arm != "none" and at == len(requests) - 1:  # what the last session will be told
-                noted = subprocess.run([str(world / "bin" / "reflex-quiet"), "note", "--chars", "3800"],
+            if arm == "plugin" and at == len(requests) - 1:  # what the last session will be told
+                noted = subprocess.run([str(world / "bin" / "reflex-quiet"), "note", "--chars", ROOM],
                                        capture_output=True, text=True).stdout
             sessions.append(session(world, name, arm, at, request, options))
     finally:
         stop(world)  # whatever happened, nothing of this world goes on running
-        for heavy in HEAVY:
-            shutil.rmtree(world / "hermes" / heavy, ignore_errors=True)
     try:
         wrong = scenario["achieved"](world, [s["answer"] for s in sessions])
     except Exception as exc:  # a check that cannot even run is a failure of the world, said as such
         wrong = [f"the check failed: {type(exc).__name__}: {exc}"]
-    fits, last = scenario["fits"], sessions[-1]["reflex_calls"]
-    took = bool(fits) and any(c.split()[:2] in (["run", fits], ["test", fits]) for c in last)
-    others = sorted({c.split()[1] for c in last if c.split()[:1] in (["run"], ["test"]) and len(c.split()) > 1}
-                    - {fits, scenario.get("makes")})  # reflexes it ran that were not the one for this
-    stray = not fits and any(c.split()[:1] == ["run"] for c in last) and "makes" not in scenario
+    fits, last = scenario["fits"], [call.split() for call in sessions[-1]["reflex_calls"]]
+    ran = {call[1] for call in last if call[0] in ("run", "test") and len(call) > 1}
     return {"scenario": name, "arm": arm, "model": options.model, "provider": options.provider, "rep": rep,
-            "achieved": not wrong, "wrong": wrong, "fits": fits, "took_the_reflex": took, "ran_one_that_does_not_fit": stray,
-            "others_run": others, "crowd": options.crowd, "seen": options.seen, "note_chars": len(noted),
+            "achieved": not wrong, "wrong": wrong, "fits": fits, "took_the_reflex": bool(fits) and fits in ran,
+            "others_run": sorted(ran - {fits, scenario.get("makes")}),  # reflexes it ran that were not the one for this
             "shown": bool(fits) and f"  {fits}(" in noted,  # was the reflex that fits in the note, or cut from it
+            "note_chars": len(noted), "crowd": options.crowd, "seen": options.seen,
+            **({"writer": options.writer} if options.writer else {}),
             "sessions": sessions, "world": str(world), "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "versions": options.versions, **({"writer": options.writer} if options.writer else {})}
+            "versions": options.versions}
 
 
 def run(options) -> None:
     out = Path(options.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    aside = out / "hermes-aside"  # even to say its version, Hermes is given a home that is not the real one
-    hermes = subprocess.run([options.hermes, "--version"], capture_output=True, text=True,
-                            env={**os.environ, "HERMES_HOME": str(aside)}).stdout.splitlines()
-    options.versions = {"hermes": hermes[0] if hermes else "?", "reflexes": metadata.version("agent-reflexes")}
-    options.reads = needed(options, aside)
-    if not options.unconfined:
-        try:
-            confine.confined(["true"], [out], [Path.home()], options.reads)
-        except confine.Unavailable as exc:
-            sys.exit(f"cannot confine the agent on this machine: {exc}. With --unconfined it runs with your own "
-                     "rights and may write anywhere you can: on a machine in real use, ask its owner first.")
-    shutil.rmtree(aside, ignore_errors=True)
     real = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser().resolve()
-    given = Path(options.from_home).expanduser().resolve() if options.from_home else None
+    given = Path(options.login).expanduser().resolve() if options.login else None
     if given and (given == real or real in given.parents):
-        sys.exit(f"--from-home {options.from_home} is the Hermes home in use. The bench renews the login it is given, "
-                 "and the real Hermes would be signed out: make a home that only holds a login "
-                 "(HERMES_HOME=~/bench-login hermes auth add nous) and show the real one with --like, which is only read.")
+        sys.exit(f"--login {options.login} is the Hermes home in use. The bench renews the sign-in it is given, and the "
+                 "Hermes in use would be signed out: make a home that only holds a sign-in "
+                 "(HERMES_HOME=~/bench-login hermes auth add nous).")
     names = [n for n in options.scenarios.split(",") if n]
     arms = [a for a in options.arms.split(",") if a]
     unknown = [n for n in names if n not in SCENARIOS] + [a for a in arms if a not in ARMS]
     if unknown:
         sys.exit(f"unknown: {', '.join(unknown)} (scenarios: {', '.join(SCENARIOS)}; arms: {', '.join(ARMS)})")
+    aside = out / "hermes-aside"  # even to say its version, Hermes is given a home that is not the one in use
+    hermes = subprocess.run([options.hermes, "--version"], capture_output=True, text=True,
+                            env={**os.environ, "HERMES_HOME": str(aside)}).stdout.splitlines()
+    options.versions = {"hermes": hermes[0] if hermes else "?", "reflexes": metadata.version("agent-reflexes")}
+    options.reads = needed(options, aside)
+    shutil.rmtree(aside, ignore_errors=True)
+    if not options.unconfined:
+        try:
+            confine.confined(["true"], [out], [Path.home()], options.reads)
+        except confine.Unavailable as exc:
+            sys.exit(f"cannot fence the agent on this machine: {exc}. With --unconfined it runs with your own rights "
+                     "and may write anywhere you can.")
     with open(out / "records.jsonl", "a", encoding="utf-8") as records:
         for name in names:
             for arm in arms:
+                if arm == "hand" and "makes" in SCENARIOS[name]:
+                    continue  # by hand there is no reflex to make
                 for rep in range(1, options.reps + 1):
                     record = one(out, name, arm, rep, options)
                     records.write(json.dumps(record) + "\n")
@@ -395,7 +348,7 @@ def run(options) -> None:
                           f"{last['requests']:2} requests, {sum(last['tools'].values()):2} tool calls, "
                           f"{last['seconds']:5.1f} s  reflex: {' | '.join(last['reflex_calls'])[:70] or '-'}"
                           + ("" if record["achieved"] else f"\n     {'; '.join(record['wrong'])[:200]}"), flush=True)
-                    if not last["requests"]:  # a login that ran out, no credit, no network, or a session that
+                    if not last["requests"]:  # a sign-in that ran out, no credit, no network, or a session that
                         # another Hermes than the world's own served (its requests are not seen here): never go on
                         sys.exit("stopped: no request reached the model through this world's own Hermes. "
                                  f"Hermes said: {last['answer'][:300]!r}")
@@ -415,7 +368,7 @@ def report(options) -> None:
     print(f"{'model':16} {'arm':7} {'runs':>4} {'done':>5} {'took it':>8} {'requests':>9} {'tools':>6} {'in tok':>8} "
           f"{'out tok':>8} {'first in':>9} {'seconds':>8} {'cost $':>8}")
     for (model, arm), rows in sorted(groups.items()):
-        fitting = [r for r in rows if r["fits"] and arm != "none"]
+        fitting = [r for r in rows if r["fits"] and arm != "hand"]
         sessions = [s for r in rows for s in r["sessions"]]
         took = f"{sum(r['took_the_reflex'] for r in fitting)}/{len(fitting)}" if fitting else "-"
         print(f"{model[:16]:16} {arm:7} {len(rows):4} {sum(r['achieved'] for r in rows):3}/{len(rows):<2}{took:>8} "
@@ -431,7 +384,7 @@ def report(options) -> None:
         cells = []
         for arm in arms:
             rows = [r for r in records if r["scenario"] == name and r["arm"] == arm]
-            took = f" took {sum(r['took_the_reflex'] for r in rows)}" if rows and rows[0]["fits"] and arm != "none" else ""
+            took = f" took {sum(r['took_the_reflex'] for r in rows)}" if rows and rows[0]["fits"] and arm != "hand" else ""
             cells.append(f"{sum(r['achieved'] for r in rows)}/{len(rows)}{took}" if rows else "-")
         if any(c != "-" for c in cells):
             print(f"{name:10}" + "".join(f"{cell:>16}" for cell in cells))
@@ -441,27 +394,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="The Hermes bench for reflexes.")
     parser.add_argument("command", choices=["run", "report"])
     parser.add_argument("out", help="where the worlds and the records go (keep it out of the repository)")
-    parser.add_argument("--model", default="mock", help="mock, a model id, or as-is for the model of --like")
+    parser.add_argument("--model", default="mock", help="mock, a model id, or as-is for the model of --profile")
     parser.add_argument("--provider", default="custom")
     parser.add_argument("--base-url", default="")
+    parser.add_argument("--login", default="", help="a Hermes home that holds a sign-in made for the bench")
     parser.add_argument("--arms", default=",".join(ARMS))
     parser.add_argument("--scenarios", default=",".join(SCENARIOS))
     parser.add_argument("--reps", type=int, default=1)
     parser.add_argument("--seconds", type=int, default=600, help="what one session may take")
-    parser.add_argument("--hermes", default=os.environ.get("HERMES_BIN") or shutil.which("hermes") or "hermes")
-    parser.add_argument("--from-home", default="", help="a Hermes home that holds a login for the bench")
-    parser.add_argument("--like", default="", help="the real Hermes home to resemble; it is only read")
-    parser.add_argument("--noise", action="store_true", help="with --like: copy its skills and SOUL.md into each world")
-    parser.add_argument("--crowd", type=int, default=0, help="this many more reflexes in each world (crowd.py): what "
-                        "happens when there are dozens")
+    parser.add_argument("--profile", default="", help="a Hermes home whose skills, SOUL.md and memory crowd each world")
+    parser.add_argument("--crowd", type=int, default=0, help="this many more reflexes in each world (crowd.py)")
     parser.add_argument("--seen", type=int, default=0, help="with --crowd: the reflex that fits was run this many times "
-                        "before (so it is among those the note keeps); 0: never, and written long ago")
-    parser.add_argument("--writer", default="", help="another model for the session that makes a reflex, in a scenario "
-                        "of several sessions: the big one writes, the small one runs")
-    parser.add_argument("--unconfined", action="store_true", help="let the agent run with your own rights: without "
-                        "this, it can write only in its world and cannot read your home folder (confine.py)")
+                        "before, so the note keeps it; 0: never, and written long ago")
+    parser.add_argument("--writer", default="", help="another model for the session that makes a reflex")
     parser.add_argument("--keys", default="", help="environment variables handed on to the agent, by name (none: a key "
                         "in your shell is never passed on unasked)")
+    parser.add_argument("--hermes", default=os.environ.get("HERMES_BIN") or shutil.which("hermes") or "hermes")
+    parser.add_argument("--unconfined", action="store_true", help="no fence: the agent runs with your own rights")
     options = parser.parse_args()
     (run if options.command == "run" else report)(options)
 

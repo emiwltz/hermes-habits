@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A Hermes home that looks like a year of use, made up: for `run.py --like <it> --noise [--model as-is]`.
+"""A Hermes home that looks like a year of use, made up: for `run.py --profile <it> [--model as-is]`.
 
     python bench/hermes/loaded.py <folder> --hermes-source /path/to/hermes-agent [--skills 60]
                                            [--model deepseek/deepseek-v4.1-flash-1017] [--effort xhigh]

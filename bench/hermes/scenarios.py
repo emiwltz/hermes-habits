@@ -4,7 +4,7 @@ A scenario is judged twice. `achieved`: is the task done, by whatever means (so 
 can be compared with one that has some)? And `fits`: the reflex that does this task, to see whether the agent took
 it. The requests are what a user would type: nothing in them names a reflex unless the scenario is about making one.
 
-The first six are the worlds of bench/use.py. `twice` is the test of the second time: a first session makes the
+The first six ask for one thing each in the same home (base.py). `twice` is the test of the second time: a first session makes the
 reflex, a second one, new, asks for the same kind of thing in other words. `stopped` is a reflex that stops halfway:
 does the agent finish the rest by hand without redoing what was done? `pushed` is the same question where forcing
 costs someone else's work: a push is refused because the remote has moved on.
@@ -25,8 +25,8 @@ import tarfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import use  # noqa: E402  (bench/use.py: the worlds and their reflexes)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import base  # noqa: E402  (the home every world starts from, and its three reflexes)
 
 COMPRESS = '''def reflex(rx, folder="~/oldlogs"):
     """Compress the .log files of a folder with gzip."""
@@ -39,7 +39,7 @@ OLD = "the archive that was already there\n"
 
 
 def _oldlogs(home: Path):
-    use.fixtures(home)
+    base.build(home)
     folder = home / "oldlogs"
     folder.mkdir()
     for name in ("a.log", "b.log", "c.log"):
@@ -60,19 +60,19 @@ SYNC = '''def reflex(rx, repo="~/notes-repo"):
 
 def _notes_repo(home: Path):
     """A notes repository with something new to save, whose remote has moved on: the push will be refused."""
-    use.fixtures(home)
+    base.build(home)
     (home / ".gitconfig").write_text("[user]\n\tname = Me\n\temail = me@example.com\n")
     remote, repo, other = home / "remotes" / "notes.git", home / "notes-repo", home / "remotes" / "elsewhere"
     remote.parent.mkdir()
-    use.git(home, "init", "-q", "--bare", "-b", "main", str(remote))
-    use.git(home, "clone", "-q", str(remote), str(repo))
+    base.git(home, "init", "-q", "--bare", "-b", "main", str(remote))
+    base.git(home, "clone", "-q", str(remote), str(repo))
     (repo / "ideas.md").write_text("- an idea\n")
     for words in (("add", "-A"), ("commit", "-q", "-m", "first"), ("push", "-q", "-u", "origin", "HEAD:main")):
-        use.git(repo, *words)
-    use.git(home, "clone", "-q", str(remote), str(other))
+        base.git(repo, *words)
+    base.git(home, "clone", "-q", str(remote), str(other))
     (other / "from-elsewhere.md").write_text("written on another machine\n")
     for words in (("add", "-A"), ("commit", "-q", "-m", "from elsewhere"), ("push", "-q")):
-        use.git(other, *words)
+        base.git(other, *words)
     shutil.rmtree(other)
     (repo / "today.md").write_text("- what I noted today\n")
 
@@ -104,7 +104,7 @@ BEFORE = ("2026-10-01", "2026-10-15", "2026-11-01", "2026-11-10")
 
 
 def _backups(home: Path):
-    use.fixtures(home)
+    base.build(home)
     folder = home / "backups"
     folder.mkdir()
     for day in BEFORE:
@@ -124,7 +124,7 @@ def _backed_up(world, answers):
     archive, wrong = folder / today, []
     try:
         with tarfile.open(archive) as held:
-            if sum(1 for m in held.getmembers() if m.isfile() and "notes/" in m.name) < len(use.NOTES):
+            if sum(1 for m in held.getmembers() if m.isfile() and "notes/" in m.name) < len(base.NOTES):
                 wrong.append("today's archive does not hold the notes")
     except (OSError, tarfile.TarError):
         return [f"no archive {today} that opens"]
@@ -177,7 +177,7 @@ MORE = {"docs/a.md": (200, 2), "docs/b.md": (300, 20), "data/x.csv": (5000, 3), 
 
 
 def _week(home: Path):
-    use.fixtures(home)
+    base.build(home)
     for name, (size, days) in MORE.items():
         path = home / "work" / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,10 +191,10 @@ def _reported(world, answers):
         return [f"no ~/reports/{path.name}"]
     text = path.read_text(errors="replace")
     plain = re.sub(r"(?<=\d)[,\u202f\u00a0 ](?=\d{3}\b)", "", text)  # 64,543 and 64 543 are 64543
-    total = sum(size for size, _ in MORE.values()) + sum(len(name) for name in use.AGES)
+    total = sum(size for size, _ in MORE.values()) + sum(len(name) for name in base.AGES)
     wrong = [f"the report does not name {name}" for name in ("big.bin", "y.csv", "x.csv") if name not in text]
     wrong += [] if re.search(rf"(?<!\d){total}(?!\d)", plain) else [f"the report does not give the total size ({total} bytes)"]
-    wrong += [] if re.search(rf"(?<!\d){len(MORE) + len(use.AGES)}(?!\d)", plain) else ["the report does not count the files"]
+    wrong += [] if re.search(rf"(?<!\d){len(MORE) + len(base.AGES)}(?!\d)", plain) else ["the report does not count the files"]
     wrong += [] if re.search(r"TODO\D{0,60}3(?!\d)|(?<!\d)3\D{0,60}TODO", text) else ["the report does not count the TODO lines"]
     return wrong
 
@@ -213,17 +213,17 @@ def _health(world, answers):
 
 
 def _triage(world, answers):
-    return [f"{note} is not in notes/{kind}" for note, (kind, _) in use.NOTES.items()
+    return [f"{note} is not in notes/{kind}" for note, (kind, _) in base.NOTES.items()
             if not (world / "home" / "notes" / kind / note).exists()]
 
 
 def _preview(world, answers):
-    left = use.tmp_files(world / "home")
-    return ([f"files were deleted: {left}"] if left != sorted(use.AGES) else []) + _has(answers[-1], "old1.tmp", "old2.tmp")
+    left = base.tmp_files(world / "home")
+    return ([f"files were deleted: {left}"] if left != sorted(base.AGES) else []) + _has(answers[-1], "old1.tmp", "old2.tmp")
 
 
 def _input(world, answers):
-    left = use.tmp_files(world / "home")
+    left = base.tmp_files(world / "home")
     return [] if left == ["keep.txt", "new.tmp", "old1.tmp", "sub/old3.tmp"] else [f"after: {left}"]
 
 
@@ -262,13 +262,13 @@ def _pushed(world, answers):
 
 
 SCENARIOS = {
-    "health": {"requests": [use.SCENARIOS["health"]], "fits": "project-health", "achieved": _health},
-    "triage": {"requests": [use.SCENARIOS["triage"]], "fits": "triage-notes", "achieved": _triage},
-    "preview": {"requests": [use.SCENARIOS["preview"]], "fits": "clean-tmp", "achieved": _preview},
-    "input": {"requests": [use.SCENARIOS["input"]], "fits": "clean-tmp", "achieved": _input},
-    "none": {"requests": [use.SCENARIOS["none"]], "fits": None, "achieved": _none},
-    "write": {"requests": [use.SCENARIOS["write"]], "fits": None, "achieved": _write, "makes": "log-errors"},
-    "twice": {"requests": [use.SCENARIOS["write"], "Anything wrong in the app log lately?"], "fits": "log-errors",
+    "health": {"requests": [base.REQUESTS["health"]], "fits": "project-health", "achieved": _health},
+    "triage": {"requests": [base.REQUESTS["triage"]], "fits": "triage-notes", "achieved": _triage},
+    "preview": {"requests": [base.REQUESTS["preview"]], "fits": "clean-tmp", "achieved": _preview},
+    "input": {"requests": [base.REQUESTS["input"]], "fits": "clean-tmp", "achieved": _input},
+    "none": {"requests": [base.REQUESTS["none"]], "fits": None, "achieved": _none},
+    "write": {"requests": [base.REQUESTS["write"]], "fits": None, "achieved": _write, "makes": "log-errors"},
+    "twice": {"requests": [base.REQUESTS["write"], "Anything wrong in the app log lately?"], "fits": "log-errors",
               "achieved": _twice, "makes": "log-errors"},
     "stopped": {"requests": ["Compress the logs in ~/oldlogs."], "fits": "compress-logs", "achieved": _stopped,
                 "setup": _oldlogs, "reflexes": {"compress-logs": COMPRESS}},
@@ -281,23 +281,39 @@ SCENARIOS = {
                "achieved": _reported, "setup": _week, "reflexes": {"weekly-report": REPORT}},
 }
 for _scenario in SCENARIOS.values():
-    _scenario.setdefault("setup", use.fixtures)
-    _scenario["reflexes"] = {**use.REFLEXES, **_scenario.get("reflexes", {})}
+    _scenario.setdefault("setup", base.build)
+    _scenario["reflexes"] = {**base.REFLEXES, **_scenario.get("reflexes", {})}
 
 
 # ---- what the fake model plays, to prove the bench without a key ------------------------------------------------------
 
+LOG_ERRORS = '''def reflex(rx, path="~/logs/app.log"):
+    """Say how many of the last 20 lines of the app log hold ERROR, and which distinct error texts."""
+    errors = [line.split("ERROR", 1)[1].strip() for line in rx.sh(["tail", "-n", "20", path]).splitlines() if "ERROR" in line]
+    return f"{len(errors)} error lines: {', '.join(sorted(set(errors)))}"
+'''
+BACKUP_SHELL = ("cd ~ && d=$(date +%F) && a=backups/notes-$d.tar.gz && tar -czf $a notes && tar -tzf $a > /dev/null && "
+                "(cd backups && sha256sum notes-$d.tar.gz > notes-$d.tar.gz.sha256 && ls notes-*.tar.gz | sort | "
+                "head -n -3 | while read f; do rm -f \"$f\" \"$f.sha256\"; done) && "
+                "echo \"$d notes-$d.tar.gz $(tar -tzf $a | grep -vc '/$') files $(du -h $a | cut -f1)\" >> backups/log.txt")
+REPORT_SHELL = '''python3 - <<'EOF'
+import pathlib, time
+home = pathlib.Path.home()
+files = [p for p in (home / "work").rglob("*") if p.is_file()]
+big = sorted(files, key=lambda p: -p.stat().st_size)[:3]
+recent = [p for p in files if time.time() - p.stat().st_mtime < 7 * 86400]
+todos = sum("TODO" in line for p in (home / "proj").rglob("*.py") for line in p.read_text().splitlines())
+(home / "reports").mkdir(exist_ok=True)
+(home / "reports" / f"week-{time.strftime('%Y-%m-%d')}.md").write_text(
+    f"{len(files)} files, {sum(p.stat().st_size for p in files)} bytes\\nbiggest: {', '.join(p.name for p in big)}\\n"
+    f"changed this week: {len(recent)}\\nTODO lines: {todos}\\n")
+EOF'''
+
 def _rx(arm: str, *words, inputs=None, answer=None) -> dict:
-    """One call to a reflex, as this arm gives it: through the terminal, or through the plugin's tool (called
-    directly, or through `tool_call` when Hermes keeps that tool behind its search)."""
+    """One call to a reflex, as an agent makes it: the `reflex` command in its terminal."""
     pairs = [f"{k}={v}" for k, v in (inputs or {}).items()]
     said = [answer if isinstance(answer, str) else json.dumps(answer)] if answer is not None else []
-    if arm != "plugin":
-        return {"name": "terminal", "arguments": {"command": "reflex " + shlex.join([*words, *pairs, *said])}}
-    arguments = {"do": words[0], **({"name": words[1]} if len(words) > 1 else {}),
-                 **({"inputs": inputs} if inputs else {}), **({"answer": answer} if answer is not None else {})}
-    return {"any": [{"name": "reflex", "arguments": arguments},
-                    {"name": "tool_call", "arguments": {"name": "reflex", "arguments": arguments}}]}
+    return {"name": "terminal", "arguments": {"command": "reflex " + shlex.join([*words, *pairs, *said])}}
 
 
 def _sh(command: str) -> dict:
@@ -306,9 +322,9 @@ def _sh(command: str) -> dict:
 
 def script(name: str, arm: str, session: int) -> list:
     """The steps of the fake model for one session: with reflexes it takes the one that fits, without it does the
-    task by hand. An empty script makes it say "done" at once (a scenario the fake model does not play)."""
-    by_hand = arm == "none"
-    kinds = {note: kind for note, (kind, _) in use.NOTES.items()}
+    task by hand."""
+    by_hand = arm == "hand"
+    kinds = {note: kind for note, (kind, _) in base.NOTES.items()}
     if name == "health":
         first = _sh("git -C ~/proj status --porcelain | wc -l; grep -rc TODO --include=*.py ~/proj") if by_hand else \
             _rx(arm, "run", "project-health")
@@ -334,8 +350,18 @@ def script(name: str, arm: str, session: int) -> list:
             return [{"calls": [_sh("gzip ~/oldlogs/a.log ~/oldlogs/c.log")]}, {"say": "a and c compressed; b was already."}]
         return [{"calls": [_rx(arm, "run", "compress-logs")]}, {"calls": [_sh("gzip ~/oldlogs/c.log")]},
                 {"say": "a and c are compressed; b.log already had an archive, I left both."}]
-    if name in ("backup", "report"):  # by hand the fake model is not played: the reflex is what is being proved
-        return [] if by_hand else [{"calls": [_rx(arm, "run", SCENARIOS[name]["fits"])]}, {"say": "Done, the usual way."}]
+    if name in ("backup", "report") and not by_hand:
+        return [{"calls": [_rx(arm, "run", SCENARIOS[name]["fits"])]}, {"say": "Done, the usual way."}]
+    if name == "backup":
+        return [{"calls": [_sh(BACKUP_SHELL)]}, {"say": "Backed up, checked, pruned and logged."}]
+    if name == "report":
+        return [{"calls": [_sh(REPORT_SHELL)]}, {"say": "The report is written."}]
+    if name in ("write", "twice") and session == 0:
+        made = f"mkdir -p ~/.reflexes && cat > ~/.reflexes/log-errors.py <<'EOF'\n{LOG_ERRORS}EOF"
+        return [{"calls": [_sh(made)]}, {"calls": [_rx(arm, "test", "log-errors")]}, {"calls": [_rx(arm, "run", "log-errors")]},
+                {"say": "log-errors is made: 3 of the last 20 lines hold an error (db timeout, disk full)."}]
+    if name == "twice":
+        return [{"calls": [_rx(arm, "run", "log-errors")]}, {"say": "Yes: db timeout twice and disk full once, lately."}]
     if name == "pushed":
         rest = "cd ~/notes-repo && git pull -q --rebase && git push -q"
         if by_hand:
